@@ -1,84 +1,75 @@
 package ${package};
 
-import jakarta.annotation.Nullable;
-import ru.tinkoff.kora.common.Component;
+import io.koraframework.common.annotation.Component;
+import org.jspecify.annotations.Nullable;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionStage;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
 /**
- * Thread-safe in-memory token cache with time-based expiry.
+ * Single-flight, thread-safe store for one access token.
  *
- * <p>Used by an {@code HttpClientTokenProvider} to avoid re-fetching a token on
- * every request. Refresh ahead of expiry with a margin so a token never expires
- * mid-flight. {@code getOrRefresh} uses double-checked locking so concurrent
- * requests trigger at most one refresh.</p>
+ * <p>Self-contained: no other generated file is required to compile this one.</p>
+ *
+ * <p>The fast path reads a volatile reference without locking. Only a caller that finds the token
+ * missing or inside the refresh margin takes the lock, and it re-checks after acquiring it, so a
+ * burst of concurrent requests produces exactly one token fetch.</p>
+ *
+ * <p>Holds one token. For several audiences declare one instance per audience from a
+ * {@code @Module} under distinct {@code @Tag}s and drop {@code @Component} from this class.</p>
  */
 @Component
 public final class TokenCache {
 
-    private static final Duration DEFAULT_MARGIN = Duration.ofSeconds(60);
+    /** A token together with the absolute instant it stops being valid. */
+    public record Token(String value, Instant expiresAt) {
 
-    @Nullable
-    private volatile String token;
+        public static Token of(String value, Duration lifetime) {
+            return new Token(value, Instant.now().plus(lifetime));
+        }
 
-    @Nullable
-    private volatile Instant expiryTime;
-
-    private final Object refreshLock = new Object();
-
-    /** Returns the cached token, or null if missing or already expired. */
-    @Nullable
-    public String get() {
-        synchronized (refreshLock) {
-            if (token == null || expiryTime == null || Instant.now().isAfter(expiryTime)) {
-                return null;
-            }
-            return token;
+        public boolean isFreshFor(Duration margin) {
+            return Instant.now().plus(margin).isBefore(expiresAt);
         }
     }
 
-    /** Stores a token with the given lifetime. */
-    public void set(String token, Duration expiresIn) {
-        synchronized (refreshLock) {
-            this.token = token;
-            this.expiryTime = Instant.now().plus(expiresIn);
-        }
-    }
+    /** Refresh this long before expiry so a token cannot expire while a request is in flight. */
+    private static final Duration REFRESH_MARGIN = Duration.ofSeconds(60);
 
-    /** True when the token will expire within the given margin. */
-    public boolean isExpiringSoon(Duration margin) {
-        synchronized (refreshLock) {
-            return expiryTime != null && Instant.now().plus(margin).isAfter(expiryTime);
-        }
-    }
+    private final ReentrantLock lock = new ReentrantLock();
+
+    /** One volatile reference to an immutable record: value and expiry are published together. */
+    private volatile @Nullable Token token;
 
     /**
-     * Returns the cached token, or fetches a new one under a lock (double-checked).
-     * The supplier should call {@link #set} to record the real lifetime; a one-hour
-     * fallback is applied otherwise.
+     * Returns the cached token, fetching a new one if it is missing or about to expire.
+     * The supplier must return the token <em>and</em> its real lifetime, taken from the
+     * authorization server's response — never an assumed one.
      */
-    public CompletionStage<String> getOrRefresh(Supplier<CompletionStage<String>> refreshSupplier) {
-        var cached = get();
-        if (cached != null && !isExpiringSoon(DEFAULT_MARGIN)) {
-            return CompletableFuture.completedFuture(cached);
+    public String getOrRefresh(Supplier<Token> refresh) {
+        var cached = this.token;
+        if (cached != null && cached.isFreshFor(REFRESH_MARGIN)) {
+            return cached.value();
         }
-        synchronized (refreshLock) {
-            cached = get();
-            if (cached != null && !isExpiringSoon(DEFAULT_MARGIN)) {
-                return CompletableFuture.completedFuture(cached);
+
+        lock.lock();
+        try {
+            cached = this.token;
+            if (cached != null && cached.isFreshFor(REFRESH_MARGIN)) {
+                return cached.value();
             }
-            return refreshSupplier.get()
-                    .thenApply(newToken -> {
-                        this.token = newToken;
-                        if (this.expiryTime == null || Instant.now().isAfter(this.expiryTime)) {
-                            this.expiryTime = Instant.now().plus(Duration.ofHours(1));
-                        }
-                        return newToken;
-                    });
+            var fresh = refresh.get();
+            this.token = fresh;
+            return fresh.value();
+        } finally {
+            lock.unlock();
         }
+    }
+
+    /** Drops the cached token so the next caller re-fetches. Call this after a 401. */
+    public void invalidate() {
+        this.token = null;
     }
 }

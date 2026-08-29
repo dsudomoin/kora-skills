@@ -1,42 +1,40 @@
 plugins {
-    application
-    kotlin("jvm") version "1.9.25"
-    id("com.google.devtools.ksp") version "1.9.25-1.0.20"
+    id("application")
+    kotlin("jvm") version "2.4.10"
+    id("com.google.devtools.ksp") version "2.3.11"
 }
 
-val koraBom: Configuration by configurations.creating
-configurations {
-    ksp.get().extendsFrom(koraBom)
-    compileOnly.get().extendsFrom(koraBom)
-    api.get().extendsFrom(koraBom)
-    implementation.get().extendsFrom(koraBom)
+repositories {
+    mavenCentral()
+    // io.koraframework:kora-bom:2.0.0.RC1 is on Maven Central; nothing else is needed.
+    // Only the 2.0.0-SNAPSHOT development line also needs:
+    // maven { url = uri("https://central.sonatype.com/repository/maven-snapshots") }
 }
 
-val koraVersion: String by project
 dependencies {
-    koraBom(platform("ru.tinkoff.kora:kora-parent:$koraVersion"))
-    ksp("ru.tinkoff.kora:symbol-processors")
+    // Kotlin puts the BOM straight on implementation - no koraBom configuration, no extendsFrom.
+    implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+    // The BOM does not constrain the `ksp` configuration, so the processor keeps its version.
+    ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
 
     // Core dependencies - always needed
-    implementation("ru.tinkoff.kora:logging-logback")
-    implementation("ru.tinkoff.kora:config-hocon")
+    implementation("io.koraframework:logging-logback")
+    implementation("io.koraframework:config-hocon")
 
     // Add more Kora modules as needed (no versions - the BOM owns them):
-    // implementation("ru.tinkoff.kora:json-module")
-    // implementation("ru.tinkoff.kora:http-server-undertow")
-    // implementation("ru.tinkoff.kora:http-client-ok")
-    // implementation("ru.tinkoff.kora:database-jdbc")
-    // implementation("ru.tinkoff.kora:kafka")
-    // implementation("ru.tinkoff.kora:micrometer-module")
+    // implementation("io.koraframework:json-common")
+    // implementation("io.koraframework:http-server-undertow")
+    // implementation("io.koraframework:http-client-ok")
+    // implementation("io.koraframework:database-jdbc")
+    // implementation("io.koraframework:kafka")
+    // implementation("io.koraframework:micrometer-module")
 }
 
 kotlin {
     jvmToolchain {
-        languageVersion.set(JavaLanguageVersion.of(21))
+        languageVersion.set(JavaLanguageVersion.of(25))
         vendor.set(JvmVendorSpec.ADOPTIUM)
     }
-    sourceSets.main { kotlin.srcDir("build/generated/ksp/main/kotlin") }
-    sourceSets.test { kotlin.srcDir("build/generated/ksp/test/kotlin") }
 }
 
 application {

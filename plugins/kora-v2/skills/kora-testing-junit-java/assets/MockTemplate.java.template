@@ -1,206 +1,208 @@
 package ${package};
 
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
-
-import org.mockito.Mock;
-import ru.tinkoff.kora.test.extension.junit5.TestComponent;
-
 /**
- * Mockito Mock Templates for Common Scenarios
+ * Mockito pattern catalog for Kora 2.0 JUnit 5 tests.
  *
- * Copy and adapt these patterns for your tests.
+ * Copy the pattern you need into a real @KoraAppTest class. Everything here is commented out on
+ * purpose — this file is a reference, not a compilable test. If you do keep it in the source tree,
+ * save it as MockTemplates.java so the file name matches the public class.
+ *
+ * Imports the patterns assume:
+ *     import static org.mockito.ArgumentMatchers.*;
+ *     import static org.mockito.Mockito.*;
+ *     import static org.junit.jupiter.api.Assertions.*;
+ *     import org.mockito.Mock;
+ *     import org.mockito.Spy;
+ *     import org.mockito.ArgumentCaptor;
+ *     import org.mockito.quality.Strictness;
+ *     import io.koraframework.test.extension.junit5.KoraAppTest;
+ *     import io.koraframework.test.extension.junit5.TestComponent;
+ *     import io.koraframework.test.extension.junit5.mockito.MockitoStrictness;
+ *
+ * Build:
+ *     testImplementation "org.mockito:mockito-core:5.23.0"
+ * An older mockito-core carries a Byte Buddy that rejects Kora 2.0's Java 25 class files with
+ * "Java 25 (69) is not supported by the current version of Byte Buddy" — and when the mock is
+ * created during graph build, that hides inside "Application graph failed to initialize with N
+ * errors" with no visible cause.
+ *
+ * Two rules that apply to every pattern below:
+ * - @Mock / @Spy must sit next to @TestComponent, otherwise the extension ignores them and the
+ *   field stays null.
+ * - Never add @ExtendWith(MockitoExtension.class); @KoraAppTest owns creation, graph injection,
+ *   reset and unused-stub reporting.
  */
-public class MockTemplates {
+public final class MockTemplates {
+
+    private MockTemplates() {}
 
     // =================================================================
-    // PATTERN 1: Basic Mock Setup
+    // PATTERN 1: Mock a graph dependency
     // =================================================================
     /*
-    @Mock
-    @TestComponent
-    private UserRepository userRepository;
+    @KoraAppTest(Application.class)
+    class UserServiceTest {
 
-    @BeforeEach
-    void setup() {
-        when(userRepository.findById(anyLong())).thenReturn(Optional.of(TEST_USER));
+        @Mock
+        @TestComponent
+        private UserRepository userRepository;   // replaces the node in the graph
+
+        @TestComponent
+        private UserService userService;         // the real service, built with the mock
+
+        @Test
+        void returnsUser() {
+            when(userRepository.findById("1")).thenReturn(Optional.of(TEST_USER));
+
+            assertEquals(Optional.of(TEST_USER), userService.getUser("1"));
+            verify(userRepository).findById("1");
+        }
     }
     */
 
     // =================================================================
-    // PATTERN 2: Mock with Multiple Returns (Sequence)
+    // PATTERN 2: Sequence of return values
     // =================================================================
     /*
-    @Mock
-    @TestComponent
-    private UserRepository userRepository;
+    when(userRepository.findById("1"))
+        .thenReturn(Optional.of(USER_1))
+        .thenReturn(Optional.of(USER_2))
+        .thenReturn(Optional.empty());
+    */
 
-    @BeforeEach
-    void setup() {
-        when(userRepository.findById(1L))
-            .thenReturn(Optional.of(USER_1))
-            .thenReturn(Optional.of(USER_2))
-            .thenReturn(Optional.empty());
-    }
+    // =================================================================
+    // PATTERN 3: Throwing
+    // =================================================================
+    /*
+    when(userRepository.findById("999"))
+        .thenThrow(new IllegalStateException("User not found: 999"));
 
+    var exception = assertThrows(IllegalStateException.class, () -> userService.getUser("999"));
+    assertEquals("User not found: 999", exception.getMessage());
+    */
+
+    // =================================================================
+    // PATTERN 4: Answer computed from the arguments
+    // =================================================================
+    /*
+    // echo back what was written — useful for caches and repositories that return the saved value
+    when(petCache.put(anyLong(), any())).then(invocation -> invocation.getArguments()[1]);
+    when(userRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+    */
+
+    // =================================================================
+    // PATTERN 5: Argument matchers
+    // =================================================================
+    /*
+    when(userRepository.findByEmail(anyString())).thenReturn(Optional.of(GENERIC_USER));
+    when(userRepository.findByEmail(eq("specific@test.com"))).thenReturn(Optional.of(SPECIFIC_USER));
+    when(userRepository.findAllById(anyList())).thenReturn(List.of(TEST_USER));
+    when(petCache.get(anyCollection())).thenReturn(Map.of());
+
+    // once one argument uses a matcher, all of them must — wrap literals in eq(...)
+    */
+
+    // =================================================================
+    // PATTERN 6: ArgumentCaptor
+    // =================================================================
+    /*
     @Test
-    void shouldReturnDifferentValues() {
-        userRepository.findById(1L);  // Returns USER_1
-        userRepository.findById(1L);  // Returns USER_2
-        userRepository.findById(1L);  // Returns Optional.empty()
-    }
-    */
+    void savesTheRightUser() {
+        userService.createUser(new UserRequest("John", "john@example.com"));
 
-    // =================================================================
-    // PATTERN 3: Mock with Exception
-    // =================================================================
-    /*
-    @Mock
-    @TestComponent
-    private UserRepository userRepository;
-
-    @BeforeEach
-    void setup() {
-        when(userRepository.findById(999L))
-            .thenThrow(new EntityNotFoundException("User not found: 999"));
-    }
-
-    @Test
-    void shouldThrowWhenNotFound() {
-        var exception = assertThrows(EntityNotFoundException.class,
-            () -> userRepository.findById(999L));
-        assertEquals("User not found: 999", exception.getMessage());
-    }
-    */
-
-    // =================================================================
-    // PATTERN 4: Mock with Argument Matchers
-    // =================================================================
-    /*
-    @Mock
-    @TestComponent
-    private UserRepository userRepository;
-
-    @BeforeEach
-    void setup() {
-        when(userRepository.findByEmail(anyString()))
-            .thenReturn(Optional.of(TEST_USER));
-
-        when(userRepository.findByEmail(contains("@test.com")))
-            .thenReturn(Optional.of(TEST_USER));
-
-        when(userRepository.findByEmail(eq("specific@test.com")))
-            .thenReturn(Optional.of(SPECIFIC_USER));
-    }
-    */
-
-    // =================================================================
-    // PATTERN 5: Mock with Argument Captor
-    // =================================================================
-    /*
-    @Mock
-    @TestComponent
-    private UserRepository userRepository;
-
-    @Test
-    void shouldSaveCorrectUser() {
-        service.createUser("test@example.com");
-
-        ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
+        var captor = ArgumentCaptor.forClass(User.class);
         verify(userRepository).save(captor.capture());
 
-        var savedUser = captor.getValue();
-        assertEquals("test@example.com", savedUser.email());
-        assertNotNull(savedUser.id());
+        assertEquals("john@example.com", captor.getValue().email());
     }
     */
 
     // =================================================================
-    // PATTERN 6: Mock with doNothing/doThrow for void methods
+    // PATTERN 7: void methods
     // =================================================================
     /*
-    @Mock
-    @TestComponent
-    private EmailService emailService;
+    doNothing().when(emailService).send(anyString(), anyString());
+    doThrow(new IllegalStateException("Failed"))
+        .when(emailService).send(eq("invalid@test.com"), anyString());
+    */
 
-    @BeforeEach
-    void setup() {
-        doNothing().when(emailService).send(anyString(), anyString());
-        doThrow(new EmailException("Failed"))
-            .when(emailService).send(eq("invalid@test.com"), anyString());
+    // =================================================================
+    // PATTERN 8: @Spy over the instance the graph builds
+    // =================================================================
+    /*
+    @KoraAppTest(Application.class)
+    class SpyGraphTest {
+
+        @Spy
+        @TestComponent
+        private UserService userService;   // real component, real dependencies, selected overrides
+
+        @Test
+        void overridesOneMethod() {
+            doReturn(Optional.of(TEST_USER)).when(userService).getUser(anyString());
+
+            assertEquals(Optional.of(TEST_USER), userService.getUser("1"));
+            verify(userService).getUser("1");
+        }
     }
     */
 
     // =================================================================
-    // PATTERN 7: Spy with Partial Mocking
+    // PATTERN 9: @Spy over an instance you supply
     // =================================================================
     /*
     @Spy
     @TestComponent
-    private UserService userService = new UserService();
+    private Supplier<String> component1 = () -> "12345";   // node dependencies are dropped
 
-    @Test
-    void shouldCallRealMethodWithOverride() {
-        doReturn(TEST_USER).when(userService).getUserById(anyLong());
-
-        var result = userService.getUserById(1L);
-        assertEquals(TEST_USER, result);
-        verify(userService).getUserById(anyLong());  // Verify method was called
-    }
+    // Prefer doReturn/doThrow/doNothing on a spy: when(spy.method()) calls the real method while
+    // stubbing it.
     */
 
     // =================================================================
-    // PATTERN 8: Verify with Times/Never/AtLeast
+    // PATTERN 10: verify counts and order
     // =================================================================
     /*
-    @Test
-    void shouldVerifyCallCount() {
-        service.processAll();
+    verify(repository, times(3)).save(any());
+    verify(repository, never()).delete(any());
+    verify(repository, atLeastOnce()).findAll();
+    verify(repository, atMost(5)).update(any());
 
-        verify(repository, times(3)).save(any());
-        verify(repository, never()).delete(any());
-        verify(repository, atLeastOnce()).findAll();
-        verify(repository, atMost(5)).update(any());
-    }
+    var inOrder = inOrder(repository);
+    inOrder.verify(repository).save(any());
+    inOrder.verify(repository).update(any());
+    inOrder.verify(repository).delete(any());
     */
 
     // =================================================================
-    // PATTERN 9: Verify with Order (InOrder)
+    // PATTERN 11: strictness
     // =================================================================
     /*
-    @Test
-    void shouldVerifyCallOrder() {
-        service.fullProcess();
-
-        var inOrder = inOrder(repository);
-        inOrder.verify(repository).save(any());
-        inOrder.verify(repository).update(any());
-        inOrder.verify(repository).delete(any());
-    }
-    */
-
-    // =================================================================
-    // PATTERN 10: Mock Strictness for Stub Verification
-    // =================================================================
-    /*
+    // io.koraframework.test.extension.junit5.mockito.MockitoStrictness
+    // Levels: LENIENT, WARN (default when the annotation is absent), STRICT_STUBS
     @MockitoStrictness(Strictness.STRICT_STUBS)
     @KoraAppTest(Application.class)
     class StrictTest {
+
         @Mock
         @TestComponent
         private UserRepository userRepository;
 
-        @BeforeEach
-        void setup() {
-            when(userRepository.findById(anyLong())).thenReturn(Optional.of(TEST_USER));
-        }
-
-        @Test
-        void shouldUseStub() {
-            // If findById is not called, test will warn/fail with STRICT_STUBS
-            var user = userRepository.findById(1L);
-            assertNotNull(user);
-        }
+        // A stub nobody uses fails the test with UnnecessaryStubbingException.
+        // Relax a single mock instead of the whole class with:
+        //   @Mock(strictness = Mock.Strictness.LENIENT)
     }
+    */
+
+    // =================================================================
+    // PATTERN 12: what NOT to write in Kora 2.0
+    // =================================================================
+    /*
+    // Contracts are synchronous — there is no reactive or future wrapper to stub or unwrap.
+    // WRONG: when(repo.findById("1")).thenReturn(Mono.just(user));
+    // WRONG: when(repo.findById("1")).thenReturn(CompletableFuture.completedFuture(user));
+    // WRONG: StepVerifier.create(service.getUser("1")).expectNext(user).verifyComplete();
+    // RIGHT: when(repo.findById("1")).thenReturn(Optional.of(user));
+    //        assertEquals(Optional.of(user), service.getUser("1"));
     */
 }

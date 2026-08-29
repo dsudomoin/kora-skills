@@ -3,102 +3,195 @@
     {
       "id": "kora-http-server-auth-apikey-openapi",
       "skills": ["kora-http-server-auth"],
-      "query": "My Kora HTTP server is generated from an OpenAPI contract with an apiKey security scheme. How do I validate the API key on every request?",
+      "query": "My Kora 2.0 HTTP server is generated from an OpenAPI contract with an apiKey security scheme named apiKeyAuth. How do I validate the API key on every request?",
       "expected_behavior": [
-        "Implements HttpServerPrincipalExtractor<Principal> and binds it with @Tag(ApiSecurity.ApiKeyAuth.class)",
-        "Declares the extractor as a default method on @KoraApp or a @Module interface that the app extends",
-        "Throws SecurityException when the key is missing or wrong, returning CompletableFuture.completedFuture(principal) otherwise",
+        "Declares HttpServerPrincipalExtractor<String, Principal> with TWO type arguments, from io.koraframework.http.server.common.auth",
+        "Binds it with @Tag(ApiSecurity.ApiKeyAuth.class) — the tag named after the security scheme, PascalCased",
+        "Declares it as a default method on @KoraApp or a @Module interface, or as a tagged @Component class, but not both",
+        "Returns null to reject, explaining that the generated interceptor then throws HttpServerResponseException.of(401, \"Unauthorized\")",
+        "Uses io.koraframework.common.Principal and a record/data class implementing it",
         "Externalizes the expected key via @ConfigSource and ${ENV} substitution rather than inlining it",
-        "Does not call a non-existent Principal.current() or request.getAttribute()"
+        "Does not emit CompletableFuture/CompletionStage, Mono, or suspend anywhere in the extractor",
+        "Does not tell the user to add the generated ApiSecurity to the @KoraApp interface list"
       ],
-      "tags": ["openapi", "apikey", "basic"]
+      "tags": ["openapi", "apikey", "core"]
     },
     {
-      "id": "kora-http-server-auth-bearer-jwt",
+      "id": "kora-http-server-auth-regression-httpservermodule-tag",
       "skills": ["kora-http-server-auth"],
-      "query": "Add Bearer JWT authentication to my Kora service that generates controllers from OpenAPI.",
+      "query": "Here is my Kora 2.0 auth interceptor. It compiles and the app starts, but every request reaches the controller without any credentials being checked.\n\n@Tag(HttpServerModule.class)\n@Component\npublic final class AuthInterceptor implements HttpServerInterceptor {\n    @Override\n    public HttpServerResponse intercept(HttpServerRequest request, InterceptChain chain) throws Exception {\n        if (request.headers().getFirst(\"x-api-key\") == null) {\n            throw HttpServerResponseException.of(401, \"Unauthorized\");\n        }\n        return chain.process(request);\n    }\n}",
       "expected_behavior": [
-        "Implements HttpServerPrincipalExtractor<Principal> tagged @Tag(ApiSecurity.BearerAuth.class)",
-        "Treats the lambda 'value' parameter as the token after the Bearer prefix and verifies it with the user's own JWT component",
-        "Builds a record implementing ru.tinkoff.kora.common.Principal from the validated claims",
-        "Notes that Kora core ships no JWT verifier, so verification uses a user-supplied @Component",
-        "Does not invent a @PreAuthorize/@Secured annotation or use field injection; uses constructor/parameter injection"
+        "Identifies the wrong tag as the cause: the global interceptor tag in Kora 2.0 is @Tag(HttpServer.class), io.koraframework.http.server.common.HttpServer",
+        "Explains that HttpServerModule still exists so the old tag compiles, but HttpServerModule#publicHttpApiRouter collects @Tag(HttpServer.class) All<HttpServerInterceptor>, so the interceptor is never invoked",
+        "Stresses the security impact: authentication silently disappears with no error, warning or log line",
+        "Does not change the intercept signature, which is already correct",
+        "Recommends a @KoraAppTest asserting 401 on an unauthenticated request, since a successful compile proves nothing here"
       ],
-      "tags": ["openapi", "bearer", "advanced"]
+      "tags": ["regression", "silent-failure", "interceptor", "critical"]
+    },
+    {
+      "id": "kora-http-server-auth-regression-ordinal-security-tags",
+      "skills": ["kora-http-server-auth"],
+      "query": "Porting a Kora 1.x service to 2.0. My extractor is tagged @Tag(ApiSecurity.SecurityRequirementTag1.class) and now the build fails with 'cannot find symbol: SecurityRequirementTag1'. What replaced it?",
+      "expected_behavior": [
+        "States that ordinal SecurityRequirementTagN tags no longer exist in Kora 2.0",
+        "Explains the 2.0 rule: the tag is derived from the name in components.securitySchemes, sanitized to an identifier and PascalCased (apiKeyAuth -> ApiSecurity.ApiKeyAuth, oAuth -> ApiSecurity.OAuth)",
+        "Tells the user to open the generated ApiSecurity in build/generated and copy the tag and the extractor parameter type verbatim",
+        "Mentions that ANDed schemes produce an extractor tag joined with 'With' and an <Tag>AuthData record replacing String as the first type argument",
+        "Does not invent a tag name or guess without pointing at the generated file"
+      ],
+      "tags": ["regression", "openapi", "tags"]
+    },
+    {
+      "id": "kora-http-server-auth-regression-context-principal",
+      "skills": ["kora-http-server-auth"],
+      "query": "In Kora 1.x my interceptor stashed the user in Context (Context.current().set(USER_KEY, user)) and the controller read it back. In Kora 2.0 Context does not resolve. How do I hand the principal to my handler now?",
+      "expected_behavior": [
+        "States that Context was removed from Kora 2.0 entirely — it is not merely absent from the HTTP APIs",
+        "Points to io.koraframework.common.Principal, which holds a ScopedValue<Principal>",
+        "Shows the interceptor publishing with Principal.with(principal, () -> chain.process(request))",
+        "Shows the handler reading with Principal.current(), noting it is @Nullable and needs a cast to the concrete principal type",
+        "Notes the binding lives only for the duration of chain.process and is not visible on an arbitrary executor the handler submits to",
+        "Does not propose a request-attribute bag, a ThreadLocal, or request.getAttribute(...)"
+      ],
+      "tags": ["regression", "context", "principal", "critical"]
+    },
+    {
+      "id": "kora-http-server-auth-regression-async-extractor",
+      "skills": ["kora-http-server-auth"],
+      "query": "Migrate this Kora 1.x extractor to 2.0:\n\n@Tag(ApiSecurity.BearerAuth.class)\ndefault HttpServerPrincipalExtractor<Principal> bearer(JwtVerifier jwt) {\n    return (request, value) -> CompletableFuture.completedFuture(new UserPrincipal(jwt.verify(value).subject()));\n}",
+      "expected_behavior": [
+        "Changes the type to HttpServerPrincipalExtractor<String, Principal> — two type parameters, credential type first",
+        "Removes CompletableFuture entirely: extract is synchronous and returns @Nullable P directly",
+        "Notes that the credential handed to a bearer extractor is the WHOLE Authorization header, so the code must strip the 'Bearer ' prefix itself",
+        "Returns null on a missing or invalid token instead of throwing SecurityException",
+        "Explains that an uncaught SecurityException becomes HTTP 500 with the exception message in the body, because SecurityException has no meaning anywhere in Kora 2.0",
+        "Does not introduce Mono, Flux, or a suspend function"
+      ],
+      "tags": ["regression", "async", "bearer", "critical"]
+    },
+    {
+      "id": "kora-http-server-auth-regression-suspend-interceptor-kotlin",
+      "skills": ["kora-http-server-auth"],
+      "query": "My Kotlin Kora auth interceptor no longer compiles after upgrading to 2.0:\n\n@Tag(HttpServerModule::class)\n@Component\nclass AuthInterceptor(private val config: AuthConfig) : HttpServerInterceptor {\n    override suspend fun intercept(ctx: Context, request: HttpServerRequest, chain: HttpServerInterceptor.InterceptChain): HttpServerResponse {\n        if (request.headers().getFirst(\"authorization\") == null) throw SecurityException(\"no auth\")\n        return chain.process(ctx, request)\n    }\n}",
+      "expected_behavior": [
+        "Fixes all four problems: drops suspend, drops the Context parameter, changes the tag to @Tag(HttpServer::class), and replaces SecurityException with HttpServerResponseException.of(401, \"Unauthorized\")",
+        "Produces override fun intercept(request: HttpServerRequest, chain: HttpServerInterceptor.InterceptChain): HttpServerResponse",
+        "Calls chain.process(request) with the single argument",
+        "Flags the tag fix as the security-critical one — it compiles either way but authentication silently never runs with the old tag",
+        "If it publishes a principal, uses Principal.with with both type arguments explicit, e.g. Principal.with<HttpServerResponse, RuntimeException>(p) { chain.process(request) }"
+      ],
+      "tags": ["regression", "kotlin", "async", "silent-failure", "critical"]
+    },
+    {
+      "id": "kora-http-server-auth-component-duplication",
+      "skills": ["kora-http-server-auth"],
+      "query": "My Kora 2.0 build fails with 'Multiple components match dependency HttpServerPrincipalExtractor<String, Principal> with tag ApiSecurity.ApiKeyAuth'. I have a @Component @Tag(ApiSecurity.ApiKeyAuth.class) ApiKeyExtractor class and also a default method with the same @Tag on my @KoraApp.",
+      "expected_behavior": [
+        "Identifies the duplication: exactly one provider may exist per type-plus-tag, and both forms are registering the same one",
+        "Tells the user to delete one — either the tagged @Component class or the module default method",
+        "Notes the mirror-image failure, 'No component found for dependency', when neither is declared or when the generic arguments do not match the generated ApiSecurity parameter exactly",
+        "Explains separately that a @Mapping mapper class is instantiated inline only when it is final, has a public no-arg constructor and carries no @Tag, and otherwise must be a @Component",
+        "Does not suggest @DefaultComponent on the user's extractor as a way to paper over the conflict without saying which declaration is removed"
+      ],
+      "tags": ["di", "component", "openapi"]
     },
     {
       "id": "kora-http-server-auth-oauth-scopes",
       "skills": ["kora-http-server-auth"],
-      "query": "How do I enforce OAuth2 scopes on my OpenAPI-generated Kora endpoints?",
+      "query": "How do I enforce OAuth2 scopes on my OpenAPI-generated Kora 2.0 endpoints, and can I return 403 when a scope is missing?",
       "expected_behavior": [
-        "Returns a PrincipalWithScopes from ru.tinkoff.kora.http.common.auth so the generated transport can enforce required scopes",
-        "Binds the extractor with @Tag(ApiSecurity.OAuth.class)",
-        "Implements the scopes() method returning the token's scopes",
-        "Does not invent a Kora @Scope or @Secured annotation"
+        "Declares HttpServerPrincipalExtractor<String, PrincipalWithScopes> — the second type argument becomes PrincipalWithScopes for oauth2/openIdConnect schemes",
+        "Uses io.koraframework.http.common.auth.PrincipalWithScopes and implements Collection<String> scopes()",
+        "Binds one extractor per scheme with @Tag(ApiSecurity.<SchemeName>.class), noting that per-scope interceptor tags like OAuth_PetsRead do not each need their own extractor",
+        "States that the generated interceptor checks scopes().contains(...) itself and answers 401 — not 403 — when a scope is missing",
+        "For 403, does the check in the delegate against Principal.current() and throws HttpServerResponseException.of(403, ...)",
+        "Does not invent a Kora @Scope, @Secured or @PreAuthorize annotation"
       ],
       "tags": ["openapi", "oauth", "advanced"]
     },
     {
-      "id": "kora-http-server-auth-401-403-mapping",
+      "id": "kora-http-server-auth-401-body-shaping",
       "skills": ["kora-http-server-auth"],
-      "query": "When my principal extractor throws SecurityException the client gets HTTP 500. How do I return 401/403 instead?",
+      "query": "My OpenAPI-generated Kora server returns a plaintext 401 'Unauthorized'. I need a JSON error body for auth failures. I already registered an interceptor through the generator's `interceptors` config option but it never sees the 401.",
       "expected_behavior": [
-        "Adds an HttpServerInterceptor that catches SecurityException in chain.process(...).exceptionally(...) and returns HttpServerResponse.of(401 or 403, ...)",
-        "Tags the interceptor @Tag(HttpServerModule.class) to apply to all controllers",
-        "Distinguishes 401 (authentication failed) from 403 (authorization failed)",
-        "Re-throws or returns HttpServerResponseException unchanged and reads its status via .code()",
-        "Does not rely on an automatic SecurityException-to-status mapping that Kora does not provide"
+        "Explains that the generated security interceptor is emitted first on the controller method and is therefore OUTERMOST among per-route interceptors, so an `interceptors`-option interceptor nests inside it and cannot observe the 401 it throws",
+        "Directs the user to a global interceptor annotated @Tag(HttpServer.class) — globals wrap the whole routed invocation, including the generated security interceptor",
+        "Shows catching HttpServerResponseException and re-rendering it via HttpServerResponse.of(e.code(), HttpBody.json(...))",
+        "Warns against catching bare Exception, which would convert genuine bugs into tidy JSON",
+        "May mention that several global interceptors are allowed, sorted by simple class name, with the alphabetically last one outermost",
+        "Does not claim only one global interceptor is permitted — that was the Kora 1.x rule"
       ],
-      "tags": ["error-handling", "interceptor", "advanced"]
+      "tags": ["error-handling", "interceptor", "openapi", "advanced"]
     },
     {
       "id": "kora-http-server-auth-manual-interceptor",
       "skills": ["kora-http-server-auth"],
-      "query": "I have a Kora HTTP server without any OpenAPI contract. How do I require an X-API-Key header on all endpoints?",
+      "query": "I have a Kora 2.0 HTTP server with no OpenAPI contract. How do I require an X-API-Key header on all endpoints and make the caller identity available inside my controllers?",
       "expected_behavior": [
-        "Implements HttpServerInterceptor and reads the header via request.headers().getFirst(\"X-API-Key\")",
-        "Returns HttpServerResponse.of(401, ...) early when the key is missing or invalid, otherwise calls chain.process(context, request)",
-        "Registers it globally with @Tag(HttpServerModule.class) or scopes it via @InterceptWith on a controller/route",
-        "Does not use request.getAttribute or a thread-local current-principal"
+        "Implements HttpServerInterceptor with the synchronous signature intercept(HttpServerRequest, InterceptChain) returning HttpServerResponse, importing it from io.koraframework.http.server.common.interceptor",
+        "Reads the header via request.headers().getFirst(...)",
+        "Rejects with HttpServerResponseException.of(401, ...) or an early HttpServerResponse.of(401, HttpBody.plaintext(...)), not with SecurityException",
+        "Publishes the caller with Principal.with(principal, () -> chain.process(request)) and reads it in the controller with Principal.current()",
+        "Registers it globally with @Component plus @Tag(HttpServer.class), or scopes it with @InterceptWith on the @HttpController class or @HttpRoute method",
+        "Does not use Context, request.getAttribute, or a ThreadLocal"
       ],
       "tags": ["manual", "interceptor", "apikey"]
     },
     {
-      "id": "kora-http-server-auth-request-mapper",
+      "id": "kora-http-server-auth-request-mapper-component",
       "skills": ["kora-http-server-auth"],
-      "query": "How can I turn the x-user-id header into a typed Caller object injected into my Kora controller method?",
+      "query": "In my Kora 2.0 controller I want the x-user-id header as a typed Caller argument. My mapper needs an injected UserService and the build now says 'No component found for dependency CallerMapper'.",
       "expected_behavior": [
-        "Implements HttpServerRequestMapper<Caller> reading request.headers().getFirst(\"x-user-id\")",
-        "Injects it into the @HttpRoute method with @Mapping(CallerMapper.class)",
-        "Throws to reject a missing header, relying on an error interceptor to set the status",
-        "Does not fabricate a request-attribute API or Principal.current()"
+        "Implements HttpServerRequestMapper<Caller> from io.koraframework.http.server.common.request and injects it with @Mapping(CallerMapper.class)",
+        "Diagnoses the error correctly: a @Mapping mapper is instantiated inline by the processor only when the class is final, has a single public no-arg constructor, and carries no @Tag",
+        "Since this mapper has a constructor dependency, it is injected from the graph and therefore needs @Component",
+        "Mentions the mirror-image failure — adding @Component to a final, no-arg, untagged mapper yields 'Multiple components match dependency'",
+        "Notes that a non-final Java mapper class is injected even with a no-arg constructor, unlike Kotlin where classes are final by default",
+        "Recommends an interceptor plus Principal.current() when the goal is authentication rather than plain request context"
       ],
-      "tags": ["manual", "request-mapper"]
+      "tags": ["manual", "request-mapper", "di", "component"]
     },
     {
-      "id": "kora-http-server-auth-basic",
+      "id": "kora-http-server-auth-basic-credential-shape",
       "skills": ["kora-http-server-auth"],
-      "query": "Implement HTTP Basic authentication for the apiKeyAuth-free internal endpoints of my OpenAPI Kora server.",
+      "query": "Implement HTTP Basic authentication for my OpenAPI-generated Kora 2.0 server. In 1.x the extractor received the base64 blob directly — is that still true?",
       "expected_behavior": [
-        "Binds HttpServerPrincipalExtractor<Principal> with @Tag(ApiSecurity.BasicAuth.class)",
-        "Base64-decodes the value after the Basic prefix and splits username:password",
-        "Validates credentials against a user-supplied service and throws SecurityException on failure",
-        "Recommends serving Basic auth over HTTPS",
-        "Does not invent a built-in Kora basic-auth filter or rely on field injection; the extractor is a graph component wired via @Tag"
+        "Corrects the premise: for http basic/bearer and oauth2 schemes the generated interceptor passes request.headers().getFirst(\"Authorization\") unchanged, so the value includes the 'Basic ' prefix",
+        "Strips the prefix before base64-decoding and splits username:password with a limit of 2",
+        "Binds HttpServerPrincipalExtractor<String, Principal> with @Tag(ApiSecurity.BasicAuth.class)",
+        "Returns null on a missing header, a malformed base64 payload, or failed credential validation instead of throwing",
+        "Recommends serving Basic auth over HTTPS because the credential is encoded, not encrypted",
+        "Contrasts with apiKey schemes, where the value is the raw header/query/cookie value with no prefix"
       ],
-      "tags": ["openapi", "basic"]
+      "tags": ["openapi", "basic", "credentials"]
+    },
+    {
+      "id": "kora-http-server-auth-kotlin-nullability",
+      "skills": ["kora-http-server-auth"],
+      "query": "My Kotlin Kora 2.0 extractor fails to compile with \"'extract' overrides nothing\":\n\n@Component\n@Tag(ApiSecurity.ApiKeyAuth::class)\nclass ApiKeyExtractor(private val config: ApiKeyConfig) : HttpServerPrincipalExtractor<String, Principal> {\n    override fun extract(request: HttpServerRequest, token: String): Principal {\n        return ApiKeyPrincipal(token)\n    }\n}",
+      "expected_behavior": [
+        "Identifies nullability as the cause even though the error message never mentions it",
+        "Explains that http-server-common is @NullMarked and the contract is @Nullable P extract(HttpServerRequest, @Nullable T token)",
+        "Fixes the signature to override fun extract(request: HttpServerRequest, token: String?): Principal?",
+        "Handles the null token by returning null rather than throwing",
+        "Does not suggest annotating the Kotlin declaration with JSpecify @Nullable, which is not how Kotlin expresses nullability"
+      ],
+      "tags": ["kotlin", "nullability", "regression"]
     },
     {
       "id": "kora-http-server-auth-principal-type",
       "skills": ["kora-http-server-auth"],
-      "query": "What type should my principal class be in a Kora HTTP server, and where does Principal come from?",
+      "query": "What type should my principal class be in a Kora 2.0 HTTP server, where does Principal come from, and how does a handler get hold of it?",
       "expected_behavior": [
-        "States that Principal is the framework marker interface ru.tinkoff.kora.common.Principal",
-        "Defines the principal as a record/data class implementing Principal (or PrincipalWithScopes for scopes)",
-        "Clarifies there is no local Principal class to define and no Principal.current() accessor",
-        "Does not equate Principal with java.security.Principal or a third-party user-details type, and does not use field injection"
+        "States that Principal is io.koraframework.common.Principal, a framework interface, and the principal is a record/data class implementing it",
+        "Uses io.koraframework.http.common.auth.PrincipalWithScopes when oauth2 scopes are involved",
+        "States that Principal.current() DOES exist in Kora 2.0, backed by ScopedValue<Principal>, and is published by Principal.with(...)",
+        "Notes that Principal.current() is @Nullable and returns null on anonymous routes, so the result needs a null check and a cast",
+        "Explains that the declared type argument in HttpServerPrincipalExtractor stays Principal (or PrincipalWithScopes) even though the extractor returns the concrete type",
+        "Does not equate Principal with java.security.Principal or a third-party user-details type, and does not claim there is no current-principal accessor"
       ],
-      "tags": ["concept", "principal"]
+      "tags": ["concept", "principal", "core"]
     }
   ]
 }

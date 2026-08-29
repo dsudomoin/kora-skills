@@ -1,928 +1,556 @@
 #!/usr/bin/env python3
-"""
-Kora Kafka Consumer Generator
+"""Generate a Kora 2.0 Kafka consumer (@KafkaListener) for Java or Kotlin.
 
-Generates Kafka consumer listener templates based on provided configuration.
+Emits one listener class with exactly ONE @KafkaListener method, the matching
+kafka.consumer.<name> HOCON section and, optionally, an integration test.
 
-Usage:
-    python generate_consumer.py --name MyListener --topics my-topic [--package com.example] [--lang kotlin]
+Kora 2.0 facts this generator encodes:
+  * group io.koraframework, artifact io.koraframework:kafka, BOM io.koraframework:kora-bom
+  * @KafkaListener lives in io.koraframework.kafka.common.annotation
+  * @Component lives in io.koraframework.common.annotation
+  * @Nullable is org.jspecify.annotations.Nullable (Java) / a nullable type (Kotlin)
+  * contracts are synchronous: no suspend, no reactive types, no Kora Context
+  * telemetry.logging.enabled and telemetry.metrics.enabled default to false
+  * HOCON has no ${VAR:default}; use a literal followed by ${?VAR}
+  * Testcontainers 2.x module is org.testcontainers:testcontainers-kafka
 
 Examples:
-    python generate_consumer.py --name UserEventListener --topics user-events --package com.example
-    python generate_consumer.py --name OrderListener --topics orders,order-updates --package com.example --lang kotlin
-    python generate_consumer.py --name JsonListener --topics events --package com.example --json --event-name UserEvent
+  generate_consumer.py --name UserEvent --topics user-events --package com.example
+  generate_consumer.py --name Order --topics orders --signature records --lang kotlin
+  generate_consumer.py --name Order --topics orders --json --event-name OrderEvent --tests
+  generate_consumer.py --name Order --topics orders --dry-run
 """
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
-
-def generate_consumer(
-    name: str,
-    topics: list[str],
-    package: str,
-    lang: str,
-    output_dir: str,
-    with_tests: bool = False,
-    is_json: bool = False,
-    event_name: str = None,
-    consumer_group_id: str = None,
-) -> None:
-    """Generate Kafka consumer listener class."""
-
-    is_kotlin = lang == "kotlin"
-    package_path = package.replace(".", "/")
-    class_name = name if name.endswith("Listener") else f"{name}Listener"
-    class_name_lower = class_name[0].lower() + class_name[1:]
-    file_ext = "kt" if is_kotlin else "java"
-
-    # Default event name for JSON listeners
-    if event_name is None:
-        # Extract from class name (e.g., UserEventListener -> UserEvent)
-        if class_name.endswith("Listener"):
-            event_name = class_name[:-8]  # Remove "Listener"
-        else:
-            event_name = name
-
-    # Default consumer group ID
-    if consumer_group_id is None:
-        consumer_group_id = f"{class_name_lower}-group"
-
-    # Create output directory
-    subdir = "kotlin" if is_kotlin else "java"
-    output_path = Path(output_dir) / subdir / package_path / "listener"
-    output_path.mkdir(parents=True, exist_ok=True)
-
-    # Create test output directory if needed
-    if with_tests:
-        test_subdir = "kotlin" if is_kotlin else "java"
-        test_output_path = (
-            Path(output_dir).parent / "test" / test_subdir / package_path / "listener"
-        )
-        test_output_path.mkdir(parents=True, exist_ok=True)
-
-    topics_str = ", ".join(f'"{t}"' for t in topics)
-    topics_pattern = topics[0] + "-*" if len(topics) == 1 else ""
-
-    if is_kotlin:
-        if is_json:
-            consumer_code = generate_kotlin_json_listener(
-                package, class_name, class_name_lower, event_name, topics_str
-            )
-        else:
-            consumer_code = generate_kotlin_consumer(
-                package, class_name, class_name_lower, topics_str
-            )
-    else:
-        if is_json:
-            consumer_code = generate_java_json_listener(
-                package, class_name, class_name_lower, event_name, topics_str
-            )
-        else:
-            consumer_code = generate_java_consumer(
-                package, class_name, class_name_lower, topics_str
-            )
-
-    # Write listener class
-    listener_file = output_path / f"{class_name}.{file_ext}"
-    listener_file.write_text(consumer_code)
-    print(f"Created: {listener_file}")
-
-    # Generate tests
-    if with_tests:
-        if is_kotlin:
-            test_code = generate_kotlin_tests(
-                package, class_name, class_name_lower, topics[0]
-            )
-        else:
-            test_code = generate_java_tests(
-                package, class_name, class_name_lower, topics[0]
-            )
-
-        test_file = test_output_path / f"{class_name}Tests.{file_ext}"
-        test_file.write_text(test_code)
-        print(f"Created: {test_file}")
-
-    # Generate configuration
-    config_code = generate_config(
-        class_name_lower, topics_str, topics_pattern, consumer_group_id, package
-    )
-    config_file = Path(output_dir) / "application.conf"
-    if not config_file.exists():
-        config_file.write_text(config_code)
-        print(f"Created: {config_file}")
-    else:
-        print(f"Config already exists: {config_file}")
-        print("Append the following to your application.conf:")
-        print("-" * 60)
-        print(config_code)
+SIGNATURES = ("value", "keyvalue", "record", "records", "manual")
 
 
-def generate_java_consumer(
-    package: str, class_name: str, class_name_lower: str, topics_str: str
-) -> str:
-    """Generate Java consumer listener."""
-    return f'''package {package}.listener;
-
-import org.apache.kafka.clients.consumer.Consumer;
-import org.apache.kafka.clients.consumer.ConsumerRecord;
-import org.apache.kafka.clients.consumer.ConsumerRecords;
-import org.apache.kafka.common.header.Headers;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.kafka.common.annotation.KafkaListener;
-
-/**
- * Kafka consumer listener for topics: {topics_str}
- * Generated by kora-kafka generator
- */
-@Component
-public final class {class_name} {{
-
-    private static final Logger log = LoggerFactory.getLogger({class_name}.class);
-
-    /**
-     * Simple value processing.
-     * Auto-commits after each message.
-     */
-    @KafkaListener("kafka.consumer.{class_name_lower}")
-    void processValue(String value) {{
-        log.info("Received value: {{}}", value);
-        // TODO: Implement business logic
-    }}
-
-    /**
-     * Key-value pair processing.
-     * Auto-commits after each message.
-     */
-    @KafkaListener("kafka.consumer.{class_name_lower}")
-    void processKeyValue(String key, String value) {{
-        log.info("Received key={{}}, value={{}}", key, value);
-        // TODO: Implement business logic
-    }}
-
-    /**
-     * Processing with access to headers.
-     */
-    @KafkaListener("kafka.consumer.{class_name_lower}")
-    void processWithHeaders(String key, String value, Headers headers) {{
-        log.info("Received key={{}}, value={{}}", key, value);
-        // TODO: Implement business logic with headers
-    }}
-
-    /**
-     * Processing with full ConsumerRecord access.
-     */
-    @KafkaListener("kafka.consumer.{class_name_lower}")
-    void processRecord(ConsumerRecord<String, String> record) {{
-        log.info("Received topic={{}}, partition={{}}, offset={{}}",
-            record.topic(), record.partition(), record.offset());
-        // TODO: Implement business logic
-    }}
-
-    /**
-     * Batch processing with ConsumerRecords.
-     */
-    @KafkaListener("kafka.consumer.{class_name_lower}")
-    void processRecords(ConsumerRecords<String, String> records) {{
-        log.info("Received batch of {{}} records", records.count());
-        for (ConsumerRecord<String, String> record : records) {{
-            // TODO: Process each record
-        }}
-    }}
-
-    /**
-     * Processing with manual offset commit.
-     */
-    @KafkaListener("kafka.consumer.{class_name_lower}")
-    void processWithManualCommit(ConsumerRecord<String, String> record, Consumer<String, String> consumer) {{
-        try {{
-            log.info("Processing record: offset={{}}", record.offset());
-            // TODO: Implement business logic
-            consumer.commitSync();
-        }} catch (Exception e) {{
-            log.error("Processing failed", e);
-            // Don't commit - message will be retried
-        }}
-    }}
-}}
-'''
+def render(template: str, **values: str) -> str:
+    out = template
+    for key, value in values.items():
+        out = out.replace("{{" + key + "}}", value)
+    return out
 
 
-def generate_java_json_listener(
-    package: str, class_name: str, class_name_lower: str, event_name: str, topics_str: str
-) -> str:
-    """Generate Java JSON consumer listener."""
-    return f'''package {package}.listener;
+# --------------------------------------------------------------------------- Java listener bodies
 
-import jakarta.annotation.Nullable;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.json.common.annotation.Json;
-import ru.tinkoff.kora.kafka.common.annotation.KafkaListener;
+JAVA_BODIES = {
+    "value": """    @KafkaListener("{{CONFIG_PATH}}")
+    void process(String value) {
+        log.debug("Consuming value");
+        handle(value);
+    }""",
+    "keyvalue": """    @KafkaListener("{{CONFIG_PATH}}")
+    void process(String key, String value) {
+        log.debug("Consuming key={}", key);
+        handle(value);
+    }""",
+    "record": """    @KafkaListener("{{CONFIG_PATH}}")
+    void process(ConsumerRecord<String, String> record) {
+        log.debug("Consuming {}-{}@{}", record.topic(), record.partition(), record.offset());
+        handle(record.value());
+    }""",
+    "records": """    @KafkaListener("{{CONFIG_PATH}}")
+    void process(ConsumerRecords<String, String> records) {
+        log.debug("Consuming a batch of {} records", records.count());
+        for (ConsumerRecord<String, String> record : records) {
+            handle(record.value());
+        }
+    }""",
+    "manual": """    @KafkaListener("{{CONFIG_PATH}}")
+    void process(ConsumerRecord<String, String> record, Consumer<String, String> consumer) {
+        handle(record.value());
+        consumer.commitSync();
+    }""",
+}
 
-import java.time.LocalDateTime;
+JAVA_JSON_BODY = """    @Json
+    public record {{EVENT}}(String id, String type) {}
 
-/**
- * Kafka consumer listener with JSON deserialization for topics: {topics_str}
- * Generated by kora-kafka generator
- */
-@Component
-public final class {class_name} {{
-
-    private static final Logger log = LoggerFactory.getLogger({class_name}.class);
-
-    /**
-     * Event DTO for JSON deserialization.
-     */
-    @Json
-    public record {event_name}(
-        String id,
-        String eventType,
-        String payload,
-        LocalDateTime timestamp
-    ) {{}}
-
-    /**
-     * Process JSON event (value only).
-     */
-    @KafkaListener("kafka.consumer.{class_name_lower}")
-    void processEvent(@Json {event_name} event) {{
-        log.info("Received event: id={{}}, type={{}}", event.id(), event.eventType());
-        // TODO: Implement business logic
-        switch (event.eventType()) {{
-            case "created" -> handleCreated(event);
-            case "updated" -> handleUpdated(event);
-            case "deleted" -> handleDeleted(event);
-            default -> log.warn("Unknown event type: {{}}", event.eventType());
-        }}
-    }}
-
-    /**
-     * Process JSON event with key.
-     */
-    @KafkaListener("kafka.consumer.{class_name_lower}")
-    void processEventWithKey(String key, @Json {event_name} event) {{
-        log.info("Received key={{}}, event: id={{}}", key, event.id());
-        // TODO: Implement business logic
-        processEvent(event);
-    }}
-
-    /**
-     * Process JSON event with error handling.
-     */
-    @KafkaListener("kafka.consumer.{class_name_lower}")
-    void processEventWithErrorHandling(@Nullable @Json {event_name} event, @Nullable Exception error) {{
-        if (error != null) {{
-            log.error("Failed to deserialize event", error);
-            // TODO: Handle error (send to DLQ, log, etc.)
+    @KafkaListener("{{CONFIG_PATH}}")
+    void process(@Json @Nullable {{EVENT}} event, @Nullable Exception exception) {
+        if (exception != null) {
+            log.warn("Failed to deserialize record", exception);
             return;
-        }}
-        if (event == null) {{
-            log.warn("Received null event without error");
+        }
+        if (event == null) {
+            log.warn("Received a tombstone without an exception");
             return;
-        }}
-        // TODO: Implement business logic
-        processEvent(event);
-    }}
+        }
+        handle(event);
+    }"""
 
-    private void handleCreated({event_name} event) {{
-        log.info("Handling created event: {{}}", event.id());
-        // TODO: Implement creation logic
-    }}
+JAVA_IMPORTS = {
+    "value": [],
+    "keyvalue": [],
+    "record": ["org.apache.kafka.clients.consumer.ConsumerRecord"],
+    "records": [
+        "org.apache.kafka.clients.consumer.ConsumerRecord",
+        "org.apache.kafka.clients.consumer.ConsumerRecords",
+    ],
+    "manual": [
+        "org.apache.kafka.clients.consumer.Consumer",
+        "org.apache.kafka.clients.consumer.ConsumerRecord",
+    ],
+}
 
-    private void handleUpdated({event_name} event) {{
-        log.info("Handling updated event: {{}}", event.id());
-        // TODO: Implement update logic
-    }}
+JAVA_LISTENER = """package {{PACKAGE}}.listener;
 
-    private void handleDeleted({event_name} event) {{
-        log.info("Handling deleted event: {{}}", event.id());
-        // TODO: Implement deletion logic
-    }}
-}}
-'''
+import io.koraframework.common.annotation.Component;
+import io.koraframework.kafka.common.annotation.KafkaListener;
+{{IMPORTS}}import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-
-def generate_kotlin_consumer(
-    package: str, class_name: str, class_name_lower: str, topics_str: str
-) -> str:
-    """Generate Kotlin consumer listener."""
-    return f'''package {package}.listener
-
-import org.apache.kafka.clients.consumer.Consumer
-import org.apache.kafka.clients.consumer.ConsumerRecord
-import org.apache.kafka.clients.consumer.ConsumerRecords
-import org.apache.kafka.common.header.Headers
-import org.slf4j.LoggerFactory
-import ru.tinkoff.kora.common.Component
-import ru.tinkoff.kora.kafka.common.annotation.KafkaListener
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Kafka consumer listener for topics: {topics_str}
- * Generated by kora-kafka generator
+ * Kafka consumer for topics: {{TOPICS_DOC}}
+ * Config path: {{CONFIG_PATH}}
+ *
+ * One @KafkaListener method per config path — a second one on the same path starts a second
+ * consumer in the same group. Generated by the kora-kafka-consumer skill.
  */
 @Component
-class {class_name} {{
+public final class {{CLASS}} {
 
-    private val log = LoggerFactory.getLogger({class_name}::class.java)
+    private static final Logger log = LoggerFactory.getLogger({{CLASS}}.class);
 
-    /**
-     * Simple value processing.
-     */
-    @KafkaListener("kafka.consumer.{class_name_lower}")
-    fun processValue(value: String) {{
-        log.info("Received value: {{}}", value)
-        // TODO: Implement business logic
-    }}
+    private final AtomicInteger processed = new AtomicInteger();
 
-    /**
-     * Key-value pair processing.
-     */
-    @KafkaListener("kafka.consumer.{class_name_lower}")
-    fun processKeyValue(key: String, value: String) {{
-        log.info("Received key={{}}, value={{}}", key, value)
-        // TODO: Implement business logic
-    }}
+{{BODY}}
 
-    /**
-     * Processing with access to headers.
-     */
-    @KafkaListener("kafka.consumer.{class_name_lower}")
-    fun processWithHeaders(key: String, value: String, headers: Headers) {{
-        log.info("Received key={{}}, value={{}}", key, value)
-        // TODO: Implement business logic with headers
-    }}
+    private void handle({{PAYLOAD_TYPE}} payload) {
+        processed.incrementAndGet();
+        // TODO business logic — runs on the poll thread, keep it under max.poll.interval.ms
+    }
 
-    /**
-     * Processing with full ConsumerRecord access.
-     */
-    @KafkaListener("kafka.consumer.{class_name_lower}")
-    fun processRecord(record: ConsumerRecord<String, String>) {{
-        log.info(
-            "Received topic={{}}, partition={{}}, offset={{}}",
-            record.topic(),
-            record.partition(),
-            record.offset()
-        )
-        // TODO: Implement business logic
-    }}
+    public int processedCount() {
+        return processed.get();
+    }
+}
+"""
 
-    /**
-     * Batch processing with ConsumerRecords.
-     */
-    @KafkaListener("kafka.consumer.{class_name_lower}")
-    fun processRecords(records: ConsumerRecords<String, String>) {{
-        log.info("Received batch of {{}} records", records.count())
-        for (record in records) {{
-            // TODO: Process each record
-        }}
-    }}
+# ------------------------------------------------------------------------- Kotlin listener bodies
 
-    /**
-     * Processing with manual offset commit.
-     */
-    @KafkaListener("kafka.consumer.{class_name_lower}")
-    fun processWithManualCommit(record: ConsumerRecord<String, String>, consumer: Consumer<String, String>) {{
-        try {{
-            log.info("Processing record: offset={{}}", record.offset())
-            // TODO: Implement business logic
-            consumer.commitSync()
-        }} catch (e: Exception) {{
-            log.error("Processing failed", e)
-            // Don't commit - message will be retried
-        }}
-    }}
-}}
-'''
+KOTLIN_BODIES = {
+    "value": """    @KafkaListener("{{CONFIG_PATH}}")
+    fun process(value: String) {
+        log.debug("Consuming value")
+        handle(value)
+    }""",
+    "keyvalue": """    @KafkaListener("{{CONFIG_PATH}}")
+    fun process(key: String, value: String) {
+        log.debug("Consuming key={}", key)
+        handle(value)
+    }""",
+    "record": """    @KafkaListener("{{CONFIG_PATH}}")
+    fun process(record: ConsumerRecord<String, String>) {
+        log.debug("Consuming {}-{}@{}", record.topic(), record.partition(), record.offset())
+        handle(record.value())
+    }""",
+    "records": """    @KafkaListener("{{CONFIG_PATH}}")
+    fun process(records: ConsumerRecords<String, String>) {
+        log.debug("Consuming a batch of {} records", records.count())
+        records.forEach { handle(it.value()) }
+    }""",
+    "manual": """    @KafkaListener("{{CONFIG_PATH}}")
+    fun process(record: ConsumerRecord<String, String>, consumer: Consumer<String, String>) {
+        handle(record.value())
+        consumer.commitSync()
+    }""",
+}
 
+KOTLIN_JSON_BODY = """    @Json
+    data class {{EVENT}}(val id: String, val type: String)
 
-def generate_kotlin_json_listener(
-    package: str, class_name: str, class_name_lower: str, event_name: str, topics_str: str
-) -> str:
-    """Generate Kotlin JSON consumer listener."""
-    return f'''package {package}.listener
+    @KafkaListener("{{CONFIG_PATH}}")
+    fun process(@Json event: {{EVENT}}?, exception: Exception?) {
+        if (exception != null) {
+            log.warn("Failed to deserialize record", exception)
+            return
+        }
+        if (event == null) {
+            log.warn("Received a tombstone without an exception")
+            return
+        }
+        handle(event)
+    }"""
 
-import jakarta.annotation.Nullable
-import org.slf4j.LoggerFactory
-import ru.tinkoff.kora.common.Component
-import ru.tinkoff.kora.json.common.annotation.Json
-import ru.tinkoff.kora.kafka.common.annotation.KafkaListener
-import java.time.LocalDateTime
+KOTLIN_IMPORTS = {
+    "value": [],
+    "keyvalue": [],
+    "record": ["org.apache.kafka.clients.consumer.ConsumerRecord"],
+    "records": ["org.apache.kafka.clients.consumer.ConsumerRecords"],
+    "manual": [
+        "org.apache.kafka.clients.consumer.Consumer",
+        "org.apache.kafka.clients.consumer.ConsumerRecord",
+    ],
+}
+
+KOTLIN_LISTENER = """package {{PACKAGE}}.listener
+
+import io.koraframework.common.annotation.Component
+import io.koraframework.kafka.common.annotation.KafkaListener
+{{IMPORTS}}import org.slf4j.LoggerFactory
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Kafka consumer listener with JSON deserialization for topics: {topics_str}
- * Generated by kora-kafka generator
+ * Kafka consumer for topics: {{TOPICS_DOC}}
+ * Config path: {{CONFIG_PATH}}
+ *
+ * One @KafkaListener function per config path. Listener functions are plain `fun` — Kora 2.0
+ * contracts are synchronous. Generated by the kora-kafka-consumer skill.
  */
 @Component
-class {class_name} {{
+class {{CLASS}} {
 
-    private val log = LoggerFactory.getLogger({class_name}::class.java)
+    private val log = LoggerFactory.getLogger({{CLASS}}::class.java)
 
-    /**
-     * Event data class for JSON deserialization.
-     */
-    @Json
-    data class {event_name}(
-        val id: String,
-        val eventType: String,
-        val payload: String,
-        val timestamp: LocalDateTime
-    )
+    private val processed = AtomicInteger()
 
-    /**
-     * Process JSON event (value only).
-     */
-    @KafkaListener("kafka.consumer.{class_name_lower}")
-    fun processEvent(event: {event_name}) {{
-        log.info(
-            "Received event: id={{}}, type={{}}",
-            event.id,
-            event.eventType
-        )
-        // TODO: Implement business logic
-        when (event.eventType) {{
-            "created" -> handleCreated(event)
-            "updated" -> handleUpdated(event)
-            "deleted" -> handleDeleted(event)
-            else -> log.warn("Unknown event type: {{}}", event.eventType)
-        }}
-    }}
+{{BODY}}
 
-    /**
-     * Process JSON event with key.
-     */
-    @KafkaListener("kafka.consumer.{class_name_lower}")
-    fun processEventWithKey(key: String, event: {event_name}) {{
-        log.info("Received key={{}}, event: id={{}}", key, event.id)
-        // TODO: Implement business logic
-        processEvent(event)
-    }}
+    private fun handle(payload: {{PAYLOAD_TYPE}}) {
+        processed.incrementAndGet()
+        // TODO business logic — runs on the poll thread, keep it under max.poll.interval.ms
+    }
 
-    /**
-     * Process JSON event with error handling.
-     */
-    @KafkaListener("kafka.consumer.{class_name_lower}")
-    fun processEventWithErrorHandling(@Nullable event: {event_name}?, @Nullable error: Exception?) {{
-        if (error != null) {{
-            log.error("Failed to deserialize event", error)
-            // TODO: Handle error (send to DLQ, log, etc.)
-            return
-        }}
-        if (event == null) {{
-            log.warn("Received null event without error")
-            return
-        }}
-        // TODO: Implement business logic
-        processEvent(event)
-    }}
+    fun processedCount(): Int = processed.get()
+}
+"""
 
-    private fun handleCreated(event: {event_name}) {{
-        log.info("Handling created event: {{}}", event.id)
-        // TODO: Implement creation logic
-    }}
+# -------------------------------------------------------------------------------------- the tests
 
-    private fun handleUpdated(event: {event_name}) {{
-        log.info("Handling updated event: {{}}", event.id)
-        // TODO: Implement update logic
-    }}
+JAVA_TEST = """package {{PACKAGE}}.listener;
 
-    private fun handleDeleted(event: {event_name}) {{
-        log.info("Handling deleted event: {{}}", event.id)
-        // TODO: Implement deletion logic
-    }}
-}}
-'''
-
-
-def generate_java_tests(
-    package: str, class_name: str, class_name_lower: str, topic: str
-) -> str:
-    """Generate Java test class."""
-    return f'''package {package}.listener;
-
-import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.common.serialization.StringDeserializer;
-import org.apache.kafka.common.serialization.StringSerializer;
-import org.assertj.core.api.Assertions;
-import org.jetbrains.annotations.NotNull;
-import org.json.JSONObject;
-import org.junit.jupiter.api.BeforeEach;
+import io.goodforgod.testcontainers.extensions.ContainerMode;
+import io.goodforgod.testcontainers.extensions.kafka.ConnectionKafka;
+import io.goodforgod.testcontainers.extensions.kafka.Event;
+import io.goodforgod.testcontainers.extensions.kafka.KafkaConnection;
+import io.goodforgod.testcontainers.extensions.kafka.TestcontainersKafka;
+import io.goodforgod.testcontainers.extensions.kafka.Topics;
+import io.koraframework.application.graph.Lifecycle;
+import io.koraframework.common.annotation.Tag;
+import io.koraframework.test.extension.junit5.KoraAppTest;
+import io.koraframework.test.extension.junit5.KoraAppTestConfigModifier;
+import io.koraframework.test.extension.junit5.KoraConfigModification;
+import io.koraframework.test.extension.junit5.TestComponent;
+import {{PACKAGE}}.Application;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
-import org.testcontainers.containers.KafkaContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
-import org.testcontainers.shaded.org.awaitility.Awaitility;
-import ru.tinkoff.kora.application.graph.Lifecycle;
-import ru.tinkoff.kora.common.Tag;
-import ru.tinkoff.kora.test.extension.junit5.*;
 
 import java.time.Duration;
-import java.util.Properties;
-import java.util.concurrent.Executors;
 
 /**
- * Integration tests for {class_name} using Testcontainers Kafka.
+ * Integration test for {{CLASS}}.
  *
- * Usage:
- * 1. Make sure the dependencies are added in build.gradle:
- *    testImplementation "org.testcontainers:junit-jupiter:1.21.4"
- *    testImplementation "org.testcontainers:kafka:1.21.4"
- *    testImplementation "ru.tinkoff.kora:kafka"
- *    testImplementation "org.json:json:20231013"
- *    testImplementation "org.awaitility:awaitility:4.2.0"
+ * The tagged Lifecycle injection is what pulls the generated consumer container into the test
+ * graph — without it @KoraAppTest prunes the container and the listener never starts.
  *
- * 2. Run tests: ./gradlew test
+ * Requires: io.koraframework:test-junit5, io.goodforgod:testcontainers-extensions-kafka,
+ * org.awaitility:awaitility. The raw Testcontainers module is org.testcontainers:testcontainers-kafka
+ * in Testcontainers 2.x, not org.testcontainers:kafka.
  */
-@Testcontainers
+@TestcontainersKafka(mode = ContainerMode.PER_RUN, topics = @Topics({"{{TOPIC}}"}))
 @KoraAppTest(Application.class)
-class {class_name}Tests implements KoraAppTestConfigModifier {{
+class {{CLASS}}Tests implements KoraAppTestConfigModifier {
 
-    @Container
-    static final KafkaContainer KAFKA = new KafkaContainer(
-        DockerImageName.parse("confluentinc/cp-kafka:7.5.0")
-    ).withStartupTimeout(Duration.ofSeconds(60));
+    @ConnectionKafka
+    private KafkaConnection connection;
 
-    @Tag({class_name}Module.{class_name}ProcessTag.class)
+    @Tag({{CLASS}}Module.{{CLASS}}ProcessTag.class)
     @TestComponent
     private Lifecycle consumerLifecycle;
 
     @TestComponent
-    private {class_name} consumer;
+    private {{CLASS}} listener;
 
-    @NotNull
     @Override
-    public KoraConfigModification config() {{
-        return KoraConfigModification.ofString("""
-            kafka.consumer.{class_name_lower} {{
-                topics = ["{topic}"]
-                offset = "earliest"
-                pollTimeout = "5s"
-                driverProperties {{
-                    "bootstrap.servers" = "${{KAFKA_BOOTSTRAP_SERVERS}}"
-                    "group.id" = "{class_name_lower}-test-group"
-                    "auto.offset.reset" = "earliest"
-                    "enable.auto.commit" = "true"
-                }}
-            }}
-            """)
-            .withSystemProperty("KAFKA_BOOTSTRAP_SERVERS", KAFKA.getBootstrapServers());
-    }}
-
-    @BeforeEach
-    void setUp() {{
-        // Reset consumer state before each test if needed
-    }}
+    public KoraConfigModification config() {
+        return KoraConfigModification.ofSystemProperty(
+            "KAFKA_BOOTSTRAP", connection.params().bootstrapServers());
+    }
 
     @Test
-    void shouldProcessEvent() {{
-        // given
-        var event = new JSONObject()
-            .put("id", "test-123")
-            .put("eventType", "created")
-            .put("payload", "{{}}")
-            .put("timestamp", java.time.LocalDateTime.now().toString());
+    void consumesRecord() {
+        connection.send("{{TOPIC}}", Event.ofValueAndRandomKey({{SAMPLE_JAVA}}));
 
-        // when
-        sendKafkaMessage("{topic}", event.toString());
-
-        // then
-        Awaitility.await()
-            .atMost(Duration.ofSeconds(15))
-            .pollExecutorService(Executors.newSingleThreadExecutor())
-            .until(() -> consumer.getProcessedCount() >= 1);
-    }}
-
-    @Test
-    void shouldProcessMultipleEvents() {{
-        // given
-        int eventCount = 5;
-        for (int i = 0; i < eventCount; i++) {{
-            var event = new JSONObject()
-                .put("id", "test-" + i)
-                .put("eventType", "created")
-                .put("payload", "{{}}")
-                .put("timestamp", java.time.LocalDateTime.now().toString());
-            sendKafkaMessage("{topic}", event.toString());
-        }}
-
-        // when & then
         Awaitility.await()
             .atMost(Duration.ofSeconds(20))
-            .pollExecutorService(Executors.newSingleThreadExecutor())
-            .until(() -> consumer.getProcessedCount() >= eventCount);
-    }}
+            .until(() -> listener.processedCount() >= 1);
+    }
+}
+"""
 
-    @Test
-    void shouldHandleInvalidJson() {{
-        // given - invalid JSON
-        String invalidJson = "{{\\"id\\": \\"test-invalid\\"}}";
+KOTLIN_TEST = """package {{PACKAGE}}.listener
 
-        // when
-        sendKafkaMessage("{topic}", invalidJson);
-
-        // then - should handle without crashing
-        Awaitility.await()
-            .atMost(Duration.ofSeconds(10))
-            .until(() -> consumer.getErrorCount() >= 0);
-    }}
-
-    /**
-     * Send a Kafka message without key.
-     */
-    private void sendKafkaMessage(String topic, String value) {{
-        var props = new Properties();
-        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers());
-
-        try (var producer = new KafkaProducer<>(
-            props,
-            new StringSerializer(),
-            new StringSerializer()
-        )) {{
-            producer.send(new ProducerRecord<>(topic, value));
-        }}
-    }}
-}}
-'''
-
-
-def generate_kotlin_tests(
-    package: str, class_name: str, class_name_lower: str, topic: str
-) -> str:
-    """Generate Kotlin test class."""
-    return f'''package {package}.listener
-
-import org.apache.kafka.clients.consumer.ConsumerConfig
-import org.apache.kafka.clients.producer.KafkaProducer
-import org.apache.kafka.clients.producer.ProducerRecord
-import org.apache.kafka.common.serialization.StringDeserializer
-import org.apache.kafka.common.serialization.StringSerializer
-import org.assertj.core.api.Assertions.assertThat
-import org.jetbrains.annotations.NotNull
-import org.json.JSONObject
-import org.junit.jupiter.api.BeforeEach
+import io.goodforgod.testcontainers.extensions.ContainerMode
+import io.goodforgod.testcontainers.extensions.kafka.ConnectionKafka
+import io.goodforgod.testcontainers.extensions.kafka.Event
+import io.goodforgod.testcontainers.extensions.kafka.KafkaConnection
+import io.goodforgod.testcontainers.extensions.kafka.TestcontainersKafka
+import io.goodforgod.testcontainers.extensions.kafka.Topics
+import io.koraframework.application.graph.Lifecycle
+import io.koraframework.common.annotation.Tag
+import io.koraframework.test.extension.junit5.KoraAppTest
+import io.koraframework.test.extension.junit5.KoraAppTestConfigModifier
+import io.koraframework.test.extension.junit5.KoraConfigModification
+import io.koraframework.test.extension.junit5.TestComponent
+import {{PACKAGE}}.Application
+import org.awaitility.Awaitility
 import org.junit.jupiter.api.Test
-import org.testcontainers.containers.KafkaContainer
-import org.testcontainers.junit.jupiter.Container
-import org.testcontainers.junit.jupiter.Testcontainers
-import org.testcontainers.utility.DockerImageName
-import org.testcontainers.shaded.org.awaitility.Awaitility
-import ru.tinkoff.kora.application.graph.Lifecycle
-import ru.tinkoff.kora.common.Tag
-import ru.tinkoff.kora.test.extension.junit5.*
 import java.time.Duration
-import java.util.Properties
-import java.util.concurrent.Executors
 
 /**
- * Integration tests for {class_name} using Testcontainers Kafka.
+ * Integration test for {{CLASS}}.
  *
- * Usage:
- * 1. Make sure the dependencies are added in build.gradle.kts:
- *    testImplementation("org.testcontainers:junit-jupiter:1.21.4")
- *    testImplementation("org.testcontainers:kafka:1.21.4")
- *    testImplementation("ru.tinkoff.kora:kafka")
- *    testImplementation("org.json:json:20231013")
- *    testImplementation("org.awaitility:awaitility:4.2.0")
+ * The tagged Lifecycle injection is what pulls the generated consumer container into the test
+ * graph — without it @KoraAppTest prunes the container and the listener never starts.
  *
- * 2. Run tests: ./gradlew test
+ * Tests are ordinary functions: Kora 2.0 contracts are synchronous, so no runTest and no
+ * coroutine dispatcher belong here.
  */
-@Testcontainers
+@TestcontainersKafka(mode = ContainerMode.PER_RUN, topics = Topics("{{TOPIC}}"))
 @KoraAppTest(Application::class)
-class {class_name}Tests : KoraAppTestConfigModifier {{
+class {{CLASS}}Tests : KoraAppTestConfigModifier {
 
-    companion object {{
-        @Container
-        @JvmStatic
-        val KAFKA = KafkaContainer(
-            DockerImageName.parse("confluentinc/cp-kafka:7.5.0")
-        ).withStartupTimeout(Duration.ofSeconds(60))
-    }}
+    @ConnectionKafka
+    lateinit var connection: KafkaConnection
 
-    @Tag({class_name}Module.{class_name}ProcessTag::class)
+    @Tag({{CLASS}}Module.{{CLASS}}ProcessTag::class)
     @TestComponent
-    private lateinit var consumerLifecycle: Lifecycle
+    lateinit var consumerLifecycle: Lifecycle
 
     @TestComponent
-    private lateinit var consumer: {class_name}
+    lateinit var listener: {{CLASS}}
 
-    @NotNull
-    override fun config(): KoraConfigModification {{
-        return KoraConfigModification.ofString("""
-            kafka.consumer.{class_name_lower} {{
-                topics = ["{topic}"]
-                offset = "earliest"
-                pollTimeout = "5s"
-                driverProperties {{
-                    "bootstrap.servers" = "${{KAFKA.bootstrapServers}}"
-                    "group.id" = "{class_name_lower}-test-group"
-                    "auto.offset.reset" = "earliest"
-                    "enable.auto.commit" = "true"
-                }}
-            }}
-            """.trimIndent())
-            .withSystemProperty("KAFKA_BOOTSTRAP_SERVERS", KAFKA.bootstrapServers)
-    }}
-
-    @BeforeEach
-    fun setUp() {{
-        // Reset consumer state before each test if needed
-    }}
+    override fun config(): KoraConfigModification =
+        KoraConfigModification.ofSystemProperty("KAFKA_BOOTSTRAP", connection.params().bootstrapServers())
 
     @Test
-    fun `should process event`() {{
-        // given
-        val event = JSONObject()
-            .put("id", "test-123")
-            .put("eventType", "created")
-            .put("payload", "{{}}")
-            .put("timestamp", java.time.LocalDateTime.now().toString())
+    fun consumesRecord() {
+        connection.send("{{TOPIC}}", Event.ofValueAndRandomKey({{SAMPLE_KOTLIN}}))
 
-        // when
-        sendKafkaMessage("{topic}", event.toString())
-
-        // then
-        Awaitility.await()
-            .atMost(Duration.ofSeconds(15))
-            .pollExecutorService(Executors.newSingleThreadExecutor())
-            .until {{ consumer.processedCount >= 1 }}
-    }}
-
-    @Test
-    fun `should process multiple events`() {{
-        // given
-        val eventCount = 5
-        for (i in 0 until eventCount) {{
-            val event = JSONObject()
-                .put("id", "test-$i")
-                .put("eventType", "created")
-                .put("payload", "{{}}")
-                .put("timestamp", java.time.LocalDateTime.now().toString())
-            sendKafkaMessage("{topic}", event.toString())
-        }}
-
-        // when & then
         Awaitility.await()
             .atMost(Duration.ofSeconds(20))
-            .pollExecutorService(Executors.newSingleThreadExecutor())
-            .until {{ consumer.processedCount >= eventCount }}
-    }}
+            .until { listener.processedCount() >= 1 }
+    }
+}
+"""
 
-    @Test
-    fun `should handle invalid json`() {{
-        // given - invalid JSON
-        val invalidJson = """{{"id": "test-invalid"}}"""
+# ------------------------------------------------------------------------------------- the config
 
-        // when
-        sendKafkaMessage("{topic}", invalidJson)
+CONFIG = """# Kora 2.0 Kafka consumer configuration for {{CLASS}}
+# Generated by the kora-kafka-consumer skill.
+#
+# HOCON has no ${VAR:default}. Write the literal first, then override it with ${?VAR}.
 
-        // then - should handle without crashing
-        Awaitility.await()
-            .atMost(Duration.ofSeconds(10))
-            .until {{ consumer.errorCount >= 0 }}
-    }}
+kafka {
+  consumer {
+    {{NAME}} {
+      topics = [{{TOPICS}}]
 
-    /**
-     * Send a Kafka message without key.
-     */
-    private fun sendKafkaMessage(topic: String, value: String) {{
-        val props = Properties().apply {{
-            put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.bootstrapServers)
-        }}
-
-        KafkaProducer<String, String>(
-            props,
-            StringSerializer(),
-            StringSerializer()
-        ).use {{ producer ->
-            producer.send(ProducerRecord(topic, value))
-        }}
-    }}
-}}
-'''
-
-
-def generate_config(
-    listener_name: str,
-    topics_str: str,
-    topics_pattern: str,
-    group_id: str,
-    package: str,
-) -> str:
-    """Generate application.conf configuration."""
-    return f'''# Kora Kafka Consumer Configuration
-# Generated by kora-kafka generator
-
-kafka {{
-  consumer {{
-    {listener_name} {{
-      # Topics to consume from
-      topics = [{topics_str}]
-      # Alternative: Subscribe by pattern
-      # topicsPattern = "{topics_pattern}"
-
-      # Consumer behavior
-      offset = "earliest"
-      pollTimeout = "5s"
-      backoffTimeout = "15s"
+      pollTimeout = 5s
+      backoffTimeout = 15s
+      shutdownWait = 30s
       threads = 1
-      shutdownWait = "30s"
+      allowEmptyRecords = false
 
-      # Kafka driver properties
-      driverProperties {{
-        "bootstrap.servers" = ${{KAFKA_BOOTSTRAP_SERVERS:"localhost:9092"}}
-        "group.id" = "{group_id}"
+      driverProperties {
+        "bootstrap.servers" = "localhost:9092"
+        "bootstrap.servers" = ${?KAFKA_BOOTSTRAP}
+
+        # group.id present => subscribe strategy. Remove it for the assign strategy, which at
+        # 2.0.0.RC1 requires exactly one topic and never commits offsets.
+        "group.id" = "{{GROUP_ID}}"
+
+        # Where a brand-new consumer group starts. The Kora `offset` key applies to assign mode only.
         "auto.offset.reset" = "earliest"
-        "enable.auto.commit" = true
-        "max.poll.records" = 500
-      }}
 
-      # Telemetry
-      telemetry {{
-        logging {{
-          enabled = true
-        }}
-        metrics {{
+        # Leave enable.auto.commit unset so Kora commits after the handler returns.
+        "max.poll.records" = 500
+        "max.poll.interval.ms" = 300000
+      }
+
+      telemetry {
+        # Both default to false in Kora 2.0 — logging.enabled also gates the container's own
+        # lifecycle log lines.
+        logging.enabled = true
+        metrics {
           enabled = true
           slo = [1, 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
-          tags = {{
-            "consumer-type" = "{listener_name}"
-          }}
-        }}
-        tracing {{
-          enabled = true
-          attributes = {{
-            "service.name" = "{package}.service"
-          }}
-        }}
-      }}
-    }}
-  }}
-}}
-'''
+          tags {
+            "consumer-type" = "{{NAME}}"
+          }
+        }
+        tracing.enabled = true
+      }
+    }
+  }
+}
+
+logging.levels {
+  "ROOT" = "INFO"
+  "io.koraframework" = "INFO"
+  "{{PACKAGE}}" = "DEBUG"
+}
+"""
 
 
-def main():
+def build_listener(lang: str, cls: str, package: str, config_path: str, topics: list[str],
+                   signature: str, is_json: bool, event: str) -> str:
+    kotlin = lang == "kotlin"
+    topics_doc = ", ".join(topics)
+
+    if is_json:
+        body_tpl = KOTLIN_JSON_BODY if kotlin else JAVA_JSON_BODY
+        imports = [
+            "io.koraframework.json.common.annotation.Json",
+        ]
+        if not kotlin:
+            imports.append("org.jspecify.annotations.Nullable")
+        payload_type = event
+    else:
+        body_tpl = (KOTLIN_BODIES if kotlin else JAVA_BODIES)[signature]
+        imports = list((KOTLIN_IMPORTS if kotlin else JAVA_IMPORTS)[signature])
+        payload_type = "String"
+
+    import_block = "".join("import %s%s\n" % (i, "" if kotlin else ";") for i in sorted(imports))
+    body = render(body_tpl, CONFIG_PATH=config_path, EVENT=event)
+
+    return render(
+        KOTLIN_LISTENER if kotlin else JAVA_LISTENER,
+        PACKAGE=package,
+        CLASS=cls,
+        CONFIG_PATH=config_path,
+        TOPICS_DOC=topics_doc,
+        IMPORTS=import_block,
+        BODY=body,
+        PAYLOAD_TYPE=payload_type,
+    )
+
+
+def build_test(lang: str, cls: str, package: str, topic: str, is_json: bool, event: str) -> str:
+    if is_json:
+        sample_java = '"{\\"id\\":\\"1\\",\\"type\\":\\"created\\"}"'
+        sample_kotlin = '"""{"id":"1","type":"created"}"""'
+    else:
+        sample_java = '"payload"'
+        sample_kotlin = '"payload"'
+    return render(
+        KOTLIN_TEST if lang == "kotlin" else JAVA_TEST,
+        PACKAGE=package,
+        CLASS=cls,
+        TOPIC=topic,
+        EVENT=event,
+        SAMPLE_JAVA=sample_java,
+        SAMPLE_KOTLIN=sample_kotlin,
+    )
+
+
+def build_config(cls: str, name: str, package: str, topics: list[str], group_id: str) -> str:
+    return render(
+        CONFIG,
+        CLASS=cls,
+        NAME=name,
+        PACKAGE=package,
+        GROUP_ID=group_id,
+        TOPICS=", ".join('"%s"' % t for t in topics),
+    )
+
+
+def emit(path: Path, content: str, dry_run: bool, skip_if_exists: bool = False) -> None:
+    if dry_run:
+        print("[dry-run] would write %s (%d bytes)" % (path, len(content.encode("utf-8"))))
+        return
+    if skip_if_exists and path.exists():
+        print("exists, not overwritten: %s" % path)
+        print("--- append the following manually ---")
+        print(content)
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    print("wrote %s" % path)
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Generate Kora Kafka consumer listener"
+        description="Generate a Kora 2.0 Kafka consumer (@KafkaListener)",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
     )
-    parser.add_argument(
-        "--name", "-n", required=True, help="Listener class name (e.g., UserEventListener)"
-    )
-    parser.add_argument(
-        "--topics", "-t", required=True, help="Comma-separated list of topics"
-    )
-    parser.add_argument(
-        "--package", "-p", default="com.example", help="Package name"
-    )
-    parser.add_argument(
-        "--lang", "-l", choices=["java", "kotlin"], default="java", help="Language"
-    )
-    parser.add_argument(
-        "--output", "-o", default=".", help="Output directory"
-    )
-    parser.add_argument(
-        "--tests", action="store_true", help="Generate tests"
-    )
-    parser.add_argument(
-        "--json", action="store_true", help="Generate JSON listener with @Json"
-    )
-    parser.add_argument(
-        "--event-name", help="Event class name for JSON listeners"
-    )
-    parser.add_argument(
-        "--group-id", help="Consumer group ID"
-    )
+    parser.add_argument("--name", "-n", required=True,
+                        help='Listener name; "Listener" is appended when missing (e.g. UserEvent)')
+    parser.add_argument("--topics", "-t", required=True,
+                        help="Comma-separated Kafka topics")
+    parser.add_argument("--package", "-p", default="com.example",
+                        help="Base package (default: com.example)")
+    parser.add_argument("--lang", "-l", choices=["java", "kotlin"], default="java",
+                        help="Target language (default: java)")
+    parser.add_argument("--output", "-o", default="src/main",
+                        help="Main source-set directory (default: src/main)")
+    parser.add_argument("--signature", "-s", choices=SIGNATURES, default="record",
+                        help="Listener signature: value | keyvalue | record | records | manual "
+                             "(default: record). Ignored with --json, which always uses the "
+                             "nullable payload + nullable Exception shape.")
+    parser.add_argument("--json", action="store_true",
+                        help="Generate a @Json payload record and the deserialization-error shape")
+    parser.add_argument("--event-name", help="Payload type name for --json (default: <Name>Event)")
+    parser.add_argument("--group-id", help="Kafka group.id (default: <name>-group)")
+    parser.add_argument("--tests", action="store_true", help="Also generate an integration test")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print what would be written without touching the filesystem")
 
     args = parser.parse_args()
 
-    topics = [t.strip() for t in args.topics.split(",")]
+    topics = [t.strip() for t in args.topics.split(",") if t.strip()]
+    if not topics:
+        parser.error("--topics must name at least one topic")
 
-    generate_consumer(
-        name=args.name,
-        topics=topics,
-        package=args.package,
-        lang=args.lang,
-        output_dir=args.output,
-        with_tests=args.tests,
-        is_json=args.json,
-        event_name=args.event_name,
-        consumer_group_id=args.group_id,
-    )
+    cls = args.name if args.name.endswith("Listener") else args.name + "Listener"
+    name = cls[0].lower() + cls[1:]
+    config_path = "kafka.consumer." + name
+    group_id = args.group_id or (name + "-group")
+    event = args.event_name or (cls[:-len("Listener")] + "Event")
 
-    print("\nGenerated successfully!")
-    print("\nNext steps:")
-    print("1. Review and customize the listener class")
-    print("2. Add configuration to application.conf")
-    print("3. Implement business logic")
-    print("4. Run tests: ./gradlew test")
+    lang_dir = "kotlin" if args.lang == "kotlin" else "java"
+    ext = "kt" if args.lang == "kotlin" else "java"
+    package_dir = args.package.replace(".", "/")
+
+    main_root = Path(args.output)
+    listener_path = main_root / lang_dir / package_dir / "listener" / ("%s.%s" % (cls, ext))
+    config_path_file = main_root / "resources" / "application.conf"
+    test_path = (main_root.parent / "test" / lang_dir / package_dir / "listener"
+                 / ("%sTests.%s" % (cls, ext)))
+
+    emit(listener_path,
+         build_listener(args.lang, cls, args.package, config_path, topics,
+                        args.signature, args.json, event),
+         args.dry_run)
+
+    emit(config_path_file,
+         build_config(cls, name, args.package, topics, group_id),
+         args.dry_run, skip_if_exists=True)
+
+    if args.tests:
+        emit(test_path,
+             build_test(args.lang, cls, args.package, topics[0], args.json, event),
+             args.dry_run)
+
+    print("")
+    print("class        : %s.listener.%s" % (args.package, cls))
+    print("config path  : %s" % config_path)
+    print("topics       : %s" % ", ".join(topics))
+    print("group.id     : %s" % group_id)
+    print("signature    : %s" % ("json (nullable payload + nullable Exception)"
+                                 if args.json else args.signature))
+    print("generated tag: %sModule.%sProcessTag" % (cls, cls))
+    print("")
+    print("Next: add KafkaModule (and JsonModule for --json) to the @KoraApp interface,")
+    print("      point bootstrap.servers at your broker, then ./gradlew build")
 
 
 if __name__ == "__main__":

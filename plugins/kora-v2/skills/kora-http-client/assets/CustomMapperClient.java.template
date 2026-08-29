@@ -1,125 +1,185 @@
 package com.example.client;
 
-import ru.tinkoff.kora.common.Context;
-import ru.tinkoff.kora.common.Mapping;
-import ru.tinkoff.kora.http.client.common.HttpClientDecoderException;
-import ru.tinkoff.kora.http.client.common.annotation.HttpClient;
-import ru.tinkoff.kora.http.client.common.annotation.ResponseCodeMapper;
-import ru.tinkoff.kora.http.client.common.request.HttpClientRequestMapper;
-import ru.tinkoff.kora.http.client.common.response.HttpClientResponse;
-import ru.tinkoff.kora.http.client.common.response.HttpClientResponseMapper;
-import ru.tinkoff.kora.http.common.HttpMethod;
-import ru.tinkoff.kora.http.common.annotation.HttpRoute;
-import ru.tinkoff.kora.http.common.annotation.Path;
-import ru.tinkoff.kora.http.common.body.HttpBody;
-import ru.tinkoff.kora.http.common.body.HttpBodyOutput;
-import ru.tinkoff.kora.json.common.JsonReader;
-import ru.tinkoff.kora.json.common.annotation.Json;
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Mapping;
+import io.koraframework.http.client.common.annotation.HttpClient;
+import io.koraframework.http.client.common.annotation.ResponseCodeMapper;
+import io.koraframework.http.client.common.exception.HttpClientDecoderException;
+import io.koraframework.http.client.common.request.HttpClientRequestMapper;
+import io.koraframework.http.client.common.response.HttpClientResponse;
+import io.koraframework.http.client.common.response.HttpClientResponseMapper;
+import io.koraframework.http.common.HttpMethod;
+import io.koraframework.http.common.annotation.HttpRoute;
+import io.koraframework.http.common.annotation.Path;
+import io.koraframework.http.common.body.HttpBody;
+import io.koraframework.http.common.body.HttpBodyOutput;
+import io.koraframework.json.common.JsonReader;
+import io.koraframework.json.common.annotation.Json;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
 /**
- * Client with custom request/response mappers.
- * Use when the standard JSON mapping does not fit:
- * - custom request body format (plain text, XML, binary)
- * - status-aware response decoding (different types per HTTP status code)
- * - bespoke serialization/deserialization
+ * Kora 2.0 client with custom request and response mappers. Use when the built-in mapping does not
+ * fit: a non-JSON request body, or a different response shape per HTTP status code.
+ *
+ * WHICH MAPPER NEEDS @Component — decided by how the generated constructor obtains it:
+ *
+ *   - @Mapping on a BODY PARAMETER (HttpClientRequestMapper): always a constructor parameter,
+ *     so @Component is ALWAYS required. Without it:
+ *       No component found for dependency: ...RequestMapper (no tags)
+ *
+ *   - @Mapping on a METHOD, or @ResponseCodeMapper(mapper = X.class): the generated code writes
+ *       private static final X mapper = new X();
+ *     when X is `final` with a single public no-arg constructor. Such a class must NOT be a
+ *     @Component — that registers a second HttpClientResponseMapper<T> in the graph, which becomes
+ *     "Multiple components match" as soon as anything resolves that type from the graph.
+ *     A mapper with constructor dependencies (a JsonReader<T> below) cannot be built by the
+ *     generator, so it MUST be a @Component.
+ *
+ * Both cases appear below — PlainTextRequestMapper and the two @ResponseCodeMapper flavours.
+ *
+ * Configuration (application.conf):
+ * <pre>
+ * httpClient.customMapper {
+ *   url = "http://localhost:8080"
+ *   requestTimeout = 10s
+ * }
+ * </pre>
  */
-@HttpClient(configPath = "httpClient.customMapper")
+@HttpClient("httpClient.customMapper")
 public interface CustomMapperClient {
 
-    // ====================================
-    // Custom request body mapper
-    // ====================================
+    // ============================================================
+    // Custom request body — @Mapping on the body parameter
+    // ============================================================
 
-    /** Sends plain text instead of JSON. Useful for legacy or non-JSON APIs. */
-    @HttpRoute(method = HttpMethod.POST, path = "/text")
-    String sendPlainText(@Mapping(PlainTextMapper.class) PlainTextBody body);
+    record PlainTextGreetingBody(String name) {}
 
-    /** DTO for the plain-text request. */
-    record PlainTextBody(String content) {}
+    /** Always injected by the generated client, therefore always a @Component. */
+    @Component
+    final class PlainTextRequestMapper implements HttpClientRequestMapper<PlainTextGreetingBody> {
 
-    /** Converts PlainTextBody into a plain-text HTTP body. */
-    final class PlainTextMapper implements HttpClientRequestMapper<PlainTextBody> {
+        /** Kora 2.0 signature: apply(T) — the 1.x apply(Context, T) form is gone. */
         @Override
-        public HttpBodyOutput apply(Context ctx, PlainTextBody value) {
-            return HttpBody.plaintext(value.content());
+        public HttpBodyOutput apply(PlainTextGreetingBody value) {
+            return HttpBody.plaintext("Hello " + value.name());
         }
     }
 
-    // ====================================
-    // Status-aware response mapping
-    // ====================================
+    @HttpRoute(method = HttpMethod.POST, path = "/data/mapping-request")
+    String sendGreeting(@Mapping(PlainTextRequestMapper.class) PlainTextGreetingBody body);
 
-    /**
-     * Sealed result: 200 -> ItemSuccess, anything else -> ItemError
-     * (the error mapper reads the status code from response.code()).
-     */
-    sealed interface ItemResult permits ItemSuccess, ItemError {
-        @Json record ItemSuccess(String id, String name) implements ItemResult {}
-        @Json record ItemError(int code, String message) implements ItemResult {}
-    }
+    // ============================================================
+    // Status-aware response decoding — mappers WITH dependencies
+    // ============================================================
 
-    @ResponseCodeMapper(code = 200, mapper = ItemSuccessMapper.class)
-    @ResponseCodeMapper(code = ResponseCodeMapper.DEFAULT, mapper = ItemErrorMapper.class)
-    @HttpRoute(method = HttpMethod.GET, path = "/items/{id}")
-    ItemResult getItemResult(@Path String id);
+    sealed interface MappedResponse permits Payload, Error {
 
-    /** Mapper for the success response (200 OK). */
-    final class ItemSuccessMapper implements HttpClientResponseMapper<ItemResult> {
-        private final JsonReader<ItemResult.ItemSuccess> jsonReader;
+        @Json
+        record Payload(String message) implements MappedResponse {}
 
-        public ItemSuccessMapper(JsonReader<ItemResult.ItemSuccess> jsonReader) {
-            this.jsonReader = jsonReader;
-        }
-
-        @Override
-        public ItemResult apply(HttpClientResponse response) throws IOException, HttpClientDecoderException {
-            try (var is = response.body().asInputStream()) {
-                return jsonReader.read(is.readAllBytes());
-            }
-        }
-    }
-
-    /** Mapper for the error response (non-200): message from body, code from HTTP status. */
-    final class ItemErrorMapper implements HttpClientResponseMapper<ItemResult> {
-        private final JsonReader<ErrorPayload> jsonReader;
-
-        public ItemErrorMapper(JsonReader<ErrorPayload> jsonReader) {
-            this.jsonReader = jsonReader;
-        }
-
-        @Override
-        public ItemResult apply(HttpClientResponse response) throws IOException, HttpClientDecoderException {
-            try (var is = response.body().asInputStream()) {
-                ErrorPayload payload = jsonReader.read(is.readAllBytes());
-                return new ItemResult.ItemError(response.code(), payload.message());
-            }
-        }
+        @Json
+        record Error(int code, String message) implements MappedResponse {}
 
         @Json
         record ErrorPayload(String message) {}
     }
 
-    // ====================================
-    // Usage example
-    // ====================================
+    /** Takes a JsonReader, so the generator cannot build it: @Component is required. */
+    @Component
+    final class MappedResponseSuccessMapper implements HttpClientResponseMapper<MappedResponse> {
+
+        private final JsonReader<MappedResponse.Payload> jsonReader;
+
+        public MappedResponseSuccessMapper(JsonReader<MappedResponse.Payload> jsonReader) {
+            this.jsonReader = jsonReader;
+        }
+
+        @Override
+        public MappedResponse apply(HttpClientResponse response) throws IOException, HttpClientDecoderException {
+            try (var is = response.body().asInputStream()) {
+                var payload = this.jsonReader.read(is.readAllBytes());
+                if (payload == null) {
+                    // read() is @Nullable in Kora 2.0. Throwing explicitly keeps the failure typed
+                    // on 2.0.0.RC1, where the generated client does not yet wrap mapper failures.
+                    throw new HttpClientDecoderException(new IllegalStateException("empty success payload"));
+                }
+                return payload;
+            }
+        }
+    }
+
+    /** Same rule — a dependency means @Component. The status code is read from the response. */
+    @Component
+    final class MappedResponseErrorMapper implements HttpClientResponseMapper<MappedResponse> {
+
+        private final JsonReader<MappedResponse.ErrorPayload> jsonReader;
+
+        public MappedResponseErrorMapper(JsonReader<MappedResponse.ErrorPayload> jsonReader) {
+            this.jsonReader = jsonReader;
+        }
+
+        @Override
+        public MappedResponse apply(HttpClientResponse response) throws IOException, HttpClientDecoderException {
+            try (var is = response.body().asInputStream()) {
+                var payload = this.jsonReader.read(is.readAllBytes());
+                var message = payload == null ? "" : payload.message();
+                return new MappedResponse.Error(response.code(), message);
+            }
+        }
+    }
+
+    /** ResponseCodeMapper.DEFAULT (-1) covers every status not listed explicitly. */
+    @ResponseCodeMapper(code = ResponseCodeMapper.DEFAULT, mapper = MappedResponseErrorMapper.class)
+    @ResponseCodeMapper(code = 200, mapper = MappedResponseSuccessMapper.class)
+    @HttpRoute(method = HttpMethod.GET, path = "/data/mapping-by-code/{code}")
+    MappedResponse getMappedByCode(@Path int code);
+
+    // ============================================================
+    // Response mapper WITHOUT dependencies — no @Component
+    // ============================================================
+
+    /**
+     * final + a single public no-arg constructor, so the generated client instantiates it itself.
+     * Adding @Component here is the "Multiple components match" trap.
+     */
+    final class RawTextResponseMapper implements HttpClientResponseMapper<String> {
+
+        @Override
+        public String apply(HttpClientResponse response) throws IOException {
+            try (var is = response.body().asInputStream()) {
+                return new String(is.readAllBytes(), StandardCharsets.UTF_8).strip();
+            }
+        }
+    }
+
+    /**
+     * @Mapping on the METHOD attaches a response mapper — and disables the 2xx status check, so
+     * this mapper is called for every status code and non-2xx no longer throws on its own.
+     */
+    @Mapping(RawTextResponseMapper.class)
+    @HttpRoute(method = HttpMethod.GET, path = "/data/raw")
+    String getRawText();
+
+    // ============================================================
+    // Usage
+    // ============================================================
     //
     // @Component
-    // public final class ItemService {
+    // public final class DataService {
+    //
     //     private final CustomMapperClient client;
     //
-    //     public ItemService(CustomMapperClient client) {
+    //     public DataService(CustomMapperClient client) {
     //         this.client = client;
     //     }
     //
-    //     public ItemResult.ItemSuccess getItem(String id) {
-    //         return switch (client.getItemResult(id)) {
-    //             case ItemResult.ItemSuccess success -> success;
-    //             case ItemResult.ItemError error ->
-    //                 throw new IllegalStateException("status " + error.code() + ": " + error.message());
+    //     public String describe(int code) {
+    //         return switch (this.client.getMappedByCode(code)) {
+    //             case MappedResponse.Payload p -> p.message();
+    //             case MappedResponse.Error e -> "failed with " + e.code() + ": " + e.message();
     //         };
     //     }
     // }
-    // ====================================
 }

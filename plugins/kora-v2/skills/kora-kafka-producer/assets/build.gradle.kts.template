@@ -1,53 +1,80 @@
-// Java project using the Kotlin Gradle DSL.
-// For a Kotlin-source project, apply the kotlin("jvm") and KSP plugins and
-// replace the annotation processor with:
-//     ksp("ru.tinkoff.kora:symbol-processors")
-// (annotationProcessor is for Java sources; KSP is for Kotlin sources).
+// Kora 2.x — single-module Kotlin service publishing to Kafka.
+// Kora 2.0 artifacts are built for Java 25; the toolchain below is the minimum, not a preference.
+
 plugins {
-    id("java")
+    kotlin("jvm") version "2.4.10"
+    id("com.google.devtools.ksp") version "2.3.11"
     id("application")
 }
 
-configurations {
-    val koraBom by creating
-    annotationProcessor.extendsFrom(koraBom)
-    implementation.extendsFrom(koraBom)
+repositories {
+    mavenCentral()
 }
+
+// koraVersion=2.0.0.RC1 lives in gradle.properties
+val koraVersion: String by project
 
 dependencies {
-    koraBom(platform("ru.tinkoff.kora:kora-parent:${property("koraVersion")}"))
-    annotationProcessor("ru.tinkoff.kora:annotation-processors")
-    
-    // Kafka module
-    implementation("ru.tinkoff.kora:kafka")
-    
-    // JSON for message serialization
-    implementation("ru.tinkoff.kora:json-module")
+    implementation(platform("io.koraframework:kora-bom:$koraVersion"))
 
-    // Configuration and logging
-    implementation("ru.tinkoff.kora:config-hocon")
-    implementation("ru.tinkoff.kora:logging-logback")
+    // Mandatory. The ksp configuration is NOT covered by the BOM platform, so the processor
+    // carries an explicit version. Without it nothing is generated and the only symptom is
+    // "unresolved reference: ApplicationGraph".
+    ksp("io.koraframework:symbol-processors:$koraVersion")
 
-    // Tests
-    testImplementation("ru.tinkoff.kora:test-junit5")
-    testImplementation("org.testcontainers:kafka:1.19.3")
-    testImplementation("org.testcontainers:junit-jupiter:1.19.3")
-    testRuntimeOnly("org.apache.kafka:kafka-clients:3.5.1")
-    testImplementation("org.json:json:20231013")
-    testImplementation("org.awaitility:awaitility:4.2.0")
+    // Brings org.apache.kafka:kafka-clients 4.3.1 transitively
+    implementation("io.koraframework:kafka")
+
+    // Only needed for @Json payloads (artifact was ru.tinkoff.kora:json-module in 1.x)
+    implementation("io.koraframework:json-common")
+
+    implementation("io.koraframework:config-hocon")
+    implementation("io.koraframework:logging-logback")
+
+    // Required ONLY if a publisher declares a suspend or Deferred send method: the generated
+    // $X_Impl.kt calls kotlinx.coroutines.future.await / asDeferred, and io.koraframework:kafka
+    // does not bring coroutines. Symptom without it: "Unresolved reference 'kotlinx'" in a file
+    // under build/generated/ksp.
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-jdk8:1.10.2")
+
+    kspTest("io.koraframework:symbol-processors:$koraVersion")
+    testImplementation("io.koraframework:test-junit5")
+
+    // Testcontainers 2.x renamed every module: org.testcontainers:kafka no longer exists.
+    // The container is started from a static initializer in the tests, so the JUnit
+    // integration module (org.testcontainers:testcontainers-junit-jupiter) is not needed.
+    testImplementation("org.testcontainers:testcontainers-kafka:2.0.5")
+    // The upstream kora-examples Kafka projects instead use the wrapper
+    //   testImplementation("io.goodforgod:testcontainers-extensions-kafka:0.15.0")
+    // Either works; this template drives the container directly to keep the test self-contained.
+
+    // Only for tests that drive a suspend publisher method (runTest)
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
 }
 
-java {
-    sourceCompatibility = JavaVersion.VERSION_25
-    targetCompatibility = JavaVersion.VERSION_25
+kotlin {
+    jvmToolchain {
+        languageVersion.set(JavaLanguageVersion.of(25))
+        vendor.set(JvmVendorSpec.ADOPTIUM)
+    }
 }
 
 application {
-    mainClass.set("${packagePath}.Application")
+    applicationName = "application"
+    // A top-level `fun main()` in Application.kt compiles into <packagePath>.ApplicationKt
+    mainClass.set("${packagePath}.ApplicationKt")
+    applicationDefaultJvmArgs = listOf("-Dfile.encoding=UTF-8")
 }
 
-tasks.named<JavaExec>("run") {
-    environment(
-        "KAFKA_BOOTSTRAP_SERVERS" to "localhost:9092"
-    )
+tasks.withType<JavaExec>().configureEach {
+    environment("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+}
+
+tasks.test {
+    useJUnitPlatform()
+    testLogging {
+        events("passed", "skipped", "failed")
+        showStandardStreams = true
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+    }
 }

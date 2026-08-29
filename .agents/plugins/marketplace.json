@@ -5,6 +5,18 @@
   },
   "plugins": [
     {
+      "name": "kora-v2",
+      "source": {
+        "source": "local",
+        "path": "./plugins/kora-v2"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    },
+    {
       "name": "kora-v1",
       "source": {
         "source": "local",

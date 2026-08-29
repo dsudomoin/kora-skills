@@ -1,38 +1,54 @@
 package ${packagePath}.publisher;
 
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Tag;
+import io.koraframework.json.common.JsonWriter;
+import io.koraframework.json.common.annotation.Json;
+import io.koraframework.kafka.common.annotation.KafkaPublisher;
+import io.koraframework.kafka.common.annotation.KafkaPublisher.Topic;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.serialization.Serializer;
+
 import java.time.Instant;
-import ru.tinkoff.kora.json.common.annotation.Json;
-import ru.tinkoff.kora.kafka.common.annotation.KafkaPublisher;
-import ru.tinkoff.kora.kafka.common.annotation.KafkaPublisher.Topic;
 
 /**
- * Example Kafka producer with JSON serialization.
+ * Kafka publisher with JSON serialization.
  *
- * The @Json annotation automatically serializes a POJO into JSON.
+ * @Json on the payload selects the generated JsonWriter through JsonKafkaSerializer; the consumer
+ * side reads it back with @Json on the listener parameter.
  */
-@KafkaPublisher("kafka.producer.jsonPublisher")
-public interface JsonMessagePublisher {
-    
-    /**
-     * DTO for JSON messages
-     */
+@KafkaPublisher("kafka.producer.${publisherName}")
+public interface ${publisherName} {
+
     @Json
-    record MyEvent(
-        String id,
-        String name,
-        Integer code,
-        Instant timestamp
-    ) {}
-    
-    /**
-     * Send a JSON event
-     */
-    @Topic("kafka.producer.events")
-    void sendEvent(@Json MyEvent event);
+    record ${eventClassName}(String id, String type, Instant timestamp) {}
+
+    @Topic("kafka.producer.${publisherName}.${topicName}")
+    void send(@Json ${eventClassName} event);
+
+    @Topic("kafka.producer.${publisherName}.${topicName}")
+    void send(String key, @Json ${eventClassName} event);
+
+    void send(ProducerRecord<String, @Json ${eventClassName}> record);
 
     /**
-     * Send a JSON event with a key
+     * Custom serializer instead of @Json: register a tagged Serializer @Component and reference the
+     * same tag on the payload. JsonWriter.toByteArray declares no checked exception in Kora 2.0 —
+     * a try/catch (IOException) around it does not compile.
      */
-    @Topic("kafka.producer.events")
-    void sendEvent(String key, @Json MyEvent event);
+    @Tag(${eventClassName}.class)
+    @Component
+    class ${eventClassName}Serializer implements Serializer<${eventClassName}> {
+
+        private final JsonWriter<${eventClassName}> writer;
+
+        public ${eventClassName}Serializer(JsonWriter<${eventClassName}> writer) {
+            this.writer = writer;
+        }
+
+        @Override
+        public byte[] serialize(String topic, ${eventClassName} data) {
+            return writer.toByteArray(data);
+        }
+    }
 }

@@ -1,39 +1,95 @@
-# Kora Metrics Configuration (HOCON)
-# Local reference: .kora-agent/kora-docs/mkdocs/docs/en/documentation/metrics.md
+# Kora 2.0 metrics configuration (HOCON).
+#
+# THE ONE THING TO GET RIGHT: in Kora 2.0 TelemetryConfig.MetricsConfig.enabled()
+# defaults to FALSE. Without an explicit "telemetry.metrics.enabled = true" per
+# component, /metrics still answers 200 and still shows the JVM meters, but no
+# http_server_*, http_client_* or db_* series is ever recorded.
+#
+# A second, independent condition applies: MetricsModule must be on the @KoraApp
+# interface, because every telemetry factory computes
+#     metricEnabled = meterRegistry != null && config.metrics().enabled()
 
 httpServer {
-    # Public API port (business traffic)
-    publicApiHttpPort = 8080
+  # Public API -- business traffic. 1.x name: publicApiHttpPort
+  port = 8080
 
-    # Private management port (metrics, probes, admin)
-    privateApiHttpPort = 8085
+  telemetry {
+    metrics {
+      # REQUIRED. Default is false.
+      enabled = true
 
-    # Prometheus scrape endpoint, served on the private port
-    privateApiHttpMetricsPath = "/metrics"
+      # Histogram bucket boundaries. Bare numbers are MILLISECONDS; strings accept
+      # "250ms" / "1s" / ISO-8601 "PT1S". Omit the key to keep the 14 defaults of
+      # MetricsConfig.DEFAULT_SLO. Fewer buckets = fewer time series.
+      slo = [ 1, 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000, 90000 ]
 
-    # Health probes (require the probes/HTTP server setup)
-    privateApiHttpLivenessPath = "/liveness"
-    privateApiHttpReadinessPath = "/readiness"
-
-    # Per-module metrics telemetry: enable/disable, set SLO buckets (ms), extra tags
-    telemetry {
-        metrics {
-            enabled = true
-            slo = [ 1, 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000, 90000 ]
-        }
+      # Extra static tags stamped on this component's meters only. For tags on every
+      # meter in the process use a PrometheusMeterRegistryInitializer instead
+      # (see CustomMetricsConfig.java.template).
+      tags {
+        "deployment.environment" = "production"
+      }
     }
+
+    # Logging telemetry also defaults to false in 2.0.
+    logging.enabled = true
+  }
+
+  # System server: /metrics, /system/liveness, /system/readiness.
+  # 1.x names: privateApiHttpPort, privateApiHttpMetricsPath, privateApiHttpLivenessPath,
+  # privateApiHttpReadinessPath. The 1.x keys are unrecognised in 2.0 and are IGNORED
+  # WITHOUT A WARNING, so a service that used custom ports comes up on the defaults.
+  system {
+    port = 8085
+    metricsPath = "/metrics"
+    livenessPath = "/system/liveness"
+    readinessPath = "/system/readiness"
+
+    # Optional: instrument the system server itself.
+    telemetry.metrics.enabled = true
+
+    # Unlike every other component, the system server's tracing default is FALSE
+    # (SystemHttpServerTracingConfig overrides enabled()). Uncomment to trace it.
+    # telemetry.tracing.enabled = true
+  }
 }
 
-# Metrics naming standard (MetricsConfig)
-metrics {
-    # V120 - original OpenTelemetry semantic conventions (default)
-    # V123 - newer conventions, available since Kora 1.1.0
-    opentelemetrySpec = "V120"
+# Outbound HTTP clients are configured per @HttpClient("name") value.
+httpClient.petApi {
+  url = "http://pets:8080"
+  telemetry.metrics.enabled = true
 }
 
-# Logging levels
-logging.level {
-    "root": "WARN"
-    "ru.tinkoff.kora": "INFO"
-    "ru.tinkoff.kora.micrometer": "INFO"  # raise to DEBUG to troubleshoot metrics
+# JDBC. 1.x section name: db
+jdbc {
+  jdbcUrl = ${POSTGRES_JDBC_URL}
+  username = ${POSTGRES_USER}
+  password = ${POSTGRES_PASS}
+  poolName = "orders"
+
+  # Opt-in readiness probe for /system/readiness (default false).
+  readinessProbe = true
+  validationTimeout = "2s"
+
+  telemetry.metrics {
+    # REQUIRED. Note that driverMetrics below already defaults to true, but with
+    # enabled = false the factory hands Hikari a NoopMeterRegistry, so no hikaricp_*
+    # series appears either.
+    enabled = true
+
+    # Hikari's own pool meters. Default true for JDBC/Cassandra, false for Kafka.
+    driverMetrics = true
+  }
+}
+
+# Scheduling and resilience keep their telemetry under a fixed sub-path.
+scheduling.telemetry.metrics.enabled = true
+resilient.telemetry.metrics.enabled = true
+
+# There is NO global "metrics { ... }" section in Kora 2.0, and no opentelemetrySpec
+# key. 2.0 emits one fixed naming scheme; setting the 1.x key does nothing.
+
+logging.levels {
+  "root": "WARN"
+  "io.koraframework": "INFO"
 }

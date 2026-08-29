@@ -1,26 +1,27 @@
 package ${package};
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.file.Paths;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.Duration;
-import java.util.Map;
-import org.flywaydb.core.Flyway;
+import java.util.UUID;
 import org.json.JSONObject;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.containers.output.Slf4jLogConsumer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.ImageFromDockerfile;
 import org.testcontainers.junit.jupiter.Container;
@@ -28,157 +29,206 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 /**
- * Black-box test template for ${testName}.
+ * Black-box test for ${testName}: runs the packaged application image and drives it
+ * only through its HTTP API.
  *
- * Uses standard Testcontainers for PostgreSQL and Docker container.
+ * <p>Requires a running Docker daemon. Wire the distribution build into the test task:
+ * <pre>
+ * test {
+ *     dependsOn ":my-service-app:distTar"
+ *     inputs.file("../my-service-app/Dockerfile")
+ *     inputs.file("../my-service-app/build/distributions/application.tar")
+ * }
+ * </pre>
+ *
+ * <p>The application reads its database settings from the environment variables injected
+ * below; their names must match the environment substitution keys in its own config, under
+ * the Kora 2.0 {@code jdbc} section (the 1.x name was {@code db}).
  */
 @Testcontainers
 class ${testName} {
 
-    // Shared network for containers
-    static final Network network = Network.newNetwork();
-
-    // PostgreSQL container with Flyway migrations
     @Container
-    static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>(
-            DockerImageName.parse("postgres:15-alpine"))
-        .withNetwork(network)
-        .withNetworkAliases("db")
-        .withDatabaseName("testdb")
-        .withUsername("test")
-        .withPassword("test")
-        .withInitScript("db/migration/V1__init.sql");
+    private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine")
+            .withNetwork(Network.SHARED)
+            .withNetworkAliases("postgres")
+            .withStartupTimeout(Duration.ofSeconds(30));
 
-    // Application container using GenericContainer directly
-    static final GenericContainer<?> container = createAppContainer()
-        .withNetwork(network);
-
-    // Helper method to create application container
-    private static GenericContainer<?> createAppContainer() {
-        String appImage = System.getenv("APP_IMAGE");
-        GenericContainer<?> c = (appImage != null && !appImage.isBlank())
-                ? new GenericContainer<>(DockerImageName.parse(appImage))
-                : new GenericContainer<>(new ImageFromDockerfile("myapp:test")
-                        .withDockerfile(Paths.get("Dockerfile").toAbsolutePath()));
-
-        return c.withExposedPorts(8080, 8085)
-            .withStartupTimeout(Duration.ofSeconds(120))
-            .waitingFor(Wait.forHttp("/system/readiness").forPort(8085).forStatusCode(200));
-    }
-
-    private static URI getURI(GenericContainer<?> container) {
-        return URI.create("http://" + container.getHost() + ":" + container.getMappedPort(8080));
-    }
+    @Container
+    private static final AppContainer APP = AppContainer.build()
+            .withNetwork(Network.SHARED)
+            .dependsOn(POSTGRES)
+            // container port 5432 over the shared network - NOT POSTGRES.getJdbcUrl(),
+            // which is the host-mapped address and is unreachable from inside the network
+            .withEnv("POSTGRES_JDBC_URL", "jdbc:postgresql://postgres:5432/" + POSTGRES.getDatabaseName())
+            .withEnv("POSTGRES_USER", POSTGRES.getUsername())
+            .withEnv("POSTGRES_PASS", POSTGRES.getPassword());
 
     private final HttpClient httpClient = HttpClient.newHttpClient();
 
-    @BeforeAll
-    static void beforeAll() throws Exception {
-        // Migrate database
-        Flyway.configure()
-            .dataSource(
-                postgres.getJdbcUrl(),
-                postgres.getUsername(),
-                postgres.getPassword())
-            .locations("db/migration")
-            .load()
-            .migrate();
-
-        // Configure and start application container
-        container.withEnv(Map.of(
-            "DB_URL", postgres.getJdbcUrl(),
-            "DB_USER", postgres.getUsername(),
-            "DB_PASS", postgres.getPassword()
-        ));
-        container.start();
-    }
-
-    @AfterAll
-    static void afterAll() {
-        container.stop();
-    }
-
     @Test
-    void shouldCreateResource() throws Exception {
-        // given
-        var requestBody = new JSONObject()
-            .put("name", "test-resource");
+    void systemProbes_ShouldBeHealthy() throws Exception {
+        assertEquals(200, get(APP.getSystemURI().resolve("/system/liveness")).statusCode());
+        assertEquals(200, get(APP.getSystemURI().resolve("/system/readiness")).statusCode());
+    }
 
-        // when
-        var request = HttpRequest.newBuilder()
-            .POST(HttpRequest.BodyPublishers.ofString(requestBody.toString()))
-            .uri(getURI(container).resolve("/api/resources"))
-            .header("Content-Type", "application/json")
-            .timeout(Duration.ofSeconds(5))
-            .build();
+    /**
+     * A 200 from /metrics is not evidence that metrics work: with no MetricsScraper in the
+     * graph the handler still answers 200 with the body "# Metric Scraper disabled".
+     *
+     * <p>This test therefore asserts on content, and needs two things from the application:
+     * <ul>
+     *   <li>{@code implementation "io.koraframework:micrometer-module"} on its runtime classpath;
+     *   <li>{@code httpServer.telemetry.metrics.enabled = true} - component metrics default to
+     *       false in Kora 2.0, so http_server_* series are absent without it.
+     * </ul>
+     */
+    @Test
+    void metrics_ShouldExposeRealSeries() throws Exception {
+        get(APP.getURI().resolve("/api/resources/does-not-exist"));   // produce one sample
 
-        var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+        var response = get(APP.getSystemURI().resolve("/metrics"));
 
-        // then
         assertEquals(200, response.statusCode());
-        var responseBody = new JSONObject(response.body());
-        assertTrue(responseBody.has("id"));
-        assertEquals("test-resource", responseBody.getString("name"));
+        assertFalse(response.body().contains("Metric Scraper disabled"), "no MetricsScraper in the graph");
+        assertTrue(response.body().contains("kora_up"), "meter registry is not live");
+        assertTrue(response.body().contains("http_server_request_duration"), "component metrics are disabled");
     }
 
     @Test
-    void shouldGetResource() throws Exception {
-        // given - create resource first
-        var createRequest = HttpRequest.newBuilder()
-            .POST(HttpRequest.BodyPublishers.ofString("{\"name\":\"test\"}"))
-            .uri(getURI(container).resolve("/api/resources"))
-            .header("Content-Type", "application/json")
-            .timeout(Duration.ofSeconds(5))
-            .build();
-        var createResponse = httpClient.send(createRequest, HttpResponse.BodyHandlers.ofString());
-        var resourceId = new JSONObject(createResponse.body()).getString("id");
+    void createResource_ShouldReturn201() throws Exception {
+        var response = sendJson("POST", "/api/resources", new JSONObject()
+                .put("name", "test-resource")
+                .put("email", uniqueEmail("test")));
 
-        // when
-        var getRequest = HttpRequest.newBuilder()
-            .GET()
-            .uri(getURI(container).resolve("/api/resources/" + resourceId))
-            .timeout(Duration.ofSeconds(5))
-            .build();
-
-        var getResponse = httpClient.send(getRequest, HttpResponse.BodyHandlers.ofString());
-
-        // then
-        assertEquals(200, getResponse.statusCode());
+        assertEquals(201, response.statusCode());
+        var body = new JSONObject(response.body());
+        assertTrue(body.has("id"));
+        assertEquals("test-resource", body.getString("name"));
     }
 
     @Test
-    void shouldDeleteResource() throws Exception {
-        // given - create resource first
-        var createRequest = HttpRequest.newBuilder()
-            .POST(HttpRequest.BodyPublishers.ofString("{\"name\":\"test\"}"))
-            .uri(getURI(container).resolve("/api/resources"))
-            .header("Content-Type", "application/json")
-            .timeout(Duration.ofSeconds(5))
-            .build();
-        var createResponse = httpClient.send(createRequest, HttpResponse.BodyHandlers.ofString());
-        var resourceId = new JSONObject(createResponse.body()).getString("id");
+    void getResource_ShouldReturnCreatedResource() throws Exception {
+        var created = sendJson("POST", "/api/resources", new JSONObject()
+                .put("name", "readable")
+                .put("email", uniqueEmail("read")));
+        var id = new JSONObject(created.body()).getString("id");
 
-        // when
+        var response = get(APP.getURI().resolve("/api/resources/" + id));
+
+        assertEquals(200, response.statusCode());
+        assertEquals("readable", new JSONObject(response.body()).getString("name"));
+    }
+
+    @Test
+    void getResource_NotFound_ShouldReturn404() throws Exception {
+        assertEquals(404, get(APP.getURI().resolve("/api/resources/999999")).statusCode());
+    }
+
+    @Test
+    void createResource_InvalidBody_ShouldReturn400() throws Exception {
+        var request = HttpRequest.newBuilder()
+                .POST(HttpRequest.BodyPublishers.ofString("{}"))
+                .uri(APP.getURI().resolve("/api/resources"))
+                .header("Content-Type", "application/json")
+                .timeout(Duration.ofSeconds(10))
+                .build();
+
+        assertEquals(400, httpClient.send(request, HttpResponse.BodyHandlers.ofString()).statusCode());
+    }
+
+    @Test
+    void deleteResource_ShouldRemoveRow() throws Exception {
+        var created = sendJson("POST", "/api/resources", new JSONObject()
+                .put("name", "doomed")
+                .put("email", uniqueEmail("del")));
+        var id = new JSONObject(created.body()).getString("id");
+
         var deleteRequest = HttpRequest.newBuilder()
-            .DELETE()
-            .uri(getURI(container).resolve("/api/resources/" + resourceId))
-            .timeout(Duration.ofSeconds(5))
-            .build();
+                .DELETE()
+                .uri(APP.getURI().resolve("/api/resources/" + id))
+                .timeout(Duration.ofSeconds(10))
+                .build();
+        assertEquals(204, httpClient.send(deleteRequest, HttpResponse.BodyHandlers.ofString()).statusCode());
 
-        var deleteResponse = httpClient.send(deleteRequest, HttpResponse.BodyHandlers.ofString());
+        assertEquals(404, get(APP.getURI().resolve("/api/resources/" + id)).statusCode());
 
-        // then
-        assertEquals(200, deleteResponse.statusCode());
-
-        // Verify database state using JDBC
+        // the host-mapped address is the right one here: this runs in the test JVM, not in a container
         try (Connection conn = DriverManager.getConnection(
-                postgres.getJdbcUrl(),
-                postgres.getUsername(),
-                postgres.getPassword());
+                POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword());
              Statement stmt = conn.createStatement()) {
-            ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM resources");
+            ResultSet rs = stmt.executeQuery("SELECT COUNT(*) FROM resources WHERE id = '" + id + "'");
             rs.next();
             assertEquals(0, rs.getInt(1));
+        }
+    }
+
+    private HttpResponse<String> get(URI uri) throws Exception {
+        var request = HttpRequest.newBuilder().GET().uri(uri).timeout(Duration.ofSeconds(10)).build();
+        return httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+    }
+
+    private HttpResponse<String> sendJson(String method, String path, JSONObject payload) throws Exception {
+        var request = HttpRequest.newBuilder()
+                .uri(APP.getURI().resolve(path))
+                .header("Content-Type", "application/json")
+                .timeout(Duration.ofSeconds(10));
+
+        switch (method) {
+            case "POST" -> request.POST(HttpRequest.BodyPublishers.ofString(payload.toString()));
+            case "PUT" -> request.PUT(HttpRequest.BodyPublishers.ofString(payload.toString()));
+            default -> throw new IllegalArgumentException("Unsupported method: " + method);
+        }
+
+        return httpClient.send(request.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    private String uniqueEmail(String prefix) {
+        // a static container is shared by every method: unique data, not a fresh container
+        return prefix + "-" + UUID.randomUUID() + "@example.com";
+    }
+
+    /**
+     * The application under test. Kora ships no Testcontainers integration, so this wrapper
+     * is ordinary application code: it builds the image, exposes both Kora ports, and gates
+     * startup on the readiness probe.
+     *
+     * <p>Port 8085 is the system server (httpServer.system.port), which serves
+     * /system/readiness, /system/liveness and /metrics. Port 8080 is the public API
+     * (httpServer.port). Waiting on a log line would bind the test to Kora startup message
+     * wording, which is not part of the framework's contract.
+     */
+    static final class AppContainer extends GenericContainer<AppContainer> {
+
+        private AppContainer() {
+            super(new ImageFromDockerfile("my-service-black-box")   // image names must be lowercase
+                    .withDockerfile(Path.of("../my-service-app/Dockerfile")));
+        }
+
+        private AppContainer(DockerImageName image) {
+            super(image);
+        }
+
+        /** Reuses a prebuilt image when APP_IMAGE is set (CI), otherwise builds the Dockerfile. */
+        static AppContainer build() {
+            var appImage = System.getenv("APP_IMAGE");
+            var container = (appImage != null && !appImage.isBlank())
+                    ? new AppContainer(DockerImageName.parse(appImage))
+                    : new AppContainer();
+
+            return container
+                    .withExposedPorts(8080, 8085)
+                    .withStartupTimeout(Duration.ofSeconds(30))
+                    .waitingFor(Wait.forHttp("/system/readiness").forPort(8085).forStatusCode(200))
+                    .withLogConsumer(new Slf4jLogConsumer(LoggerFactory.getLogger(AppContainer.class)));
+        }
+
+        URI getURI() {
+            return URI.create("http://" + getHost() + ":" + getMappedPort(8080));
+        }
+
+        URI getSystemURI() {
+            return URI.create("http://" + getHost() + ":" + getMappedPort(8085));
         }
     }
 }

@@ -1,265 +1,291 @@
 # Entity Mapping Reference
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/database-common.md`, `database-jdbc.md`
-**Examples:** `.kora-agent/kora-examples/examples/java/kora-java-database-jdbc/`
-**Module:** `ru.tinkoff.kora:database-jdbc`
+**Applies to:** Kora 2.x (`io.koraframework:database-jdbc`)
 
 ## Contents
 
 - [Core annotations](#core-annotations)
+- [Kotlin use-site targets](#kotlin-use-site-targets)
+- [Nullability](#nullability)
 - [Embedded types](#embedded-types)
 - [Naming strategy](#naming-strategy)
-- [Type mapping](#type-mapping)
+- [Supported column types](#supported-column-types)
 - [JSONB mapping (PostgreSQL)](#jsonb-mapping-postgresql)
-- [Nullable fields](#nullable-fields)
 - [Generated identifiers](#generated-identifiers)
 - [Common pitfalls](#common-pitfalls)
 
 ---
 
-## Core Annotations
+## Core annotations
 
-### @Table
+| Annotation | Package | Target |
+|------------|---------|--------|
+| `@EntityJdbc` | **`io.koraframework.database.jdbc.annotation`** | `TYPE` |
+| `@Table("name")` | `io.koraframework.database.common.annotation` | `TYPE` |
+| `@Column("name")` | `io.koraframework.database.common.annotation` | `FIELD`, `PARAMETER`, `RECORD_COMPONENT`, `TYPE_USE` |
+| `@Id` | `io.koraframework.database.common.annotation` | `FIELD`, `PARAMETER`, `RECORD_COMPONENT`, `METHOD` |
+| `@Embedded("prefix_")` | `io.koraframework.database.common.annotation` | `FIELD`, `PARAMETER`, `RECORD_COMPONENT` |
 
-Maps a Java record to a database table.
-
-```java
-@Table("users")
-public record User(Long id, String email) {}
-```
-
-### @Column
-
-Explicit column mapping for each field.
-
-```java
-@Table("users")
-public record User(
-    @Column("user_id") Long id,
-    @Column("email_address") String email,
-    @Column("created_at") LocalDateTime createdAt
-) {}
-```
-
-**Best Practice:** Always use `@Column` for all fields to avoid ambiguity.
-
-### @Id
-
-Marks the primary key field.
-
-```java
-@Table("users")
-public record User(
-    @Id
-    @Column("id")
-    Long id,
-    
-    @Column("email")
-    String email
-) {}
-```
-
-**Important:** The ID type must match the database column type exactly (`Long`, `UUID`, `String`).
-
-### @EntityJdbc
-
-Optimizes entity mapping for JDBC module. Always use for JDBC entities.
+`@EntityJdbc` is the only one whose package changed in 2.0. It makes the processor emit
+`$<Entity>_JdbcRowMapper`, `$<Entity>_JdbcResultSetMapper` and a list variant, so the repository
+never has to build a converter by reflection.
 
 ```java
 @EntityJdbc
 @Table("users")
 public record User(
-    @Id Long id,
-    String email,
-    LocalDateTime createdAt
-) {}
+        @Id Long id,
+        @Column("email_address") String email,
+        String firstName,                       // -> first_name
+        @Nullable LocalDateTime createdAt) {}   // -> created_at
 ```
+
+`@Column` is only needed when the column name differs from the entity's naming strategy
+(`snake_lower_case` by default). `@Id` is required for `%{…#where = @id}`, for `%{…#updates}` to
+exclude the key, and for `@Id`-on-method generated keys.
+
+`@Table` is optional — without it the table name is the class name run through the same naming
+strategy (`OrderItem` → `order_item`).
 
 ---
 
-## Embedded Types
+## Kotlin use-site targets
 
-Use `@Embedded` at the **field use-site** to flatten a value object into the parent table's columns. An optional prefix (`@Embedded("address_")`) is prepended to each nested column name.
+Kora reads the **field**, so annotate data-class properties with `@field:`:
 
-```java
-public record Address(
-    @Column("street") String street,
-    @Column("city") String city,
-    @Column("zip_code") String zipCode
-) {}
-
-@Table("users")
+```kotlin
 @EntityJdbc
-public record User(
-    @Id Long id,
-    String email,
-    @Embedded("address_") Address address  // -> address_street, address_city, address_zip_code
-) {}
+@Table("entities")
+data class Entity(
+    @field:Id val id: String,
+    @field:Column("value1") val field1: Int,
+    val value2: String,
+    val value3: String?
+)
 ```
 
-### Composite Keys with @Embedded
+`@field:Id`, `@field:Column`, `@field:Embedded` are the forms used throughout the migrated
+examples. `@Mapping` is the exception: it also targets `PARAMETER`, and the examples apply it
+without a use-site target (see [custom-mappers-reference.md](custom-mappers-reference.md)).
+
+---
+
+## Nullability
+
+**Java** uses JSpecify `org.jspecify.annotations.Nullable`. The processor accepts any annotation
+whose fully-qualified name ends in `.Nullable`, but JSpecify is what the framework and the migrated
+examples use, and it is what the rest of Kora 2.0 is marked with.
+
+JSpecify annotations are **type-use**, so position matters on a qualified nested type:
+
+```java
+// wrong: error: type annotation @Nullable is not expected here
+void set(PreparedStatement stmt, int index, @Nullable Entity.FieldType value);
+
+// right
+void set(PreparedStatement stmt, int index, Entity.@Nullable FieldType value);
+```
+
+`@Column` shares the `TYPE_USE` target and behaves the same way on qualified types.
+
+**Kotlin** expresses nullability in the type — `String?`. Do not carry Java nullability annotations
+into Kotlin sources.
+
+A field with no nullability marker is treated as non-null; a `NULL` in that column surfaces as a
+failure while reading the row, not as a silent `null`.
+
+---
+
+## Embedded types
+
+`@Embedded` on a field flattens a nested record/data class into the parent's columns. The optional
+value is a prefix prepended to every nested column name.
+
+```java
+public record Address(String street, String city, @Column("zip_code") String zip) {}
+
+@EntityJdbc
+@Table("users")
+public record User(
+        @Id Long id,
+        String email,
+        @Embedded("address_") Address address) {}   // address_street, address_city, address_zip_code
+```
+
+### Composite keys
 
 ```java
 @EntityJdbc
 @Table("order_items")
 public record OrderItem(
-    @Id @Embedded OrderItemId id,
-    @Column("quantity") int quantity,
-    @Column("price") BigDecimal price
-) {
-    @EntityJdbc
+        @Id @Embedded OrderItemId id,
+        @Column("quantity") int quantity,
+        @Column("price") BigDecimal price) {
+
     public record OrderItemId(
-        @Column("order_id") Long orderId,
-        @Column("product_id") Long productId
-    ) {}
+            @Column("order_id") Long orderId,
+            @Column("product_id") Long productId) {}
 }
 ```
+
+The embedded key type does **not** need `@EntityJdbc` — it is expanded into the parent's mapper.
 
 Repository usage:
 
 ```java
-@Repository
-public interface OrderItemRepository extends JdbcRepository {
-    @Query("SELECT %{return#selects} FROM %{return#table} WHERE %{id#where}")
-    @Nullable
-    OrderItem findById(OrderItem.OrderItemId id);
-}
+@Query("SELECT %{return#selects} FROM %{return#table} WHERE %{id#where}")
+@Nullable
+OrderItem findById(OrderItem.OrderItemId id);
 ```
 
-`%{id#where}` expands to `WHERE order_id = :id.orderId AND product_id = :id.productId`; you may also write the columns out explicitly.
+`%{id#where}` expands to `order_id = :id.orderId AND product_id = :id.productId`.
+`%{entity#where = @id}` does the same from the parent entity, expanding the embedded key into all
+of its columns.
+
+`@Embedded` also composes with a nullable embedded value: `@Id @Embedded @Nullable EntityId id`
+still expands to every key column.
 
 ---
 
 ## Naming strategy
 
-Without `@Column`, field names convert to `snake_lower_case` by default. To change the strategy for a whole entity, apply `@NamingStrategy` with a `NameConverter` (must have a no-arg constructor). Built-in converters:
+Without `@Column`, a field name is converted by the entity's naming strategy — `SnakeCaseNameConverter`
+unless `@NamingStrategy` says otherwise. `@NamingStrategy` is
+`io.koraframework.common.annotation.NamingStrategy`; converters live in `io.koraframework.common.naming`
+and must have an accessible no-arg constructor.
 
-| Converter | Result |
-|-----------|--------|
-| `NoopNameConverter` | field name as-is |
-| `SnakeCaseNameConverter` | `snake_lower_case` (default) |
-| `SnakeCaseUpperNameConverter` | `SNAKE_UPPER_CASE` |
-| `PascalCaseNameConverter` | `PascalCase` |
-| `CamelCaseNameConverter` | `camelCase` |
+| Converter | Result for `firstName` |
+|-----------|------------------------|
+| `NoopNameConverter` | `firstName` |
+| `SnakeCaseNameConverter` (default) | `first_name` |
+| `SnakeCaseUpperNameConverter` | `FIRST_NAME` |
+| `PascalCaseNameConverter` | `FirstName` |
+| `CamelCaseNameConverter` | `firstName` |
 
 ```java
+@EntityJdbc
 @NamingStrategy(NoopNameConverter.class)
 public record Entity(String id, String name) {}
 ```
 
-`@NamingStrategy` and the converters come from `ru.tinkoff.kora.common.naming`. There is no `db.namingStrategy` config key — naming is annotation-driven only.
+The strategy applies to the `@Table` name as well when `@Table` is absent. There is **no**
+`jdbc.namingStrategy` config key — naming is annotation-driven only.
 
 ---
 
-## Type Mapping
+## Supported column types
 
-### Primitive Types
+Two tiers, both provided out of the box.
 
-| Java Type | SQL Type | Notes |
-|-----------|----------|-------|
-| `boolean` | BOOLEAN | |
-| `short` | SMALLINT | |
-| `int` | INTEGER | |
-| `long` | BIGINT | |
-| `float` | REAL | |
-| `double` | DOUBLE PRECISION | |
+**Inlined natively** by the processor (direct `ResultSet` / `PreparedStatement` calls, no mapper
+component involved):
 
-### Wrapper Types
+`boolean`, `short`, `int`, `long`, `float`, `double` and their boxed forms, `String`,
+`BigDecimal`, `byte[]`, `LocalDate`, `LocalDateTime`.
 
-| Java Type | SQL Type | Notes |
-|-----------|----------|-------|
-| `Boolean` | BOOLEAN | Nullable |
-| `Short` | SMALLINT | Nullable |
-| `Integer` | INTEGER | Nullable |
-| `Long` | BIGINT | Nullable |
-| `Float` | REAL | Nullable |
-| `Double` | DOUBLE PRECISION | Nullable |
+**Served by `JdbcMapperModule`** (`@DefaultComponent` mappers, pulled in by `JdbcDatabaseModule`):
+everything above plus `Byte`, `UUID`, `LocalTime`, `OffsetTime`, `OffsetDateTime`.
 
-### String & Binary
+Anything else — `Instant`, `BigInteger`, `Duration`, enums, `List<T>` arrays, JSONB payloads,
+domain value types — needs a `JdbcResultColumnMapper<T>` and/or `JdbcParameterColumnMapper<T>`.
+Without one the build fails with `No component found for dependency: JdbcResultColumnMapper<X>`.
+See [custom-mappers-reference.md](custom-mappers-reference.md).
 
-| Java Type | SQL Type | Notes |
-|-----------|----------|-------|
-| `String` | VARCHAR(n) | |
-| `String` | TEXT | PostgreSQL |
-| `byte[]` | BYTEA | PostgreSQL |
-| `byte[]` | BLOB | MySQL, Oracle |
+Typical PostgreSQL column choices:
 
-### Date & Time
-
-| Java Type | SQL Type | Notes |
-|-----------|----------|-------|
-| `LocalDate` | DATE | |
-| `LocalTime` | TIME | |
-| `LocalDateTime` | TIMESTAMP | |
-| `OffsetTime` | TIME WITH TIME ZONE | |
-| `OffsetDateTime` | TIMESTAMP WITH TIME ZONE | |
-| `Instant` | TIMESTAMP | Converted to UTC |
-
-### Special Types
-
-| Java Type | SQL Type | Notes |
-|-----------|----------|-------|
-| `UUID` | UUID | PostgreSQL |
-| `UUID` | CHAR(36) | MySQL |
-| `BigDecimal` | DECIMAL(p, s) | |
-| `BigInteger` | NUMERIC | |
+| Java type | PostgreSQL |
+|-----------|-----------|
+| `boolean` / `Boolean` | `BOOLEAN` |
+| `int` / `Integer` | `INTEGER` |
+| `long` / `Long` | `BIGINT` |
+| `double` / `Double` | `DOUBLE PRECISION` |
+| `BigDecimal` | `NUMERIC(p, s)` |
+| `String` | `VARCHAR(n)` / `TEXT` |
+| `byte[]` | `BYTEA` |
+| `UUID` | `UUID` |
+| `LocalDate` | `DATE` |
+| `LocalTime` | `TIME` |
+| `LocalDateTime` | `TIMESTAMP` |
+| `OffsetTime` | `TIME WITH TIME ZONE` |
+| `OffsetDateTime` | `TIMESTAMP WITH TIME ZONE` |
 
 ---
 
-## JSONB Mapping (PostgreSQL)
+## JSONB mapping (PostgreSQL)
 
-Use `@Json` annotation with `JdbcJsonbMapperModule`:
+Kora ships no JSONB column mapper — declare a small generic `@Module` once and tag it with `@Json`
+so the processor picks it for `@Json`-annotated fields. This is the module from the migrated
+examples:
 
 ```java
-// Application module
-@KoraApp
-public interface Application extends JdbcDatabaseModule, JdbcJsonbMapperModule {}
+@Module
+public interface JdbcJsonbMapperModule {
 
-// Entity with JSONB
-@EntityJdbc
-@Table("users")
-public record User(
-    @Id UUID id,
-    String email,
-    @Json Profile profile  // Serialized to JSONB
-) {
     @Json
-    public record Profile(String firstName, String lastName) {}
+    default <T> JdbcParameterColumnMapper<T> jdbcJsonParameterColumnMapper(JsonWriter<T> writer) {
+        return (stmt, index, value) -> {
+            if (value != null) {
+                var jsonb = new PGobject();
+                jsonb.setType("jsonb");
+                jsonb.setValue(writer.toString(value));
+                stmt.setObject(index, jsonb);
+            } else {
+                stmt.setNull(index, Types.NULL);
+            }
+        };
+    }
+
+    @Json
+    default <T> JdbcResultColumnMapper<T> jdbcJsonResultColumnMapper(JsonReader<T> reader) {
+        return (row, index) -> {
+            var value = row.getString(index);
+            return value == null ? null : reader.read(value);
+        };
+    }
 }
 ```
 
-`@Json` supports:
-- Nested records
-- Collections (`List`, `Map`)
-- Other `@Json` types
+`JsonWriter.toString` / `JsonReader.read` no longer declare checked exceptions in 2.0 — the
+`*Unchecked` variants are gone.
 
----
-
-## Nullable Fields
-
-Use `@Nullable` for optional fields:
+Entity and application wiring:
 
 ```java
-@EntityJdbc
-@Table("tasks")
-public record Task(
-    @Id Long id,
-    @Column("title") String title,
-    @Column("user_assignee_id") @Nullable Long userAssigneeId  // Optional FK
-) {}
+@Repository
+public interface JsonbRepository extends JdbcRepository {
+
+    @EntityJdbc
+    record Entity(UUID id, @Column("value") @Json JsonbValue value) {
+        @Json
+        public record JsonbValue(String name, String surname) {}
+    }
+
+    @Query("SELECT * FROM entities_jsonb WHERE id = :id")
+    @Nullable
+    Entity findById(UUID id);
+
+    @Query("INSERT INTO entities_jsonb(id, value) VALUES (:entity.id, :entity.value::jsonb)")
+    void insert(Entity entity);
+}
+
+@KoraApp
+public interface Application extends
+        HoconConfigModule, LogbackModule, JsonModule, JdbcDatabaseModule, JdbcJsonbMapperModule {}
 ```
 
-**Important:** Any `@Nullable` is accepted (`jakarta.annotation.Nullable`, `javax.annotation.Nullable`, `org.jetbrains.annotations.Nullable`). All fields are NotNull unless marked nullable. In Kotlin use `String?` syntax instead.
+`@Json` and `JsonReader`/`JsonWriter` come from `io.koraframework.json.common(.annotation)`, artifact
+`io.koraframework:json-common`, module `io.koraframework.json.common.JsonModule`. The `::jsonb` cast
+in the INSERT is what makes PostgreSQL accept the parameter.
 
 ---
 
-## Generated Identifiers
+## Generated identifiers
 
-### Sequence-based (PostgreSQL IDENTITY)
+### Sequence / identity
 
 ```sql
 CREATE TABLE users (
-    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    id    BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     email VARCHAR(255) NOT NULL
 );
 ```
@@ -268,25 +294,15 @@ CREATE TABLE users (
 @EntityJdbc
 @Table("users")
 public record User(@Id Long id, String email) {
-    public User(String email) { this(null, email); }  // Constructor for insert
+    public User(String email) { this(null, email); }   // convenience ctor for inserts
 }
 
-@Repository
-public interface UserRepository extends JdbcRepository {
-    @Query("INSERT INTO %{entity#inserts-= @id} RETURNING id")
-    @Id
-    Long insert(User user);
-}
+@Query("INSERT INTO %{entity#inserts -= @id}")
+@Id
+Long insert(User user);
 ```
 
-### UUID-based (Client-Generated)
-
-```sql
-CREATE TABLE users (
-    id UUID PRIMARY KEY,
-    email VARCHAR(255) NOT NULL
-);
-```
+### Client-generated UUID
 
 ```java
 @EntityJdbc
@@ -295,29 +311,29 @@ public record User(@Id UUID id, String email) {
     public User(String email) { this(UUID.randomUUID(), email); }
 }
 
-@Repository
-public interface UserRepository extends JdbcRepository {
-    @Query("INSERT INTO %{entity#inserts}")
-    void insert(User user);
-}
+@Query("INSERT INTO %{entity#inserts}")
+void insert(User user);
 ```
 
 ---
 
-## Common Pitfalls
+## Common pitfalls
 
-| Pitfall | Problem | Solution |
-|---------|---------|----------|
-| **Missing `@EntityJdbc`** | Suboptimal result converters | Always add `@EntityJdbc` to JDBC entities |
-| **Missing `@Column`** | Field not mapped or wrong name | Use `@Column("db_column_name")` for all fields |
-| **Missing `@Id`** | Generated ID retrieval fails | Mark primary key with `@Id` |
-| **ID type mismatch** | Repository ID type doesn't match entity | Ensure exact type match: `Long` vs `UUID` |
-| **Wrong nullable handling** | `null` causes NPE | Use `@Nullable` annotation |
-| **Missing `@Embedded`** | Composite key not flattened | Use `@Embedded` for value objects |
+| Pitfall | Consequence | Fix |
+|---------|-------------|-----|
+| `@EntityJdbc` imported from `io.koraframework.database.jdbc` | `cannot find symbol` | it lives in `…database.jdbc.annotation` |
+| `@Nullable` placed before a qualified nested type in Java | `type annotation @Nullable is not expected here` | `Outer.@Nullable Inner` |
+| Java nullability annotations copied into Kotlin | invalid annotation target under Kotlin 2.4 | use `T?` |
+| Kotlin property annotated without `@field:` | the annotation lands on the constructor parameter and the column mapping is ignored | `@field:Column(...)`, `@field:Id`, `@field:Embedded` |
+| `Instant` or `BigInteger` field with no mapper | `No component found for dependency: JdbcResultColumnMapper<...>` | write a column mapper, or store `OffsetDateTime`/`BigDecimal` |
+| Missing `@Id` | `%{…#where = @id}` fails; `%{…#updates}` tries to write the key | annotate the key field |
+| Key type mismatch between repository parameter and entity | wrong-type bind at runtime | keep both on the same type |
+| Composite key modelled as separate fields | `%{id#where}` has nothing to expand | wrap it in a nested record and use `@Id @Embedded` |
 
 ---
 
-## See Also
+## See also
 
-- [Repository Pattern Reference](repository-pattern-reference.md) — @Repository, @Query, SQL macros
-- [Custom Mappers Reference](custom-mappers-reference.md) — Custom type mapping
+- [repository-pattern-reference.md](repository-pattern-reference.md) — `@Repository`, `@Query`, macros
+- [custom-mappers-reference.md](custom-mappers-reference.md) — the four mapper contracts
+- [custom-mappers-advanced-reference.md](custom-mappers-advanced-reference.md) — when a mapper is constructed vs injected

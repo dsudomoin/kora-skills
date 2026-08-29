@@ -1,307 +1,164 @@
-# Migrations Reference (Flyway/Liquibase)
+# Migrations Reference (Flyway / Liquibase)
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/database-migration.md`
-**Module:** `ru.tinkoff.kora:database-jdbc`
+**Applies to:** Kora 2.x — `io.koraframework:database-flyway`, `io.koraframework:database-liquibase`
 
-Kora does not include built-in schema migration — use Flyway or Liquibase as standalone dependencies. Kora also provides dedicated migration modules (`flyway`, `liquibase`); for those, see the `kora-database-migration-flyway` / `kora-database-migration-liquibase` skills.
+This page covers only what a **JDBC** repository author needs: how a migration module attaches to
+the `JdbcDataSource` this skill configures, and the 2.0 details that change during a port. The
+`kora-database-migration` skill owns the full surface — changelog authoring, rollbacks, Gradle
+plugins, CI strategy.
+
+> Full skill: [`kora-database-migration`](../../kora-database-migration/SKILL.md)
 
 ## Contents
 
-- [Flyway integration](#flyway-integration)
-- [Liquibase integration](#liquibase-integration)
-- [Flyway vs Liquibase](#flyway-vs-liquibase)
-- [Best practices](#best-practices)
+- [How it attaches](#how-it-attaches)
+- [Flyway](#flyway)
+- [Liquibase](#liquibase)
+- [Migration files](#migration-files)
+- [Running migrations out of process](#running-migrations-out-of-process)
+- [What changed from 1.x](#what-changed-from-1x)
 
 ---
 
-## Flyway Integration
+## How it attaches
 
-### Dependency
+Both modules install a `GraphInterceptor<JdbcDataSource>`. The interceptor's `afterInit` runs
+**after** the pool is initialised and **before** anything that depends on it, so repositories never
+see a pre-migration schema. There is no separate datasource, no second pool, and no ordering
+annotation to get right: adding the module to `@KoraApp` is the whole wiring.
+
+Because it hangs off `JdbcDataSource`, the migration inherits the `jdbc` section's URL,
+credentials and pool — do not repeat them under `flyway` / `liquibase`.
+
+---
+
+## Flyway
 
 ```groovy
-dependencies {
-    implementation "org.flywaydb:flyway-core:10.10.0"
-    implementation "org.flywaydb:flyway-database-postgresql:10.10.0"  // PostgreSQL-specific
-}
+implementation "io.koraframework:database-flyway"
+// database-flyway ships flyway-core only; the dialect artifact is the application's job
+implementation "org.flywaydb:flyway-database-postgresql:13.3.0"
 ```
 
-### Configuration
+Without the dialect artifact, Flyway 10+ fails at startup with `Unsupported Database: PostgreSQL`.
+Kora's catalog pins Flyway `13.3.0`; keep `flyway-core` and the dialect on the same version.
+
+**The pool needs at least two connections.** Flyway uses one connection for the migration and a
+second for schema management, so `jdbc.maxPoolSize = 1` starves the interceptor during graph
+initialisation — startup stalls until `connectionTimeout` and then fails on the pool, not on the
+migration. Kora's own interceptor test pins `maxPoolSize = 2` for this reason.
+
+```java
+@KoraApp
+public interface Application extends
+        HoconConfigModule,
+        LogbackModule,
+        JdbcDatabaseModule,
+        FlywayJdbcDatabaseModule { }
+```
 
 ```hocon
-db {
-    jdbcUrl = ${POSTGRES_JDBC_URL}
-    username = ${POSTGRES_USER}
-    password = ${POSTGRES_PASS}
-}
-
 flyway {
-    url = ${db.jdbcUrl}
-    user = ${db.username}
-    password = ${db.password}
-    locations = ["classpath:db/migration"]
-    defaultSchema = "public"
+    enabled = true                       // default true
+    mode = MIGRATE                       // MIGRATE (default) | REPAIR | CLEAN_MIGRATE
+    locations = ["db/migration"]         // default ["db/migration"]
+    executeInTransaction = true
     validateOnMigrate = true
-    cleanDisabled = false
+    mixed = false
+    configurationProperties {            // raw Flyway properties passthrough
+        flyway.defaultSchema = "public"
+    }
 }
 ```
 
-### Migration Files
+`FlywayJdbcDatabaseModule` wires `new FlywayFactoryModule("flyway")`, so the section name is
+`flyway`. `CLEAN_MIGRATE` drops the schema before migrating — never enable it outside a
+throwaway environment.
 
-Location: `src/main/resources/db/migration/`
+## Liquibase
 
-**Naming convention:** `V{version}__{description}.sql`
+```groovy
+implementation "io.koraframework:database-liquibase"
+```
+
+```java
+@KoraApp
+public interface Application extends
+        HoconConfigModule,
+        LogbackModule,
+        JdbcDatabaseModule,
+        LiquibaseJdbcDatabaseModule { }
+```
+
+```hocon
+liquibase {
+    changelog = "db/changelog/db.changelog-master.xml"   // this is the default
+}
+```
+
+`LiquibaseJdbcDatabaseModule` wires `new LiquibaseFactoryModule("liquibase")`. Kora's catalog pins
+Liquibase `5.0.3`.
+
+---
+
+## Migration files
+
+Flyway, `src/main/resources/db/migration/`, named `V<version>__<description>.sql`:
 
 ```
 db/migration/
 ├── V1__init_schema.sql
-├── V1.1__add_users_table.sql
-├── V1.2__add_orders_table.sql
+├── V1_1__add_users_table.sql
 └── V2__add_indexes.sql
 ```
 
-### Example Migration
-
 ```sql
 -- V1__init_schema.sql
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
 CREATE TABLE users (
-    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    email VARCHAR(255) NOT NULL UNIQUE,
-    name VARCHAR(255) NOT NULL,
+    id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    email      VARCHAR(255) NOT NULL UNIQUE,
+    first_name VARCHAR(255) NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
-
-CREATE TABLE orders (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id BIGINT NOT NULL REFERENCES users(id),
-    total_amount DECIMAL(10, 2) NOT NULL,
-    status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
-    created_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX idx_orders_user_id ON orders(user_id);
-CREATE INDEX idx_orders_status ON orders(status);
 ```
 
-### Programmatic Execution
+Keep the column names in step with the entity's naming strategy — `snake_lower_case` by default,
+so `firstName` needs a `first_name` column unless the field carries `@Column`. See
+[entity-mapping-reference.md](entity-mapping-reference.md#naming-strategy).
 
-```java
-@Component
-public class DatabaseMigrator {
-    private final DataSource dataSource;
-    
-    public DatabaseMigrator(DataSource dataSource) {
-        this.dataSource = dataSource;
-    }
-    
-    public void migrate() {
-        Flyway flyway = Flyway.configure()
-            .dataSource(dataSource)
-            .locations("classpath:db/migration")
-            .load();
-        flyway.migrate();
-    }
-}
-```
-
-### Gradle Task
-
-```groovy
-plugins {
-    id "org.flywaydb.flyway" version "10.10.0"
-}
-
-flyway {
-    url = System.getenv("POSTGRES_JDBC_URL")
-    user = System.getenv("POSTGRES_USER")
-    password = System.getenv("POSTGRES_PASS")
-    locations = ["filesystem:src/main/resources/db/migration"]
-}
-```
-
-```bash
-./gradlew flywayMigrate
-./gradlew flywayValidate
-./gradlew flywayClean
-```
+Liquibase uses `src/main/resources/db/changelog/`, XML by default (`db.changelog-master.xml`);
+point `changelog` elsewhere for YAML or JSON.
 
 ---
 
-## Liquibase Integration
+## Running migrations out of process
 
-### Dependency
+Migrating on startup races when several replicas start together, and it couples schema changes to
+deployment. For anything horizontally scaled, run migrations as their own step — the Flyway Gradle
+plugin, a Flyway container in `docker-compose`, a Kubernetes `Job`, or a CI stage — and set
+`flyway.enabled = false` in the service. Kora's module is the convenient path for local
+development, tests and single-instance services.
 
-```groovy
-dependencies {
-    implementation "org.liquibase:liquibase-core:4.27.0"
-}
-```
-
-### Configuration
-
-```hocon
-db {
-    jdbcUrl = ${POSTGRES_JDBC_URL}
-    username = ${POSTGRES_USER}
-    password = ${POSTGRES_PASS}
-}
-
-liquibase {
-    url = ${db.jdbcUrl}
-    username = ${db.username}
-    password = ${db.password}
-    changeLogFile = "db/changelog/db.changelog-master.yaml"
-}
-```
-
-### Changelog File (YAML)
-
-Location: `src/main/resources/db/changelog/db.changelog-master.yaml`
-
-```yaml
-databaseChangeLog:
-  - includeAll:
-      path: db/changelog/changes/
-  
-  - changeSet:
-      id: 1
-      author: app
-      changes:
-        - createTable:
-            tableName: users
-            columns:
-              - column:
-                  name: id
-                  type: BIGINT
-                  autoIncrement: true
-                  constraints:
-                    primaryKey: true
-              - column:
-                  name: email
-                  type: VARCHAR(255)
-                  constraints:
-                    nullable: false
-                    unique: true
-              - column:
-                  name: name
-                  type: VARCHAR(255)
-                  constraints:
-                    nullable: false
-              - column:
-                  name: created_at
-                  type: TIMESTAMP
-                  defaultValueComputed: NOW()
-                  constraints:
-                    nullable: false
-
-  - changeSet:
-      id: 2
-      author: app
-      changes:
-        - createTable:
-            tableName: orders
-            columns:
-              - column:
-                  name: id
-                  type: UUID
-                  defaultValueComputed: uuid_generate_v4()
-                  constraints:
-                    primaryKey: true
-              - column:
-                  name: user_id
-                  type: BIGINT
-                  constraints:
-                    nullable: false
-                    foreignKeyName: fk_orders_user
-                    references: users(id)
-              - column:
-                  name: total_amount
-                  type: DECIMAL(10,2)
-                  constraints:
-                    nullable: false
-              - column:
-                  name: status
-                  type: VARCHAR(50)
-                  defaultValue: PENDING
-                  constraints:
-                    nullable: false
-```
-
-### Programmatic Execution
-
-```java
-@Component
-public class DatabaseMigrator {
-    private final DataSource dataSource;
-    
-    public DatabaseMigrator(DataSource dataSource) {
-        this.dataSource = dataSource;
-    }
-    
-    public void migrate() throws LiquibaseException {
-        Liquibase liquibase = new Liquibase(
-            "db/changelog/db.changelog-master.yaml",
-            new ClassLoaderResourceAccessor(),
-            new JdbcConnection((java.sql.Connection) dataSource.getConnection())
-        );
-        liquibase.migrate();
-    }
-}
-```
-
-### Gradle Task
-
-```groovy
-plugins {
-    id "org.liquibase.gradle" version "2.2.1"
-}
-
-liquibase {
-    activities {
-        main {
-            driver "org.postgresql.Driver"
-            url System.getenv("POSTGRES_JDBC_URL")
-            username System.getenv("POSTGRES_USER")
-            password System.getenv("POSTGRES_PASS")
-            changeLogFile "src/main/resources/db/changelog/db.changelog-master.yaml"
-        }
-    }
-}
-```
-
-```bash
-./gradlew liquibase
-./gradlew liquibaseStatus
-./gradlew liquibaseRollback
-```
+Integration tests are the exception where startup migration shines: the Testcontainers extensions
+used by the migrated examples apply Flyway migrations per test method against a throwaway database.
 
 ---
 
-## Flyway vs Liquibase
+## What changed from 1.x
 
-| Feature | Flyway | Liquibase |
-|---------|--------|-----------|
-| **Format** | SQL (native), Java | XML, YAML, JSON, SQL |
-| **Complexity** | Simple, straightforward | More features, steeper learning curve |
-| **Rollback** | Manual (undo scripts) | Automatic (for most changes) |
-| **Contexts** | Limited | Full support |
-| **Best for** | SQL-first teams, simple migrations | Complex schemas, multi-DB support |
+| 1.x | 2.0 |
+|-----|-----|
+| `ru.tinkoff.kora:database-flyway` / `-liquibase` | `io.koraframework:database-flyway` / `-liquibase` |
+| `ru.tinkoff.kora.database.flyway.FlywayJdbcDatabaseModule` | `io.koraframework.database.flyway.FlywayJdbcDatabaseModule` |
+| The datasource the interceptor wraps was configured under `db { }` | it is configured under **`jdbc { }`** |
+| — | Flyway `13.3.0` needs a separate dialect artifact (`flyway-database-postgresql`) |
 
----
-
-## Best Practices
-
-1. **Version control migrations** — Store all migration files in git
-2. **Immutable migrations** — Never modify applied migrations
-3. **Test migrations** — Run on staging before production
-4. **Backup before migrate** — Especially for destructive operations
-5. **Use transactions** — Wrap related changes in single migration
-6. **Document changes** — Clear commit messages and changelog descriptions
+The `flyway` and `liquibase` section names themselves did not change.
 
 ---
 
-## See Also
+## See also
 
-- [Connection Pool Reference](connection-pool-reference.md) — HikariCP configuration
-- [Entity Mapping Reference](entity-mapping-reference.md) — Table/column mapping
+- [`kora-database-migration`](../../kora-database-migration/SKILL.md) — the full migration skill
+- [database-jdbc-config-reference.md](database-jdbc-config-reference.md) — the `jdbc` section the migration reuses
+- [entity-mapping-reference.md](entity-mapping-reference.md) — column naming that the schema must match

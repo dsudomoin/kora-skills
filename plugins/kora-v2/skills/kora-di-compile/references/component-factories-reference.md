@@ -1,339 +1,403 @@
 # Component Factories Reference
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/container.md`
-**Examples:** `.kora-agent/kora-examples/guides/java/kora-java-guide-dependency-injection/`
+**Applies to:** Kora 2.x (`io.koraframework`)
 
 ## Contents
 
-- [Factory Types](#factory-types)
-- [1. Auto Factory (@Component)](#1-auto-factory-component)
-- [2. Basic Factory](#2-basic-factory)
-- [3. Module Factory](#3-module-factory)
-- [4. Generic Factory](#4-generic-factory)
-- [5. Extension Factory](#5-extension-factory)
-- [Factory Method Patterns](#factory-method-patterns)
+- [Overview](#overview)
+- [1. @Component — Auto Factory](#1-component--auto-factory)
+- [2. Providers on @KoraApp](#2-providers-on-koraapp)
+- [3. @Module Providers](#3-module-providers)
+- [4. Generic Providers (Templates)](#4-generic-providers-templates)
+- [5. @FactoryModule — Parameterised Modules](#5-factorymodule--parameterised-modules)
+- [6. Extension Factories](#6-extension-factories)
+- [Provider Patterns](#provider-patterns)
 - [Factory Selection Guide](#factory-selection-guide)
 - [Common Mistakes](#common-mistakes)
+- [Related References](#related-references)
 
 ## Overview
 
-Component factories are methods or classes that create component instances. Kora supports multiple factory patterns for different use cases.
+A "factory" is anything the processor can call to obtain an instance. Kora 2.0 has six forms, and
+choosing correctly is mostly about *who owns the construction* and *how many instances you need*.
 
-## Factory Types
-
-| Type | Location | Use Case |
-|------|----------|----------|
-| **Auto Factory** | `@Component` class | Standard application services |
-| **Basic Factory** | `@KoraApp` interface | Simple inline creation |
-| **Module Factory** | `@Module` interface | Organized component groups |
-| **Generic Factory** | `@Module` with `<T>` | Parameterized components |
-| **Extension Factory** | Annotation processor | Framework-level creation |
-
-## 1. Auto Factory (@Component)
-
-Automatic component creation from class with single constructor.
+## 1. `@Component` — Auto Factory
 
 ```java
-import ru.tinkoff.kora.common.Component;
+import io.koraframework.common.annotation.Component;
 
 @Component
 public final class UserService {
     private final UserRepository repository;
-    
+
     public UserService(UserRepository repository) {
         this.repository = repository;
     }
 }
 ```
 
-### Requirements
+Requirements: a class, not abstract, exactly one public constructor, no raw types. `final` is a
+convention, not a rule — and a class carrying an aspect annotation must **not** be final (Java) and
+must be `open` (Kotlin). See
+[Component Registration Reference](component-registration-reference.md).
 
-- Not abstract
-- Single public constructor
-- Final (unless aspects applied)
-- All dependencies resolvable
+## 2. Providers on `@KoraApp`
 
-## 2. Basic Factory
-
-Inline factory methods in `@KoraApp` interface.
+The `@KoraApp` interface is itself a module:
 
 ```java
 @KoraApp
-public interface Application {
-    
-    default SomeService someService() {
-        return new SomeService();
-    }
-    
-    default OtherService otherService(SomeService someService) {
-        return new OtherService(someService);
-    }
-    
-    static void main(String[] args) {
-        KoraApplication.run(ApplicationGraph::graph);
-    }
+public interface Application extends HoconConfigModule {
+
+    static void main(String[] args) { KoraApplication.run(ApplicationGraph::graph); }
+
+    default Clock clock() { return Clock.systemUTC(); }
+
+    default SomeService someService(Clock clock) { return new SomeService(clock); }
 }
 ```
 
-**Note:** Factory method **must not return null**.
+Good for one-offs and overrides. Anything reusable belongs in a `@Module`.
 
-## 3. Module Factory
-
-Organized factory methods in `@Module` interface.
+## 3. `@Module` Providers
 
 ```java
-import ru.tinkoff.kora.common.Module;
-import javax.sql.DataSource;
-import com.zaxxer.hikari.HikariConfig;
-import com.zaxxer.hikari.HikariDataSource;
+import io.koraframework.common.annotation.Module;
 
 @Module
-public interface DatabaseModule {
-    
-    default DataSource dataSource() {
-        HikariConfig config = new HikariConfig();
-        config.setJdbcUrl("jdbc:postgresql://localhost:5432/mydb");
-        config.setUsername("postgres");
-        config.setPassword("postgres");
-        return new HikariDataSource(config);
+public interface StorageModule {
+
+    default Function<String, byte[]> stringMapper() {
+        return s -> s.getBytes(StandardCharsets.UTF_8);
     }
-    
-    default UserRepository userRepository(DataSource dataSource) {
-        return new JdbcUserRepository(dataSource);
-    }
-    
-    default OrderRepository orderRepository(DataSource dataSource) {
-        return new JdbcOrderRepository(dataSource);
+
+    default Storage<String> stringStorage(Function<String, byte[]> mapper) {
+        return new TempFileStorage<>(mapper);
     }
 }
 ```
 
-### When to Use Module Factory
+Constraints enforced by the processor:
 
-- Grouping related components
-- External library integration
-- Complex creation logic
-- Multiple components from same source
+- `@Module` on **interfaces** only
+- providers are `default` methods (Kotlin: bodied interface functions); `private`/`static` are ignored
+- the return type must be a reference type and must not be raw
+- a provider must not return `null` unless every consumer declares its parameter `@Nullable`
 
-## 4. Generic Factory
+## 4. Generic Providers (Templates)
 
-Parameterized factory for type-safe generic components.
+A provider with a type parameter is a **template**. The processor instantiates it once per concrete
+type argument actually requested:
 
 ```java
 @Module
-public interface RepositoryModule {
-    
-    // Generic factory method
-    default <T> Repository<T> repository(
-        Class<T> entityType, 
-        DataSource dataSource
-    ) {
-        return new JdbcRepository<>(entityType, dataSource);
-    }
-    
-    // Concrete usages
-    default Repository<User> userRepository(DataSource dataSource) {
-        return repository(User.class, dataSource);
-    }
-    
-    default Repository<Order> orderRepository(DataSource dataSource) {
-        return repository(Order.class, dataSource);
-    }
-    
-    default Repository<Product> productRepository(DataSource dataSource) {
-        return repository(Product.class, dataSource);
+public interface StorageModule {
+
+    default Function<Integer, byte[]> intMapper()   { return i -> new byte[] {i.byteValue()}; }
+    default Function<String, byte[]> stringMapper() { return s -> s.getBytes(UTF_8); }
+
+    default <T> Storage<T> typedStorage(Function<T, byte[]> mapper) {
+        return new TempFileStorage<>(mapper);
     }
 }
 ```
 
-### When to Use Generic Factory
+```kotlin
+@Module
+interface StorageModule {
 
-- Creating parameterized repositories
-- Same logic for multiple types
-- Type-safe generic components
-- Avoid code duplication
+    fun intMapper(): Function<Int, ByteArray> = Function { i -> byteArrayOf(i.toByte()) }
+    fun stringMapper(): Function<String, ByteArray> = Function { s -> s.toByteArray(UTF_8) }
 
-## 5. Extension Factory
+    fun <T> typedStorage(mapper: Function<T, ByteArray>): Storage<T> = TempFileStorage(mapper)
+}
+```
 
-Compile-time code generation for framework components.
+`Storage<String>` resolves to `typedStorage(stringMapper())`, `Storage<Integer>` to
+`typedStorage(intMapper())`. Templates are consulted only after concrete declarations fail. When
+several templates match, the processor resolves each in isolation and requires exactly one to
+succeed; two successes give `Multiple components match dependency`, none re-raises the underlying
+`No component found`.
+
+## 5. `@FactoryModule` — Parameterised Modules
+
+New in 2.0. `@FactoryModule` (`io.koraframework.common.annotation.FactoryModule`) marks a module
+method whose **return value is itself a module**. The returned type is registered as a component,
+and its public instance methods become providers in the graph.
+
+This is what lets the *same* module code be instantiated more than once with different constructor
+arguments — different config paths, different tags:
 
 ```java
-// Kora extension for JDBC repositories
-@Repository
-public interface UserRepository {
-    
-    @Query("SELECT * FROM users WHERE id = :id")
-    User findById(String id);
-    
-    @Query("INSERT INTO users (name, email) VALUES (:name, :email)")
-    void save(String name, String email);
+public class HttpClientFactoryModule {
+
+    private final String configPath;
+
+    public HttpClientFactoryModule(String configPath) {
+        this.configPath = configPath;
+    }
+
+    @Tag(Tag.Factory.class)
+    public HttpClientConfig httpClientConfig(Config config, ConfigValueMapper<HttpClientConfig> mapper) {
+        return mapper.mapOrThrow(config.get(this.configPath));
+    }
+}
+
+public interface OkHttpClientModule extends HttpClientModule {
+
+    @FactoryModule
+    default OkHttpClientFactoryModule okHttpClientFactory() {
+        return new OkHttpClientFactoryModule("httpClient");
+    }
 }
 ```
 
-### Built-in Extensions
+### `@Tag(Tag.Factory.class)`
 
-| Extension | Module | Generated |
-|-----------|--------|-----------|
-| **JDBC Repository** | kora-database-jdbc | `*RepositoryImpl` |
-| **Cassandra Repository** | kora-database-cassandra | `*RepositoryImpl` |
-| **JSON Reader/Writer** | kora-json | `*JsonReader`, `*JsonWriter` |
-| **HTTP Controller** | kora-http-server | `*HttpRouter` |
-| **AOP Aspects** | kora-aop | `*Aspect` |
+Inside a factory module, `@Tag(Tag.Factory.class)` means **"the tag of the enclosing factory-module
+method"**. It works on the provider method and on its parameters. That is how one class produces two
+independent, non-colliding sets of components:
 
-## Factory Method Patterns
+```java
+public interface UndertowSystemHttpServerModule extends SystemHttpServerModule {
 
-### Pattern 1: Config-Based Creation
+    @FactoryModule
+    @SystemApi                                   // @SystemApi is itself annotated @Tag(SystemApi.class)
+    default UndertowHttpServerFactoryModule undertowSystemHttpApi() {
+        return new UndertowHttpServerFactoryModule("kora-undertow-system", "httpServer.system");
+    }
+}
+
+public interface UndertowPublicHttpServerModule extends UndertowSystemHttpServerModule {
+
+    @FactoryModule
+    default UndertowHttpServerFactoryModule undertowPublicHttpApi() {   // no tag
+        return new UndertowHttpServerFactoryModule("kora-undertow", "httpServer");
+    }
+}
+```
+
+Every component the tagged instance provides is tagged `@Tag(SystemApi.class)`; every component the
+untagged instance provides is untagged. One class, two servers, no clashes.
+
+Mechanics worth knowing:
+
+- Each provider inside a factory module gains an implicit dependency on the factory-module instance
+  itself (with the module's tag), so the instance is constructed before its providers run.
+- An annotation that is itself annotated `@Tag(X.class)` acts as the tag `X` — the meta-annotation
+  form used by `@SystemApi`.
+- `@FactoryModule` must return a class or interface type, otherwise:
+
+  ```
+  @FactoryModule method must return a class or interface type.
+
+  Fix:
+    - Change the return type to a module class/interface.
+    - Remove @FactoryModule if this method is a regular provider.
+  ```
+
+- `Tag.Factory` outside a factory module is rejected:
+
+  ```
+  @Tag.Factory can only be used inside factory modules.
+
+  Fix:
+    - Move this provider to a factory module (@FactoryModule).
+    - Replace @Tag.Factory with an explicit @Tag(...) value.
+  ```
+
+You mostly *consume* factory modules (`UndertowPublicHttpServerModule`, `OkHttpClientModule`,
+`LettuceModule`, `GrpcServerModule`, `CassandraDatabaseFactoryModule`) rather than write them. Write
+one when you genuinely need the same wiring twice under different configuration.
+
+## 6. Extension Factories
+
+When no declaration and no template matches, the processor asks its registered extensions to
+generate a component. That is how `@Repository`, `@Json`, `@HttpClient`, `@Valid`, generated gRPC
+stubs and MapStruct/Konvert mappers reach the graph with nothing to register by hand. The full table
+is in [Component Registration Reference](component-registration-reference.md#6-extension-generated-components).
+
+## Provider Patterns
+
+### Lifecycle hooks around a third-party object
+
+Return `Wrapped<T>` and build a `LifecycleWrapper<>`; consumers still inject the plain `T`:
+
+```java
+import io.koraframework.application.graph.LifecycleWrapper;
+import io.koraframework.application.graph.Wrapped;
+
+@Module
+public interface PoolModule {
+
+    default Wrapped<ConnectionPool> connectionPool(PoolConfig config) {
+        return new LifecycleWrapper<>(
+                new HikariConnectionPool(config),
+                ConnectionPool::initialize,   // init
+                ConnectionPool::close);       // release
+    }
+}
+```
+
+See [Graph Roots & Lifecycle Reference](lifecycle-reference.md).
+
+### Config-driven construction
 
 ```java
 @Module
 public interface CacheModule {
-    
-    default Cache cache(Config config) {
-        String type = config.getString("cache.type");
-        return switch (type) {
-            case "redis" -> new RedisCache(config);
-            case "caffeine" -> new CaffeineCache(config);
-            default -> throw new IllegalArgumentException("Unknown cache type: " + type);
+
+    default Cache cache(CacheConfig config) {
+        return switch (config.type()) {
+            case CAFFEINE -> new CaffeineCache(config);
+            case NOOP     -> new NoopCache();
         };
     }
 }
 ```
 
-### Pattern 2: Lifecycle Wrapper
+Prefer typed config (`@ConfigMapper` / `@ConfigSource`) over reading raw `Config` keys inline. For
+choosing between whole components rather than branches inside one, use
+[`@Conditional`](conditional-components-reference.md).
 
-A factory that needs lifecycle hooks returns `Wrapped<T>` and constructs a
-`LifecycleWrapper<>` with init and release callbacks:
+### Decorating another component
 
 ```java
-import ru.tinkoff.kora.application.graph.LifecycleWrapper;
-import ru.tinkoff.kora.application.graph.Wrapped;
-
 @Module
-public interface PoolModule {
+public interface TracingModule {
 
-    default Wrapped<ConnectionPool> connectionPool(Config config) {
-        return new LifecycleWrapper<>(
-            new HikariConnectionPool(config),
-            pool -> pool.initialize(),    // init
-            pool -> pool.close()          // release
-        );
+    default HttpClient httpClient(@Tag(Raw.class) HttpClient delegate, Tracer tracer) {
+        return new TracingHttpClient(delegate, tracer);
     }
 }
 ```
 
-### Pattern 3: Decorator Pattern
+Tag the inner instance so the decorator does not depend on itself — otherwise the processor reports
+`Circular dependency found`.
+
+### Optional collaborator
 
 ```java
 @Module
-public interface LoggingModule {
-    
-    default HttpClient httpClient() {
-        HttpClient delegate = new RealHttpClient();
-        return new LoggingHttpClient(delegate);
+public interface SmsModule {
+
+    final class SmsTag { private SmsTag() {} }
+
+    @Tag(SmsTag.class)
+    default Notifier smsNotifier(@Nullable SmsCellularProvider cellularProvider) {
+        return (user, message) -> { /* cellularProvider may be null */ };
     }
 }
 ```
 
-### Pattern 4: Conditional Creation
-
-```java
-@Module
-public interface FeatureModule {
-    
-    default FeatureService featureService(Config config) {
-        if (config.getBoolean("feature.new.enabled")) {
-            return new NewFeatureService();
-        } else {
-            return new LegacyFeatureService();
-        }
-    }
-}
-```
+Java uses JSpecify `org.jspecify.annotations.Nullable`; Kotlin uses `SmsCellularProvider?`.
 
 ## Factory Selection Guide
 
 | Need | Use |
-|------|-----|
-| Simple service | `@Component` class |
-| External dependency | `@Module` factory |
-| Multiple implementations | Module with `@Tag` |
-| Generic type | Generic factory |
-| SQL/Code generation | Extension factory |
-| Lifecycle management | `LifecycleWrapper` in factory |
-| Optional component | `@Nullable` return or factory |
+|---|---|
+| Your own service class | `@Component` |
+| A third-party type, or non-trivial construction | `@Module` provider |
+| A one-off, or overriding a module default | provider on `@KoraApp` |
+| One construction rule, many type arguments | generic provider (template) |
+| The same module wired twice with different config/tags | `@FactoryModule` + `@Tag(Tag.Factory.class)` |
+| Init/cleanup around a type you do not own | `Wrapped<T>` + `LifecycleWrapper` |
+| A library default the application may replace | `@DefaultComponent` |
+| Pick one of several implementations at graph init | `@Conditional` |
+| `@Repository`, `@Json`, `@HttpClient`, … | nothing — the extension generates it |
 
 ## Common Mistakes
 
-### Mistake 1: Null Return
+### Returning `null` from a provider
+
+The DI processor reads `@Nullable` from the **consumer's parameter**, never from the provider's
+return type. A provider that returns `null` therefore hands `null` to whoever asked, whether or not
+they expect it — and annotating the provider changes nothing.
 
 ```java
-// BAD - Factory returns null
+// BAD — consumers get a null they never opted into
 @Module
 public interface BadModule {
-    default Service service() {
-        if (someCondition) {
-            return null;  // Error!
-        }
-        return new Service();
-    }
+    default Service service() { return enabled ? new Service() : null; }
 }
 
-// GOOD - Use Optional or @Nullable
-@Module
-public interface GoodModule {
-    @Nullable
-    default Service service() {
-        return someCondition ? new Service() : null;
-    }
+// GOOD — the absence is expressed where it is read
+@Component
+public final class Caller {
+    public Caller(@Nullable Service service) { … }
 }
 ```
 
-### Mistake 2: Circular Dependency
+Better still, gate the component with [`@Conditional`](conditional-components-reference.md) so it is
+simply absent from the graph when it does not apply.
+
+### Raw types
 
 ```java
-// BAD - Circular dependency
-@Module
-public interface CircularModule {
-    default ServiceA serviceA(ServiceB b) { return new ServiceA(b); }
-    default ServiceB serviceB(ServiceA a) { return new ServiceB(a); }  // Circular!
-}
+// BAD — "Component provider returns a raw type:" / "Dependency uses a raw type:"
+default Repository repository() { … }
 
-// GOOD - Break cycle with ValueOf
-@Module
-public interface FixedModule {
-    default ServiceA serviceA(ServiceB b) { return new ServiceA(b); }
-    default ServiceB serviceB(ValueOf<ServiceA> a) { return new ServiceB(a); }
-}
+// GOOD
+default Repository<User> repository() { … }
 ```
 
-### Mistake 3: Missing Dependencies
+### Primitive return type
 
 ```java
-// BAD - Unresolvable dependency
-@Module
-public interface BadModule {
-    default Service service(ExternalDep dep) {  // ExternalDep not in graph!
-        return new Service(dep);
-    }
-}
+// BAD — "Module method returns a non-reference type, so it cannot be used as a graph component."
+default int maxRetries() { return 3; }
 
-// GOOD - Provide dependency or use @Nullable
-@Module
-public interface GoodModule {
-    default ExternalDep externalDep() { return new ExternalDep(); }
-    default Service service(ExternalDep dep) { return new Service(dep); }
-}
+// GOOD — wrap it in a type that means something
+default RetryPolicy retryPolicy() { return new RetryPolicy(3); }
 ```
 
-## When to Read This Reference
+### A cycle between two providers
 
-- **Creating components** — Choose appropriate factory type
-- **Generic types** — Generic factory pattern
-- **Code generation** — Extension mechanism
-- **Complex creation** — Lifecycle wrapper, decorators
+```java
+// BAD — "Circular dependency found:"
+default ServiceA serviceA(ServiceB b) { return new ServiceA(b); }
+default ServiceB serviceB(ServiceA a) { return new ServiceB(a); }
+
+// GOOD — one side takes an indirect reference
+default ServiceA serviceA(ServiceB b) { return new ServiceA(b); }
+default ServiceB serviceB(ValueOf<ServiceA> a) { return new ServiceB(a); }
+```
+
+The error prints the whole cycle and the `Fix:` list suggests `ValueOf<T>` or `PromiseOf<T>`.
+
+### `@FactoryModule` on a normal provider
+
+```java
+// BAD — StorageConfig is a value, not a module
+@FactoryModule
+default StorageConfig storageConfig(Config config) { … }
+
+// GOOD — plain provider
+default StorageConfig storageConfig(Config config) { … }
+```
+
+### `Tag.Factory` outside a factory module
+
+```java
+// BAD — "@Tag.Factory can only be used inside factory modules."
+@Module
+public interface MyModule {
+    @Tag(Tag.Factory.class)
+    default Cache cache() { … }
+}
+
+// GOOD — name the tag
+@Module
+public interface MyModule {
+    @Tag(L1.class)
+    default Cache cache() { … }
+}
+```
 
 ## Related References
 
-- [Component Registration Reference](component-registration-reference.md) — 5 registration methods
-- [@DefaultComponent Reference](default-component-reference.md) — Overridable defaults
-- [Lifecycle Reference](lifecycle-reference.md) — Init/release patterns
+- [Component Registration Reference](component-registration-reference.md) — the full resolution order
+- [@DefaultComponent Reference](default-component-reference.md) — overridable providers
+- [Tags & Collections Reference](tags-collections-reference.md) — `@Tag`, `All<T>`, `ValueOf<T>`
+- [Conditional Components Reference](conditional-components-reference.md) — `@Conditional`
+- [Graph Roots & Lifecycle Reference](lifecycle-reference.md) — `Wrapped<T>`, `LifecycleWrapper`, `@Root`

@@ -3,9 +3,17 @@ plugins {
     id "application"
 }
 
+repositories {
+    mavenCentral()
+    // io.koraframework:kora-bom:2.0.0.RC1 is on Maven Central; nothing else is needed.
+    // Only the 2.0.0-SNAPSHOT development line also needs:
+    // maven { url = "https://central.sonatype.com/repository/maven-snapshots" }
+}
+
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
+        // Kora 2.0 artifacts are built at JVM 25 — 25 is the floor.
+        languageVersion = JavaLanguageVersion.of(25)
         vendor = JvmVendorSpec.ADOPTIUM
     }
 }
@@ -19,20 +27,20 @@ configurations {
 }
 
 dependencies {
-    koraBom platform("ru.tinkoff.kora:kora-parent:$koraVersion")
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+    annotationProcessor "io.koraframework:annotation-processors"
 
     // Core dependencies - always needed
-    implementation "ru.tinkoff.kora:logging-logback"
-    implementation "ru.tinkoff.kora:config-hocon"
+    implementation "io.koraframework:logging-logback"
+    implementation "io.koraframework:config-hocon"
 
     // Add more Kora modules as needed (no versions - the BOM owns them):
-    // implementation "ru.tinkoff.kora:json-module"
-    // implementation "ru.tinkoff.kora:http-server-undertow"
-    // implementation "ru.tinkoff.kora:http-client-ok"
-    // implementation "ru.tinkoff.kora:database-jdbc"
-    // implementation "ru.tinkoff.kora:kafka"
-    // implementation "ru.tinkoff.kora:micrometer-module"
+    // implementation "io.koraframework:json-common"
+    // implementation "io.koraframework:http-server-undertow"
+    // implementation "io.koraframework:http-client-ok"
+    // implementation "io.koraframework:database-jdbc"
+    // implementation "io.koraframework:kafka"
+    // implementation "io.koraframework:micrometer-module"
 }
 
 application {

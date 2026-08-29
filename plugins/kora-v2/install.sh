@@ -2,10 +2,10 @@
 set -e
 
 # Kora Skill Installer
-# Installs kora-v1 skill to agent-specific directories
+# Installs kora-v2 skill to agent-specific directories
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SKILL_NAME="kora-v1"
+SKILL_NAME="kora-v2"
 SKILL_SOURCE="${SCRIPT_DIR}"
 
 # Colors for output
@@ -110,12 +110,15 @@ main() {
     echo "Next steps:"
     echo "  1. Restart your AI coding agent"
     echo "  2. Ask: 'Help me build a Kora microservice'"
-    echo "  3. The agent will activate the kora-v1 skill"
+    echo "  3. The agent will activate the kora-v2 skill"
     echo ""
-    echo "Documentation:"
-    echo "  - Kora Docs: https://kora-projects.github.io/kora-docs"
-    echo "  - Examples: https://github.com/kora-projects/kora-examples"
-    echo "  - Templates: https://github.com/kora-projects/kora-java-template"
+    echo "Kora 2.0 sources (there is no 2.0 documentation site yet):"
+    echo "  - Framework source: https://github.com/kora-projects/kora/tree/2.0.0.RC1"
+    echo "  - Migrated examples: https://github.com/kora-projects/kora-examples/tree/migration/2.0"
+    echo "  - 1.x -> 2.0 migration: https://github.com/kora-projects/kora-examples/tree/migration/2.0/migration"
+    echo ""
+    echo "Note: kora-projects.github.io/kora-docs and the kora-*-template repositories"
+    echo "      still describe Kora 1.x. Use the kora-v1 plugin for those projects."
 }
 
 main "$@"

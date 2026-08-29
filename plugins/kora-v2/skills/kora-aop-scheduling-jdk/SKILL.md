@@ -1,40 +1,83 @@
 ---
 name: kora-aop-scheduling-jdk
-description: "In-process scheduled jobs in Kora — @ScheduleAtFixedRate/@ScheduleWithFixedDelay/@ScheduleOnce (scheduling-jdk). Use for periodic/heartbeat/cleanup jobs; for cron or clustered jobs use kora-aop-scheduling-quartz."
+description: "In-process scheduled jobs in Kora 2.x — @ScheduleAtFixedRate, @ScheduleWithFixedDelay, @ScheduleOnce and the new @ScheduleWithCron from io.koraframework.scheduling.jdk.annotation, contributed by SchedulingJdkModule (artifact io.koraframework:scheduling-jdk) on top of a ScheduledThreadPoolExecutor of platform threads. Covers the config attribute for externalising timings, the scheduling.jdk.shutdownWait and scheduling.telemetry keys, per-job telemetry overrides, and why a scheduled method must be a no-argument, non-suspend member of a @Component. Use for heartbeat, cleanup, cache-warm and in-process cron jobs. For persistent, clustered or Quartz-flavoured cron jobs use kora-aop-scheduling-quartz."
+license: Apache-2.0
+metadata:
+  kora-version: "2.x"
 ---
 
 # Kora AOP Scheduling (JDK)
 
-> **Kora sub-skill — obey the [kora-v1 meta rules](../../SKILL.md) on every task:** **R0** ensure `.kora-agent/` docs+examples are cloned · **R1** read this sub-skill before writing code · **R2** Kora APIs only — no Spring/Micronaut/Quarkus, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
+> **Kora sub-skill — obey the [kora-v2 meta rules](../../SKILL.md) on every task:** **R0** ground the workspace on Kora 2.0 refs before starting (framework source at tag `2.0.0.RC1` + `kora-examples` at `migration/2.0`; `kora-docs` is 1.x only) · **R1** read this sub-skill before writing code · **R2** Kora 2.0 APIs only — no Spring/Micronaut/Quarkus, no Kora 1.x APIs, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
 
-**Artifact:** `ru.tinkoff.kora:scheduling-jdk`
-**Module:** `SchedulingJdkModule`
-**Annotation package:** `ru.tinkoff.kora.scheduling.jdk.annotation.*`
+| | |
+|---|---|
+| **Artifact** | `io.koraframework:scheduling-jdk` (version from `io.koraframework:kora-bom`) |
+| **Module** | `io.koraframework.scheduling.jdk.SchedulingJdkModule` (extends `io.koraframework.scheduling.common.SchedulingModule`) |
+| **Annotations** | `io.koraframework.scheduling.jdk.annotation.*` |
+| **Processor** | Java `annotationProcessor "io.koraframework:annotation-processors"` · Kotlin `ksp("io.koraframework:symbol-processors")` |
+| **Config roots** | `scheduling.jdk` · `scheduling.telemetry` · one arbitrary path per job via `config = "…"` |
 
-Aspect-driven scheduling on top of the JVM `ScheduledExecutorService`. The annotations mirror the `scheduleAtFixedRate`, `scheduleWithFixedDelay`, and `schedule` method signatures. No external scheduler, no persistence — jobs live only for the lifetime of the process. For cron, persistent state, custom triggers, or cluster-wide single execution, use the sibling skill [kora-aop-scheduling-quartz](../kora-aop-scheduling-quartz/SKILL.md).
+Scheduling on top of a JVM `ScheduledThreadPoolExecutor`. No external scheduler, no job store — jobs
+live for the lifetime of the process only. Since 2.0 this module also has its **own cron evaluator**,
+so a plain cron job no longer requires Quartz.
 
-**Aspect requirement:** the bearing class must be non-`final` (Java) / `open` (Kotlin), otherwise the annotation processor cannot generate the scheduling aspect.
+---
+
+## What changed from Kora 1.x
+
+Read this before porting a 1.x service: none of it is covered by the migration guides, which mention
+only the Quartz `@ScheduleWithTrigger` change.
+
+| 1.x | 2.0 | Consequence if you skip it |
+|---|---|---|
+| `ru.tinkoff.kora.scheduling.jdk.annotation.*` | `io.koraframework.scheduling.jdk.annotation.*` | Compile error — loud, harmless |
+| `ru.tinkoff.kora:scheduling-jdk`, BOM `kora-parent` | `io.koraframework:scheduling-jdk`, BOM `io.koraframework:kora-bom` | Unresolved dependency |
+| Kotlin processor `scheduling-ksp` | `scheduling-symbol-processor`, normally via the aggregate `symbol-processors` | `scheduling-ksp` on Central is a 1.x leftover, **not** in the RC1 BOM |
+| `scheduling.shutdownWait` | **`scheduling.jdk.shutdownWait`** | Stale key is an unknown HOCON key: ignored silently, shutdown falls back to 30 s |
+| `scheduling.threads` | **removed — no replacement key** | Ignored silently; pool size is derived (see [Thread model](#thread-model)) |
+| Cron only via `scheduling-quartz` | **`@ScheduleWithCron` in `scheduling-jdk`** | You may be pulling in Quartz for nothing |
+| "fixed rate may overlap" | **never overlaps** | See [Overlap](#overlap-fixed-rate-does-not-overlap) |
+| "class must be non-`final` / `open`" | **not required by scheduling** | See [What a scheduled method must satisfy](#what-a-scheduled-method-must-satisfy) |
+| `telemetry.metrics.enabled` default `true` | **default `false`** | Job metrics silently absent |
 
 ---
 
 ## Quick Start
 
-### 1. Add dependency
+### 1. Dependency
 
-All Kora artifacts inherit their version from the `kora-parent` BOM — never version individual `ru.tinkoff.kora:*` deps.
+Versions come from the BOM — never pin an individual `io.koraframework:*` artifact.
 
 ```groovy
-dependencies {
-    koraBom platform("ru.tinkoff.kora:kora-parent:1.2.19")
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"   // mandatory — generates the aspect
+// build.gradle (Java)
+configurations {
+    koraBom
+    annotationProcessor.extendsFrom(koraBom); compileOnly.extendsFrom(koraBom); implementation.extendsFrom(koraBom)
+    api.extendsFrom(koraBom); testImplementation.extendsFrom(koraBom); testAnnotationProcessor.extendsFrom(koraBom)
+}
 
-    implementation "ru.tinkoff.kora:scheduling-jdk"
-    implementation "ru.tinkoff.kora:config-hocon"
-    implementation "ru.tinkoff.kora:logging-logback"
+dependencies {
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")   // koraVersion=2.0.0.RC1
+    annotationProcessor "io.koraframework:annotation-processors" // mandatory — generates the job module
+
+    implementation "io.koraframework:scheduling-jdk"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
 }
 ```
 
-Kotlin uses `ksp "ru.tinkoff.kora:symbol-processors"` instead of `annotationProcessor`.
+```kotlin
+// build.gradle.kts (Kotlin)
+dependencies {
+    implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+    ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
+
+    implementation("io.koraframework:scheduling-jdk")
+    implementation("io.koraframework:config-hocon")
+    implementation("io.koraframework:logging-logback")
+}
+```
 
 ### 2. Plug the module into `@KoraApp`
 
@@ -44,6 +87,10 @@ public interface Application extends
     HoconConfigModule,
     LogbackModule,
     SchedulingJdkModule {
+
+    static void main(String[] args) {
+        KoraApplication.run(ApplicationGraph::graph);
+    }
 }
 ```
 
@@ -52,172 +99,289 @@ public interface Application extends
 ```java
 package com.example.app.jobs;
 
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.scheduling.jdk.annotation.ScheduleAtFixedRate;
+import io.koraframework.common.annotation.Component;
+import io.koraframework.scheduling.jdk.annotation.ScheduleAtFixedRate;
+
 import java.time.temporal.ChronoUnit;
 
 @Component
-public class ScheduledJobs {   // non-final: required for aspect generation
+public final class ScheduledJobs {   // final is fine — scheduling does not proxy the class
 
     @ScheduleAtFixedRate(initialDelay = 30, period = 60, unit = ChronoUnit.SECONDS)
     void heartbeat() {
-        // Lightweight task every 60 seconds
+        // runs every 60s
     }
 }
 ```
 
+The processor emits a `@Module` interface `$ScheduledJobs_SchedulingModule` next to your class; the
+`@KoraApp` graph picks it up on its own. You never reference it by hand.
+
 ---
 
-## JDK Annotations
+## Annotations
 
-| Annotation | Description | Overlap |
-|------------|-------------|---------|
-| `@ScheduleAtFixedRate` | Fixed interval regardless of execution time | **Possible** |
-| `@ScheduleWithFixedDelay` | Delay after previous completion | **Never** |
-| `@ScheduleOnce` | Single execution after delay | N/A |
+All four live in `io.koraframework.scheduling.jdk.annotation`, target `METHOD`, and carry a
+`String config() default ""`.
 
-### @ScheduleAtFixedRate
+| Annotation | Attributes | Interval measured | Overlap |
+|---|---|---|---|
+| `@ScheduleAtFixedRate` | `initialDelay` (long, `0`), `period` (long, `0`), `unit` (`ChronoUnit`, `MILLIS`), `config` | start → start | never |
+| `@ScheduleWithFixedDelay` | `initialDelay` (long, `0`), `delay` (long, `0`), `unit` (`ChronoUnit`, `MILLIS`), `config` | end → start | never |
+| `@ScheduleOnce` | `delay` (long, `0`), `unit` (`ChronoUnit`, `MILLIS`), `config` | one run after `delay` | n/a |
+| `@ScheduleWithCron` | `value` (String, `""`), `config` | next cron fire time | never |
 
-Runs at fixed intervals. If task takes longer than period, next execution starts immediately after completion.
+`unit` applies to the annotation's own numbers only; it is not a config key. Durations that come from
+config are written as HOCON/YAML durations (`"30s"`, `5ms`, `2m`).
 
-```java
-@ScheduleAtFixedRate(initialDelay = 30, period = 60, unit = ChronoUnit.SECONDS)
-void heartbeat() {
-    // Runs every 60s (may overlap if task > 60s)
-}
+Either the primary attribute or `config` must be set. `period`/`delay` of `0` and a blank cron `value`
+count as *unset*, and the build fails with, e.g.:
+
+```
+Either period() or config() annotation parameter must be provided
 ```
 
-### @ScheduleWithFixedDelay
+### Overlap: fixed rate does **not** overlap
 
-Waits for delay after task completion. No overlap possible.
+`@ScheduleAtFixedRate` delegates to `ScheduledExecutorService.scheduleAtFixedRate`, whose contract is:
+*"If any execution of this task takes longer than its period, then subsequent executions may start
+late, but will not concurrently execute."* Kora adds a per-job `ReentrantLock` around every run on top
+of that. Verified empirically on JDK 25.0.2: a 150 ms task on a 20 ms period reaches a maximum of **1**
+concurrent execution.
+
+So the choice between the two periodic annotations is about **where the interval is measured**, not
+about overlap:
+
+- `@ScheduleAtFixedRate` — tries to keep a fixed cadence; after an overrun it starts the next run late.
+- `@ScheduleWithFixedDelay` — always leaves `delay` idle after the previous run returned, so the cadence
+  drifts with execution time.
+
+Two *different* jobs can still run at the same time — subject to the pool size below.
+
+### `@ScheduleWithCron` (new in 2.0)
 
 ```java
-@ScheduleWithFixedDelay(initialDelay = 30, delay = 60, unit = ChronoUnit.SECONDS)
-void syncData() {
-    // Completes → wait 60s → run again
-}
+@ScheduleWithCron("0 0 3 * * ?")     // 03:00 every day, JVM default time zone
+void nightlyCompaction() { }
 ```
 
-### @ScheduleOnce
+5, 6 or 7 space-separated fields (`[second] minute hour day-of-month month day-of-week [year]`),
+`* , - / ?`, `JAN`–`DEC`, `SUN`–`SAT`. Quartz modifiers `L`, `W`, `#`, `C` are **not** supported and
+`@ScheduleWithCron` is still in-process only. The expression is parsed while the graph is being built,
+so a bad expression fails startup with `IllegalArgumentException`, not at compile time.
 
-Single execution after specified delay.
+Details, config form and the routing rule against Quartz:
+[references/jdk-scheduling-reference.md](references/jdk-scheduling-reference.md).
 
-```java
-@ScheduleOnce(delay = 5, unit = ChronoUnit.MINUTES)
-void warmup() {
-    // Runs once after 5 minutes
-}
+---
+
+## What a scheduled method must satisfy
+
+The scheduling processor does **not** generate an AOP proxy. It generates a module whose factory
+method takes `ValueOf<YourClass>` and calls `target.get().yourMethod()`. Therefore:
+
+**Required**
+
+- the bearing class is a graph component (`@Component`, or produced by a `@Module` factory method);
+- the method is a **member** method (not top-level, not local) with **no arguments**;
+- the method is visible from its own package — `private` will not compile;
+- the method is **not** `suspend` (Kotlin) and not reactive. Kora 2.0 contracts are synchronous.
+
+**Not required**
+
+- the class does **not** have to be non-`final` (Java) or `open` (Kotlin). The migrated examples ship
+  `@Component public final class FixRateScheduler` and `@Component class FixRateScheduler` and both
+  schedule correctly.
+
+`open`/non-`final` becomes necessary only if you stack a *proxy-based* aspect on the same class —
+`@Log`, `@Retryable`, `@CircuitBreakable`, `@Timeout`, `@Cacheable`. That requirement belongs to those
+aspects, not to scheduling; see [kora-aop-logging](../kora-aop-logging/SKILL.md) and
+[kora-aop-resilient](../kora-aop-resilient/SKILL.md).
+
+A `suspend` scheduled function is rejected at build time, not silently ignored:
+
+```
+Suspend methods are not supported by the scheduling generator.
+…
+For structured concurrency, enable Java preview features with --enable-preview and use StructuredTaskScope
+…
+Fix: remove suspend from the function.
 ```
 
 ---
 
 ## Externalized parameters (`config`)
 
-When the `config` attribute is set, the values come from that config path and **override** the annotation attributes (which then act only as defaults). The path is arbitrary; the example app nests jobs under `scheduling.jobs.*`.
+With `config = "<path>"` the processor generates a `SchedulingJobConfig` subtype bound to that path.
+Annotation attributes become **defaults** of the generated config; values in the config file win.
+Omitting the annotation attribute entirely makes the config key **mandatory**.
 
 ```java
 @ScheduleAtFixedRate(config = "scheduling.jobs.heartbeat")
-void heartbeat() { ... }
+void heartbeat() { }
 ```
 
 ```hocon
 scheduling.jobs.heartbeat {
-  initialDelay = "10s"
-  period = "30s"
+  initialDelay = 10s
+  period = 30s
 }
 ```
 
-Keys per annotation: `@ScheduleAtFixedRate` → `initialDelay`, `period`; `@ScheduleWithFixedDelay` → `initialDelay`, `delay`; `@ScheduleOnce` → `delay`. Durations accept HOCON time strings (`"5ms"`, `"30s"`, `"2m"`).
+| Annotation | Keys under the config path |
+|---|---|
+| `@ScheduleAtFixedRate` | `initialDelay`, `period` |
+| `@ScheduleWithFixedDelay` | `initialDelay`, `delay` |
+| `@ScheduleOnce` | `delay` |
+| `@ScheduleWithCron` | `cron` — or set the path itself to the expression string |
+
+Every config path additionally accepts a `telemetry { … }` block that overrides the global scheduling
+telemetry for that one job.
+
+Pick a path that does not collide with the module's own sections. `scheduling.jobs.<name>` (as in the
+official examples) is safe; `scheduling.jdk` and `scheduling.telemetry` are taken.
 
 ---
 
 ## Module configuration
 
-Defaults shown match `ScheduledExecutorServiceConfig`:
+Defaults below are the ones in source — nothing here is aspirational.
 
 ```hocon
 scheduling {
-  threads = 2                    # ScheduledExecutorService pool size (default: 2)
-  shutdownWait = "30s"           # grace period for in-flight jobs on graceful shutdown
+  jdk.shutdownWait = 30s         # executor termination grace period (default 30s)
+
   telemetry {
-    logging.enabled = false      # job execution logging (default: false)
-    metrics.enabled = true       # Micrometer metrics (default: true)
-    tracing.enabled = true       # OpenTelemetry tracing (default: true)
+    logging.enabled = false      # default false
+    metrics.enabled = false      # default false
+    tracing.enabled = true       # default true (no-op without a Tracer component)
   }
 }
 ```
 
-See [scheduling-config-reference.md](references/scheduling-config-reference.md) for SLO buckets, metric tags, and tracing attributes.
+There is **no `scheduling.threads` key in Kora 2.0.** Writing one is not an error — it is an unknown
+HOCON key, silently ignored.
+
+Full key list, per-job overrides, metric names and span attributes:
+[references/scheduling-config-reference.md](references/scheduling-config-reference.md).
 
 ---
 
-## Graceful Shutdown
+## Thread model
 
-Long-running jobs must check interrupt status:
+Scheduled jobs run on **platform threads**, not virtual threads. `ThreadPoolSchedulingJdkExecutor`
+builds a `ScheduledThreadPoolExecutor` whose factory produces `new Thread(runnable, "kora-scheduler-N")`
+with `setDaemon(false)`, `keepAliveTime = 30s` and `allowCoreThreadTimeOut(true)`.
+
+The core pool size is **not configurable**. It is the number of `SchedulingJobConfig` components in the
+graph — and those are generated **only for jobs declared with `config = "…"`**. Consequences, verified
+on JDK 25.0.2:
+
+- N jobs declared with `config = "…"` → core pool N, those jobs can run in parallel with each other.
+- **Zero** config-driven jobs → the pool is constructed with core size 0, and a
+  `ScheduledThreadPoolExecutor` then runs on exactly **one** worker thread. Every annotation-only job in
+  the service shares it, so one slow job delays all the others.
+
+If jobs must not delay each other, declare them with `config = "…"` (which is good practice anyway) or
+move the heavy work off the scheduler thread.
+
+---
+
+## Graceful shutdown
+
+The 1.x advice — "check `Thread.currentThread().isInterrupted()`" — no longer describes what happens.
+The 2.0 shutdown path never interrupts a running job:
+
+1. Graph release runs in reverse dependency order, so every job is released before the executor it
+   depends on.
+2. A job's `release()` takes the same fair lock its run holds, so it **blocks until the current run
+   returns**, then cancels the schedule with `cancel(false)` — which explicitly does *not* interrupt.
+3. Only afterwards does the executor release: `shutdown()`, wait `scheduling.jdk.shutdownWait`, and
+   `shutdownNow()` if that expires. `shutdownNow()` is the only interrupt in the whole path, and by then
+   the jobs are already quiescent.
+
+So: **a job that never returns hangs shutdown indefinitely — `shutdownWait` does not bound it.**
+Cooperative cancellation is the job's own responsibility: bounded batches, a poll/timeout on every
+blocking call, an owned `volatile` stop flag. Keep the interrupt check only where you already block
+on something interruptible.
+
+Patterns and the failure modes: [references/graceful-shutdown-reference.md](references/graceful-shutdown-reference.md).
+
+---
+
+## Error handling
+
+A throwable escaping the job is caught by the job wrapper, recorded on the span, counted under the
+`error.type` metric tag and logged at WARN as `Scheduled Job execution failed with error`. The schedule
+survives — the next run happens as planned, for every annotation including `@ScheduleWithCron`.
+
+Kora does not retry the job for you. For retries put [`@Retryable`](../kora-aop-resilient/SKILL.md) on
+an inner method (that one is proxy-based, so its `open`/non-`final` rules apply), or handle the failure
+in the job body.
+
+---
+
+## Common pitfalls
+
+| Symptom | Cause / fix |
+|---|---|
+| Job never fires | The class is not in the graph. Add `@Component` (or a `@Module` factory). `final`/non-`open` is **not** the cause |
+| `Either period() or config() annotation parameter must be provided` | Annotation has neither a non-zero primary attribute nor `config` |
+| `Suspend methods are not supported by the scheduling generator` | Drop `suspend`; use `StructuredTaskScope` inside a plain function for parallelism |
+| Timings from config ignored | The `config` path in the annotation and the path in the file disagree; or the key name is wrong for that annotation (`period` vs `delay`) |
+| No job metrics | `scheduling.telemetry.metrics.enabled` defaults to **`false`** — and a `MeterRegistry` component must exist |
+| Jobs serialize unexpectedly | Core pool is the count of `config`-driven jobs; with none it is a single thread |
+| Shutdown hangs | A job body that does not return; no interrupt is delivered before the executor stage |
+| `scheduling.threads` / `scheduling.shutdownWait` have no effect | Both are 1.x keys. Use `scheduling.jdk.shutdownWait`; there is no thread-count key |
+
+---
+
+## Testing
+
+The migrated examples drive the job component into the test graph explicitly and then poll:
 
 ```java
-@ScheduleWithFixedDelay(config = "scheduling.jobs.batch")
-void processBatch() {
-    while (!stopCondition()) {
-        if (Thread.currentThread().isInterrupted()) {
-            return;  // Exit on shutdown signal
-        }
-        doWork();
+@KoraAppTest(value = Application.class, components = FixedRateJob.class)
+class HeartbeatTests {
+
+    @TestComponent
+    private ScheduledJobs jobs;
+
+    @Test
+    void scheduled() {
+        Awaitility.await().atMost(Duration.ofSeconds(3)).until(() -> jobs.getTicks() > 3);
     }
 }
 ```
 
----
-
-## Error Handling
-
-Exception is logged, next invocation continues normally.
-
-**Pattern:** Wrap in try-catch to prevent logging noise.
-
-```java
-@ScheduleAtFixedRate(period = 60, unit = ChronoUnit.SECONDS)
-void process() {
-    try {
-        doWork();
-    } catch (Exception e) {
-        log.error("Scheduled task failed", e);
-    }
-}
-```
-
----
-
-## Common Pitfalls
-
-| Problem | Solution |
-|---------|----------|
-| **Task not running** | Ensure class is `@Component` and non-final (Java) / `open` (Kotlin) |
-| **Concurrent execution** | Use `@ScheduleWithFixedDelay` instead of `@ScheduleAtFixedRate` |
-| **Long-running task** | Check `Thread.currentThread().isInterrupted()` for graceful exit |
-| **Config not applied** | Verify config path matches annotation |
+`components` takes the job wrapper type — `FixedRateJob`, `FixedDelayJob`, `RunOnceJob` or `CronJob`
+from `io.koraframework.scheduling.jdk` — matching the annotation under test. See
+[kora-testing-junit-java](../kora-testing-junit-java/SKILL.md) /
+[kora-testing-junit-kotlin](../kora-testing-junit-kotlin/SKILL.md).
 
 ---
 
 ## References, assets, scripts
 
 | File | Purpose |
-|------|---------|
-| [references/jdk-scheduling-reference.md](references/jdk-scheduling-reference.md) | Per-annotation reference, error handling, telemetry |
-| [references/scheduling-config-reference.md](references/scheduling-config-reference.md) | JDK scheduling configuration |
-| [references/graceful-shutdown-reference.md](references/graceful-shutdown-reference.md) | Interrupt handling and shutdown patterns |
+|---|---|
+| [references/jdk-scheduling-reference.md](references/jdk-scheduling-reference.md) | Per-annotation reference, generated code, cron syntax, telemetry |
+| [references/scheduling-config-reference.md](references/scheduling-config-reference.md) | Complete `scheduling.*` key set, HOCON + YAML, per-job overrides |
+| [references/graceful-shutdown-reference.md](references/graceful-shutdown-reference.md) | The real 2.0 shutdown path and cooperative-cancellation patterns |
 | [assets/ScheduledJobs.java.template](assets/ScheduledJobs.java.template) | Java scheduled-jobs starter |
 | [assets/ScheduledJobs.kt.template](assets/ScheduledJobs.kt.template) | Kotlin scheduled-jobs starter |
-| [scripts/setup-jdk.sh](scripts/setup-jdk.sh) | Add `scheduling-jdk`, template, and config to a project |
-
-For cron expressions, custom triggers, and persistent/clustered jobs, use the sibling skill
-[kora-aop-scheduling-quartz](../kora-aop-scheduling-quartz/SKILL.md).
-
-Source of truth: `.kora-agent/kora-docs/mkdocs/docs/en/documentation/scheduling.md` (section `#native`) and `.kora-agent/kora-examples/examples/java/kora-java-scheduling-jdk`.
+| [scripts/setup-jdk.sh](scripts/setup-jdk.sh) | Add `scheduling-jdk`, a job template and config to a project (`--dry-run` supported) |
 
 ---
 
 ## Related skills
 
-- [kora-aop-scheduling-quartz](../kora-aop-scheduling-quartz/SKILL.md) — cron, triggers, persistent and clustered jobs
-- [kora-aop-logging](../kora-aop-logging/SKILL.md) — `@Log` / `@Mdc` for scheduled methods
+- [kora-aop-scheduling-quartz](../kora-aop-scheduling-quartz/SKILL.md) — use it when you need a
+  **persistent job store, clustering / cluster-wide single execution, `@ScheduleWithTrigger` with a
+  custom Quartz `Trigger`, `@DisallowConcurrentExecution` / `@PersistJobDataAfterExecution`, or the
+  Quartz-only cron modifiers `L` `W` `#` `C`**. Plain in-process cron no longer needs it.
+- [kora-di-compile](../kora-di-compile/SKILL.md) — `@Component`, `@Module`, `@Root`, graph errors
+- [kora-config-hocon](../kora-config-hocon/SKILL.md) / [kora-config-yaml](../kora-config-yaml/SKILL.md) — config sources for the `config` attribute
+- [kora-aop-logging](../kora-aop-logging/SKILL.md) — `@Log` / `@Mdc` on job methods
+- [kora-aop-resilient](../kora-aop-resilient/SKILL.md) — `@Retryable` / `@Timeout` around job work
+- [kora-telemetry-metrics](../kora-telemetry-metrics/SKILL.md) — wiring the `MeterRegistry` the job metric needs

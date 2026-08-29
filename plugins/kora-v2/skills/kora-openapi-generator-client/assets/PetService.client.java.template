@@ -1,21 +1,24 @@
 package com.example;
 
-import com.example.api.PetApi;
-import com.example.api.PetApiResponses;
-import com.example.model.Pet;
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.common.annotation.Root;
+import com.example.openapi.pet.api.PetApi;
+import com.example.openapi.pet.api.PetApiResponses;
+import com.example.openapi.pet.model.Pet;
+import io.koraframework.common.annotation.Component;
+import io.koraframework.http.client.common.exception.HttpClientResponseException;
+
+import java.util.NoSuchElementException;
 
 /**
- * Example usage of the generated HTTP client.
+ * Using a generated Kora 2.x OpenAPI HTTP client.
  *
- * The generated {@code PetApi} is injected via the constructor — Kora wires the
- * implementation at build time.
+ * <p>The generated {@code PetApi} is injected by constructor; Kora wires the implementation at
+ * build time. Generated methods are <b>synchronous</b> and run on a virtual thread - there is no
+ * reactive, {@code CompletionStage} or {@code suspend} variant in Kora 2.0.
  *
- * IMPORTANT: generated methods return a sealed {@code *ApiResponses} wrapper,
- * not the bare model. Pattern match the response and read {@code .content()}.
+ * <p>Generated methods return a sealed {@code *ApiResponses} wrapper with one variant per declared
+ * status code, never the bare model. In Java the variants are records, so the payload is read with
+ * {@code ok.content()}.
  */
-@Root
 @Component
 public final class PetService {
 
@@ -25,31 +28,69 @@ public final class PetService {
         this.petApi = petApi;
     }
 
-    /** Fetch a pet; throws if the remote returns a non-200 variant. */
+    /**
+     * Exhaustive switch over a sealed response. Because the hierarchy is sealed, the compiler
+     * checks that every declared status code is handled and no {@code default} is required - add a
+     * status to the contract and this switch stops compiling until it is handled.
+     */
     public Pet getPet(long petId) {
-        var response = petApi.getPetById(petId);
-        if (response instanceof PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse ok) {
-            return ok.content();
-        }
-        throw new IllegalStateException("Unexpected response: " + response);
-    }
-
-    /** Create a pet via POST with a JSON request body. */
-    public Pet createPet(Pet pet) {
-        var response = petApi.addPet(pet);
-        if (response instanceof PetApiResponses.AddPetApiResponse.AddPet200ApiResponse ok) {
-            return ok.content();
-        }
-        throw new IllegalStateException("Unexpected response: " + response);
-    }
-
-    /** Branch over multiple status variants with a switch. */
-    public Pet getPetOrNull(long petId) {
-        var response = petApi.getPetById(petId);
-        return switch (response) {
+        return switch (petApi.getPetById(petId)) {
             case PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse ok -> ok.content();
-            case PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse nf -> null;
-            default -> throw new IllegalStateException("Unexpected response: " + response);
+            case PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse ignored ->
+                    throw new NoSuchElementException("pet " + petId);
         };
+    }
+
+    /** Returning null instead of throwing on the 404 variant. */
+    public Pet findPet(long petId) {
+        return switch (petApi.getPetById(petId)) {
+            case PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse ok -> ok.content();
+            case PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse ignored -> null;
+        };
+    }
+
+    /**
+     * The OpenAPI {@code default} response becomes a {@code *DefaultApiResponse} variant carrying
+     * the real status code alongside the error payload.
+     */
+    public Pet createPet(Pet pet) {
+        return switch (petApi.addPet(pet)) {
+            case PetApiResponses.AddPetApiResponse.AddPet200ApiResponse ok -> ok.content();
+            case PetApiResponses.AddPetApiResponse.AddPetDefaultApiResponse err ->
+                    throw new IllegalStateException(
+                            "addPet failed with " + err.statusCode() + ": " + err.content().message());
+        };
+    }
+
+    /**
+     * A status code with no body produces an empty record - there is no {@code content()} to call.
+     */
+    public void deletePet(long petId) {
+        var response = petApi.deletePet(petId);
+        if (!(response instanceof PetApiResponses.DeletePetApiResponse.DeletePet204ApiResponse)) {
+            throw new IllegalStateException("Unexpected response: " + response);
+        }
+    }
+
+    /**
+     * Parse an enum from a wire value with {@code fromValue}. The generated constant name is a
+     * normalised identifier ({@code available -> AVAILABLE}, {@code Dingo-Don -> DINGO_DON},
+     * {@code 5 -> NUMBER_5}), so {@code Enum.valueOf} throws on perfectly valid contract values -
+     * and only once real data arrives.
+     */
+    public Pet.StatusEnum parseStatus(String raw) {
+        return Pet.StatusEnum.fromValue(raw);
+    }
+
+    /**
+     * Transport-level failures - connection refused, a status with no declared mapper - surface as
+     * {@link HttpClientResponseException} rather than as a response variant.
+     */
+    public Pet getPetOrFallback(long petId, Pet fallback) {
+        try {
+            return getPet(petId);
+        } catch (HttpClientResponseException e) {
+            return fallback;
+        }
     }
 }

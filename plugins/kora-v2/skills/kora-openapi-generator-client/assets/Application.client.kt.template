@@ -1,26 +1,53 @@
 package com.example
 
-import ru.tinkoff.kora.application.graph.KoraApplication
-import ru.tinkoff.kora.common.KoraApp
-import ru.tinkoff.kora.config.hocon.HoconConfigModule
-import ru.tinkoff.kora.http.client.jdk.JdkHttpClientModule
-import ru.tinkoff.kora.json.module.JsonModule
-import ru.tinkoff.kora.logging.logback.LogbackModule
+import com.example.openapi.pet.api.ApiSecurity
+import io.koraframework.application.graph.KoraApplication
+import io.koraframework.common.annotation.KoraApp
+import io.koraframework.common.annotation.Tag
+import io.koraframework.config.hocon.HoconConfigModule
+import io.koraframework.http.client.common.auth.HttpClientTokenProvider
+import io.koraframework.http.client.ok.OkHttpClientModule
+import io.koraframework.json.common.JsonModule
+import io.koraframework.logging.logback.LogbackModule
 
-// HTTP client application. The transport module must match the dependency in build.gradle:
-//   http-client-jdk   -> JdkHttpClientModule (used here)
-//   http-client-ok    -> ru.tinkoff.kora.http.client.ok.OkHttpClientModule
-//   http-client-async -> ru.tinkoff.kora.http.client.async.AsyncHttpClientModule
+// Kora 2.x client-only application.
+//
+// The transport module must match the dependency in build.gradle.kts:
+//   http-client-ok     -> io.koraframework.http.client.ok.OkHttpClientModule       (used here)
+//   http-client-jdk    -> io.koraframework.http.client.jdk.JdkHttpClientModule
+//   http-client-apache -> io.koraframework.http.client.apache.ApacheHttpClientModule
+//
+// No HTTP server module is needed. Note that io.koraframework.validation.module.ValidationModule
+// pulls http-server-common onto the classpath through ViolationExceptionHttpServerResponseMapper;
+// for constraint validators only, extend
+// io.koraframework.validation.common.constraint.ValidatorModule instead.
+//
+// The generated ApiSecurity is a @Module and is discovered automatically - there is nothing to
+// extend or register here.
 @KoraApp
 interface Application :
     HoconConfigModule,
     LogbackModule,
     JsonModule,
-    JdkHttpClientModule {
-    companion object {
-        @JvmStatic
-        fun main(args: Array<String>) {
-            KoraApplication.run(ApplicationGraph::graph)
-        }
-    }
+    OkHttpClientModule {
+
+    // Only when the spec declares a `bearer` or `oauth2` scheme: the generator emits the tag but
+    // no provider, so the graph does not build until the application supplies one.
+    //
+    // A scheme this service does not use MUST still return null. The generated interceptor tries
+    // each security ALTERNATIVE in the operation's `security` list in order and applies the first
+    // one whose providers ALL returned non-null (the generator joins the checks with `&&`). A
+    // placeholder token here would complete an alternative the service is not configured for, and
+    // that alternative would win.
+    //
+    // If no alternative comes out complete, the interceptor logs
+    //   "Security schema is defined for api but no data was provided"
+    // at WARN and forwards the request WITHOUT a credential — a silent 401, not a build or
+    // runtime error. Assert on the response, not on the absence of an exception.
+    @Tag(ApiSecurity.BearerAuth::class)
+    fun bearerAuthTokenProvider(): HttpClientTokenProvider = HttpClientTokenProvider { null }
+}
+
+fun main() {
+    KoraApplication.run { ApplicationGraph.graph() }
 }

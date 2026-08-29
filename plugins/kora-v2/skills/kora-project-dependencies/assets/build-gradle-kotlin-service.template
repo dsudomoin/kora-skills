@@ -1,54 +1,53 @@
-// Kora Kotlin Service - build.gradle.kts template
-// HTTP server with JSON and Micrometer metrics (metrics/probes on the private HTTP port).
+// Kora 2.0 Kotlin Service - build.gradle.kts template
+// HTTP server with JSON and Micrometer metrics.
+//
+// Kotlin shape: BOM straight on `implementation`, explicit version on `ksp`, and NO koraBom
+// configuration / extendsFrom. That is deliberate - the Java shape does not apply here.
 
 plugins {
-    application
-    jacoco
-    kotlin("jvm") version "1.9.25"
-    id("com.google.devtools.ksp") version "1.9.25-1.0.20"
+    id("application")
+    id("jacoco")
+    kotlin("jvm") version "2.4.10"
+    id("com.google.devtools.ksp") version "2.3.11"
 }
 
-val koraBom: Configuration by configurations.creating
-configurations {
-    ksp.get().extendsFrom(koraBom)
-    compileOnly.get().extendsFrom(koraBom)
-    api.get().extendsFrom(koraBom)
-    implementation.get().extendsFrom(koraBom)
-    testImplementation.get().extendsFrom(koraBom)
+repositories {
+    mavenCentral()
+    // io.koraframework:kora-bom:2.0.0.RC1 is on Maven Central; nothing else is needed.
+    // Only the 2.0.0-SNAPSHOT development line also needs:
+    // maven { url = uri("https://central.sonatype.com/repository/maven-snapshots") }
 }
 
-val koraVersion: String by project
 dependencies {
-    // Kora BOM - owns every Kora module version
-    koraBom(platform("ru.tinkoff.kora:kora-parent:$koraVersion"))
-
-    // KSP - required for compile-time code generation
-    ksp("ru.tinkoff.kora:symbol-processors")
-    kspTest("ru.tinkoff.kora:symbol-processors")
+    implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+    ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
 
     // Core modules
-    implementation("ru.tinkoff.kora:logging-logback")
-    implementation("ru.tinkoff.kora:config-hocon")
-    implementation("ru.tinkoff.kora:json-module")
+    implementation("io.koraframework:logging-logback")
+    implementation("io.koraframework:config-hocon")
+    implementation("io.koraframework:json-common")
 
-    // HTTP server (Undertow)
-    implementation("ru.tinkoff.kora:http-server-undertow")
+    // HTTP server (Undertow) - UndertowPublicHttpServerModule
+    implementation("io.koraframework:http-server-undertow")
 
-    // Telemetry - Micrometer metrics on the private HTTP port
-    implementation("ru.tinkoff.kora:micrometer-module")
+    // Telemetry - metrics default to disabled, enable them in application.conf:
+    //   httpServer { telemetry.metrics.enabled = true }
+    implementation("io.koraframework:micrometer-module")
 
-    // Testing
-    testImplementation("ru.tinkoff.kora:test-junit5")
+    // Testing. test-junit5 declares MockK compileOnly - bring your own, new enough for Java 25.
+    testImplementation("io.koraframework:test-junit5")
+    testImplementation("io.mockk:mockk:1.14.11")
     testImplementation("org.skyscreamer:jsonassert:1.5.1")
+
+    // Add kspTest only when test sources generate a Kora graph of their own:
+    // kspTest("io.koraframework:symbol-processors:${property("koraVersion")}")
 }
 
 kotlin {
     jvmToolchain {
-        languageVersion.set(JavaLanguageVersion.of(21))
+        languageVersion.set(JavaLanguageVersion.of(25))
         vendor.set(JvmVendorSpec.ADOPTIUM)
     }
-    sourceSets.main { kotlin.srcDir("build/generated/ksp/main/kotlin") }
-    sourceSets.test { kotlin.srcDir("build/generated/ksp/test/kotlin") }
 }
 
 application {

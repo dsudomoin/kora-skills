@@ -1,32 +1,38 @@
 package ${package};
 
-import ru.tinkoff.kora.common.KoraApp;
-import ru.tinkoff.kora.common.Tag;
-import ru.tinkoff.kora.common.annotation.Root;
-import ru.tinkoff.kora.database.common.annotation.Query;
-import ru.tinkoff.kora.database.common.annotation.Repository;
-import ru.tinkoff.kora.database.jdbc.JdbcRepository;
-import ${package}.model.dao.${entityName};
-
 import java.util.List;
 
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.KoraApp;
+import io.koraframework.common.annotation.Root;
+import io.koraframework.database.common.annotation.Query;
+import io.koraframework.database.common.annotation.Repository;
+import io.koraframework.database.jdbc.JdbcRepository;
+import ${package}.model.dao.${entityName};
+
 /**
- * Test application graph with a richer cleanup repository (deleteAll, truncate, findAll).
+ * Kora 2.0 test application graph with richer cleanup repositories (findAll / deleteAll /
+ * truncate), in the shape the kora-java-crud example uses.
  *
- * The Kora maintainers recommend black-box testing as the primary source of truth.
- * Use this submodule pattern when component/integration tests need direct repository
- * access for setup, cleanup, or assertions.
+ * Here @Root @Component sit directly on each nested @Repository interface, so no accessor default
+ * method is needed. This scales better than the single @Root default method when the test graph
+ * needs several test-only repositories. See TestApplication.java.template for that other variant.
  *
- * Build requirements:
- * 1. Enable submodule generation on the PRODUCTION application module's build.gradle:
- *        compileJava {
+ * TRUNCATE ... RESTART IDENTITY resets sequences, so tests that assert on generated ids stay
+ * deterministic; plain deleteAll() does not.
+ *
+ * Build requirements — in TWO DIFFERENT modules:
+ *
+ * 1. PRODUCTION module (the one declaring the original @KoraApp):
+ *        tasks.named("compileJava", JavaCompile) {
  *            options.compilerArgs += ["-Akora.app.submodule.enabled=true"]
  *        }
- * 2. Add the annotation processor as a test dependency:
+ *    Missing it produces only a warning, and the parent app's components never reach the test graph.
+ *
+ * 2. The module owning these test sources:
  *        dependencies {
- *            testAnnotationProcessor "ru.tinkoff.kora:annotation-processors"
+ *            testAnnotationProcessor "io.koraframework:annotation-processors"
  *        }
- * 3. Exclude generated classes from JUnit discovery:
  *        test {
  *            filter {
  *                excludeTestsMatching '*$*'
@@ -37,6 +43,8 @@ import java.util.List;
 @KoraApp
 public interface TestApplication extends Application {
 
+    @Root
+    @Component
     @Repository
     interface Test${entityName}Repository extends JdbcRepository {
 
@@ -46,13 +54,7 @@ public interface TestApplication extends Application {
         @Query("DELETE FROM ${tableName}")
         void deleteAll();
 
-        @Query("TRUNCATE ${tableName} RESTART IDENTITY")
+        @Query("TRUNCATE ${tableName} RESTART IDENTITY CASCADE")
         void truncate();
-    }
-
-    @Tag(TestApplication.class)
-    @Root
-    default String testRoot(Test${entityName}Repository ignored) {
-        return "test-root";
     }
 }

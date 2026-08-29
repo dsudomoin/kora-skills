@@ -3,57 +3,64 @@ plugins {
     id "application"
 }
 
+// Kora 2.0 artifacts are compiled to class-file 69 — JDK 25 is the floor.
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
 configurations {
     koraBom
     annotationProcessor.extendsFrom(koraBom)
+    compileOnly.extendsFrom(koraBom)
     implementation.extendsFrom(koraBom)
+    testImplementation.extendsFrom(koraBom)
+    testAnnotationProcessor.extendsFrom(koraBom)
+}
+
+repositories {
+    mavenCentral()
 }
 
 dependencies {
-    koraBom platform("ru.tinkoff.kora:kora-parent:${koraVersion}")
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
+    // koraVersion=2.0.0.RC1 in gradle.properties — never pin a Kora artifact individually
+    koraBom platform("io.koraframework:kora-bom:${koraVersion}")
+    annotationProcessor "io.koraframework:annotation-processors"
 
-    // Kafka module for messaging
-    implementation "ru.tinkoff.kora:kafka"
+    implementation "io.koraframework:kafka"
+    implementation "io.koraframework:json-common"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
 
-    // JSON for message serialization/deserialization
-    implementation "ru.tinkoff.kora:json-module"
+    // Telemetry — required for telemetry.metrics.enabled / telemetry.tracing.enabled to do anything
+    // implementation "io.koraframework:micrometer-module"
+    // implementation "io.koraframework:opentelemetry-tracing"
+    // implementation "io.koraframework:opentelemetry-tracing-exporter-grpc"
 
-    // Configuration (HOCON format)
-    implementation "ru.tinkoff.kora:config-hocon"
+    // Retry / circuit breaker on listener methods
+    // implementation "io.koraframework:resilient-kora"
 
-    // Logging
-    implementation "ru.tinkoff.kora:logging-logback"
-
-    // Telemetry (optional but recommended for production)
-    // implementation "ru.tinkoff.kora:micrometer-module"  // For metrics (Prometheus on the private port)
-    // implementation "ru.tinkoff.kora:opentelemetry-tracing-exporter-grpc"  // For OTLP tracing
-
-    // Tests
-    testImplementation "ru.tinkoff.kora:test-junit5"
-    testImplementation "org.testcontainers:kafka:1.19.3"
-    testImplementation "org.testcontainers:junit-jupiter:1.19.3"
-    testRuntimeOnly "org.apache.kafka:kafka-clients:3.7.0"
-    testImplementation "org.json:json:20240303"
-    testImplementation "org.awaitility:awaitility:4.2.1"
-    testImplementation "org.assertj:assertj-core:3.25.3"
-}
-
-java {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    testImplementation "io.koraframework:test-junit5"
+    // Testcontainers 2.x module names: testcontainers-kafka, NOT kafka
+    testImplementation "io.goodforgod:testcontainers-extensions-kafka:0.15.0"
+    // Not managed by kora-bom; these are the versions the migrated examples pin.
+    testImplementation "org.awaitility:awaitility:4.2.0"
+    testImplementation "org.json:json:20231013"
 }
 
 application {
     mainClass = "${packagePath}.Application"
 }
 
-tasks.named('test') {
+tasks.named("test") {
     useJUnitPlatform()
 }
 
+tasks.named("compileJava") {
+    options.encoding = "UTF-8"
+}
+
 run {
-    environment([
-        KAFKA_BOOTSTRAP_SERVERS: System.getenv('KAFKA_BOOTSTRAP_SERVERS') ?: 'localhost:9092'
-    ])
+    environment(["KAFKA_BOOTSTRAP": System.getenv("KAFKA_BOOTSTRAP") ?: "localhost:9092"])
 }

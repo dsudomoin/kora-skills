@@ -1,9 +1,11 @@
-// Error response DTO for validation errors. Use with ViolationExceptionHttpServerResponseMapper.
+// Kora 2.0 error-response DTOs for validation failures.
+// Returned by a ViolationExceptionHttpServerResponseMapper — see
+// references/violation-exception-reference.md for the full @KoraApp wiring.
 // Replace `com.example.app.dto` with your package.
 
 package com.example.app.dto;
 
-import ru.tinkoff.kora.json.common.annotation.Json;
+import io.koraframework.json.common.annotation.Json;
 
 import java.util.List;
 
@@ -20,3 +22,15 @@ public record ValidationErrorResponse(
     @Json
     public record ValidationErrorDetails(String field, String message) {}
 }
+
+// The mapper builds this from ViolationException.getViolations():
+//
+//   (request, exception) -> HttpServerResponse.of(
+//       400,
+//       HttpBody.json(writer.toByteArray(ValidationErrorResponse.of(
+//           exception.getViolations().stream()
+//               .map(v -> new ValidationErrorResponse.ValidationErrorDetails(v.path().full(), v.message()))
+//               .toList()))));
+//
+// JsonWriter.toByteArray(...) — the Kora 1.x *Unchecked methods do not exist in 2.0, and the plain
+// ones no longer declare checked exceptions, so a try/catch (IOException) around them will not compile.

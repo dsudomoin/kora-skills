@@ -1,20 +1,34 @@
-# @KoraApp and ApplicationGraph Reference
+# @KoraApp and the Generated Graph Reference
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/container.md`
-**Examples:** `.kora-agent/kora-examples/examples/java/kora-java-helloworld/`
+**Applies to:** Kora 2.x (`io.koraframework`)
 
 ## Contents
 
 - [Overview](#overview)
 - [Basic Usage](#basic-usage)
-- [Key Rules](#key-rules)
+- [The Generated Graph Class](#the-generated-graph-class)
+- [Entry Point](#entry-point)
 - [What to Connect via extends](#what-to-connect-via-extends)
-- [Application Entry Point](#application-entry-point)
+- [Providers Declared on @KoraApp Itself](#providers-declared-on-koraapp-itself)
 - [Common Mistakes](#common-mistakes)
+- [Related References](#related-references)
 
 ## Overview
 
-`@KoraApp` marks the main dependency injection container interface. Kora generates `ApplicationGraph` class at compile time that contains the complete dependency graph implementation.
+`@KoraApp` (`io.koraframework.common.annotation.KoraApp`) marks the interface that *is* the
+container configuration. The processor walks its whole interface hierarchy, adds every module and
+component it compiled alongside it, resolves every dependency, and writes one class that builds the
+graph.
+
+`@KoraApp` may only be placed on an **interface**. On anything else the processor reports:
+
+```
+@KoraApp can only be applied to interfaces.
+
+Fix:
+  - Change this type to an interface.
+  - Move @KoraApp to an interface that declares root components and modules.
+```
 
 ## Basic Usage
 
@@ -23,14 +37,14 @@
 ```java
 package com.example;
 
-import ru.tinkoff.kora.application.graph.KoraApplication;
-import ru.tinkoff.kora.application.graph.ApplicationGraph;
-import ru.tinkoff.kora.common.KoraApp;
-import ru.tinkoff.kora.config.hocon.HoconConfigModule;
-import ru.tinkoff.kora.logging.logback.LogbackModule;
+import io.koraframework.application.graph.KoraApplication;
+import io.koraframework.common.annotation.KoraApp;
+import io.koraframework.config.hocon.HoconConfigModule;
+import io.koraframework.logging.logback.LogbackModule;
 
 @KoraApp
 public interface Application extends HoconConfigModule, LogbackModule {
+
     static void main(String[] args) {
         KoraApplication.run(ApplicationGraph::graph);
     }
@@ -42,139 +56,184 @@ public interface Application extends HoconConfigModule, LogbackModule {
 ```kotlin
 package com.example
 
-import ru.tinkoff.kora.application.graph.KoraApplication
-import ru.tinkoff.kora.application.graph.ApplicationGraph
-import ru.tinkoff.kora.common.KoraApp
-import ru.tinkoff.kora.config.hocon.HoconConfigModule
-import ru.tinkoff.kora.logging.logback.LogbackModule
+import io.koraframework.application.graph.KoraApplication
+import io.koraframework.common.annotation.KoraApp
+import io.koraframework.config.hocon.HoconConfigModule
+import io.koraframework.logging.logback.LogbackModule
 
 @KoraApp
-interface Application : HoconConfigModule, LogbackModule {
-    companion object {
-        @JvmStatic
-        fun main(args: Array<String>) {
-            KoraApplication.run(ApplicationGraph::graph)
-        }
-    }
+interface Application : HoconConfigModule, LogbackModule
+
+fun main() {
+    KoraApplication.run(ApplicationGraph::graph)
 }
 ```
 
-## Key Rules
+A top-level `fun main()` compiles to `com.example.ApplicationKt`, which is what
+`application { mainClass }` must point at. `KoraApplication.run { ApplicationGraph.graph() }` is an
+equivalent spelling.
 
-| Rule | Description |
-|------|-------------|
-| **Single @KoraApp** | Only ONE interface per application can have `@KoraApp` |
-| **ApplicationGraph location** | Generated in the same package as `@KoraApp` interface |
-| **Generation trigger** | Run `./gradlew classes` to invoke annotation processor |
-| **Generated code path** | `build/generated/sources/annotationProcessor/` |
+## The Generated Graph Class
+
+| Property | Value |
+|---|---|
+| Class name | `<KoraAppSimpleName>Graph` — `interface Application` → `ApplicationGraph` |
+| Package | **the same package as the `@KoraApp` interface** |
+| Factory method | `static ApplicationGraphDraw graph()` (Kotlin: a companion function) |
+| Java output path | `build/generated/sources/annotationProcessor/java/main/` |
+| Kotlin output path | `build/generated/ksp/main/kotlin/` |
+
+Because the graph class is generated into *your* package, it is referenced unqualified from the
+`@KoraApp` interface and must never be imported from `io.koraframework.application.graph`.
+
+The generated class splits components into `ComponentHolder` inner classes of 500 nodes each, so a
+large application still compiles — do not be surprised by `ComponentHolder0`, `ComponentHolder1`, …
+
+**Never edit generated sources.** After a package rename or a 1.x → 2.0 migration, stale files in
+`build/generated` produce errors naming types that no longer exist. Regenerate instead:
+
+```bash
+./gradlew clean classes --no-build-cache
+```
+
+## Entry Point
+
+`io.koraframework.application.graph.KoraApplication` exposes exactly one method:
+
+```java
+public static void run(Supplier<ApplicationGraphDraw> supplier)
+```
+
+It builds the draw, initialises it, logs `Application initialized in …ms`, registers a
+`kora-shutdown` JVM shutdown hook that calls `release()`, and then blocks until that hook completes.
+If initialisation throws, it logs `Application initializing failed with error` and exits with `-1`.
+
+There is no overload taking a config, a `String[]`, or anything else — `run(ApplicationGraph::graph)`
+is the whole API.
 
 ## What to Connect via `extends`
 
-### External Modules (Required)
-
-Modules from external libraries must be explicitly connected:
+Modules that arrive as compiled bytecode were never seen by the processor, so they must be named:
 
 ```java
 @KoraApp
 public interface Application extends
-    HoconConfigModule,      // kora-config-hocon
-    LogbackModule,          // kora-logging-logback
-    JsonModule,             // kora-json-module
-    MetricsModule,          // kora-metrics-micrometer
-    TracingModule {         // kora-tracing-opentelemetry
-    
+        HoconConfigModule,                  // io.koraframework:config-hocon
+        LogbackModule,                      // io.koraframework:logging-logback
+        JsonModule,                         // io.koraframework:json-common
+        MetricsModule,                      // io.koraframework:micrometer-module
+        ValidationModule,                   // io.koraframework:validation-module
+        UndertowPublicHttpServerModule {    // io.koraframework:http-server-undertow
+
     static void main(String[] args) {
         KoraApplication.run(ApplicationGraph::graph);
     }
 }
 ```
 
-### Local Modules (Optional - Auto-Discovered)
+A `@Module` interface compiled in the same Gradle module is picked up without `extends`. See
+[Module Auto-Discovery Reference](module-auto-discovery-reference.md).
 
-Modules in the same `src/main/java` are auto-discovered:
+## Providers Declared on @KoraApp Itself
+
+The `@KoraApp` interface is also a module: its own `default` methods are providers. This is the
+idiomatic place to override a `@DefaultComponent` supplied by a module you extend, because an
+`@Override` on the same signature replaces it outright.
 
 ```java
-// Auto-discovered - extends NOT required
-@Module
-public interface DatabaseModule {
-    default DataSource dataSource() { /* ... */ }
-}
-
 @KoraApp
-public interface Application extends HoconConfigModule, LogbackModule {
-    // DatabaseModule automatically included
+public interface Application extends HoconConfigModule, LogbackModule, EmailModule {
+
+    static void main(String[] args) {
+        KoraApplication.run(ApplicationGraph::graph);
+    }
+
+    @Tag(EmailModule.EmailTag.class)
+    @Override
+    default Supplier<String> emailNotifierHeaderSupplier() {
+        return () -> "[EMAIL OVERRIDDEN] ";
+    }
 }
 ```
 
-## Application Entry Point
+```kotlin
+@KoraApp
+interface Application : HoconConfigModule, LogbackModule, EmailModule {
 
-The entry point calls `KoraApplication.run()` with a supplier for the generated graph:
-
-```java
-// Standard pattern
-KoraApplication.run(ApplicationGraph::graph);
-
-// With config override
-KoraApplication.run(config -> ApplicationGraph.graph(config));
+    @Tag(EmailModule.EmailTag::class)
+    override fun emailNotifierHeaderSupplier(): Supplier<String> = Supplier { "[EMAIL OVERRIDDEN] " }
+}
 ```
+
+Two details decide whether this works:
+
+1. **`@Override` (Java) / `override` (Kotlin) is load-bearing.** The processor looks the annotation
+   up, finds the overridden method in the supertypes, and *removes that declaration from the graph*.
+   Without it both methods stay registered and you get `Multiple components match dependency`.
+2. **Re-declare the `@Tag`.** The tag is read from the method you actually compile, so an override
+   that drops it silently publishes the component untagged.
+
+An override needs no `@Override`/`override` when the method it replaces is a `@DefaultComponent` —
+precedence already resolves that case. See [@DefaultComponent Reference](default-component-reference.md).
 
 ## Common Mistakes
 
-### Mistake 1: Multiple @KoraApp Interfaces
+### `@KoraApp` on a class
 
 ```java
-// BAD - Only one @KoraApp allowed
+// BAD — processor error: "@KoraApp can only be applied to interfaces."
 @KoraApp
-public interface Application { }
-
-@KoraApp  
-public interface SecondApp { }  // Error!
-```
-
-### Mistake 2: Wrong main() Signature
-
-```java
-// BAD - Missing ApplicationGraph
-@KoraApp
-public interface Application {
-    static void main(String[] args) {
-        new Application().run();  // Error!
-    }
-}
+public class Application { }
 
 // GOOD
 @KoraApp
-public interface Application {
-    static void main(String[] args) {
-        KoraApplication.run(ApplicationGraph::graph);
-    }
-}
-```
-
-### Mistake 3: Connecting Local Modules
-
-```java
-// BAD - Redundant extends for local module
-@Module
-public interface LocalModule { }
-
-@KoraApp
-public interface Application extends LocalModule { }  // Unnecessary
-
-// GOOD - Auto-discovered
-@KoraApp
 public interface Application { }
 ```
 
-## When to Read This Reference
+### Importing the generated graph
 
-- **Bootstrap new project** — Setting up `@KoraApp` for the first time
-- **Debug "ApplicationGraph not found"** — Verify annotation processor ran
-- **Multi-module setup** — Connecting external modules and submodules
-- **Multiple @KoraApp errors** — Ensure single entry point
+```java
+// BAD — ApplicationGraph is not part of the framework
+import io.koraframework.application.graph.ApplicationGraph;
+
+// GOOD — it is generated into your own package; no import needed
+package com.example;
+
+@KoraApp
+public interface Application {
+    static void main(String[] args) { KoraApplication.run(ApplicationGraph::graph); }
+}
+```
+
+### Inventing a `run` overload
+
+```java
+// BAD — KoraApplication.run only accepts Supplier<ApplicationGraphDraw>
+KoraApplication.run(config -> ApplicationGraph.graph(config));
+
+// GOOD
+KoraApplication.run(ApplicationGraph::graph);
+```
+
+### Kotlin `mainClass` pointing at the interface
+
+```kotlin
+// BAD — a top-level fun main() lives in <File>Kt
+mainClass.set("com.example.Application")
+
+// GOOD
+mainClass.set("com.example.ApplicationKt")
+```
+
+### Missing processor
+
+If `annotation-processors` (Java) or `symbol-processors` (KSP) is absent, nothing is generated and
+the only symptom is `cannot find symbol: ApplicationGraph`. Check the processor dependency before
+suspecting the graph.
 
 ## Related References
 
-- [Component Registration Reference](component-registration-reference.md) — `@Component`, `@Module` patterns
-- [Module Auto-Discovery Reference](module-auto-discovery-reference.md) — When extends is needed
-- [@KoraSubmodule Reference](kora-submodule-reference.md) — `@KoraSubmodule` for Gradle modules
+- [Component Registration Reference](component-registration-reference.md) — getting types into the graph
+- [Module Auto-Discovery Reference](module-auto-discovery-reference.md) — when `extends` is required
+- [@KoraSubmodule Reference](kora-submodule-reference.md) — multi-module Gradle builds
+- [@DefaultComponent Reference](default-component-reference.md) — overriding module defaults

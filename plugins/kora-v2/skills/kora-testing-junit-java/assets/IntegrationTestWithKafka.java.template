@@ -1,143 +1,131 @@
 package ${package};
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
-import static org.mockito.Mockito.*;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import org.jetbrains.annotations.NotNull;
-import org.junit.jupiter.api.BeforeEach;
+import java.time.Duration;
+import java.util.concurrent.Executors;
+
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mock;
-import org.testcontainers.containers.KafkaContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
-import ru.tinkoff.kora.test.extension.junit5.KoraAppTest;
-import ru.tinkoff.kora.test.extension.junit5.KoraAppTestConfigModifier;
-import ru.tinkoff.kora.test.extension.junit5.KoraConfigModification;
-import ru.tinkoff.kora.test.extension.junit5.TestComponent;
+
+import io.goodforgod.testcontainers.extensions.ContainerMode;
+import io.goodforgod.testcontainers.extensions.kafka.ConnectionKafka;
+import io.goodforgod.testcontainers.extensions.kafka.Event;
+import io.goodforgod.testcontainers.extensions.kafka.KafkaConnection;
+import io.goodforgod.testcontainers.extensions.kafka.TestcontainersKafka;
+import io.goodforgod.testcontainers.extensions.kafka.Topics;
+
+import io.koraframework.test.extension.junit5.KoraAppTest;
+import io.koraframework.test.extension.junit5.KoraAppTestConfigModifier;
+import io.koraframework.test.extension.junit5.KoraConfigModification;
+import io.koraframework.test.extension.junit5.TestComponent;
 
 /**
- * Integration test template with Kafka TestContainer.
+ * Kora 2.0 integration test for a @KafkaListener consumer and a @KafkaPublisher against a real
+ * broker, using the io.goodforgod Testcontainers Kafka extension (what the migrated examples use).
  *
- * Usage:
- * 1. Replace ${producerName} and ${consumerName} with your classes
- * 2. Replace ${messageName} with your message class
- * 3. Replace ${topicName} with your Kafka topic
- * 4. Add test methods for producer/consumer scenarios
+ * Template placeholders are ${...} tokens such as ${consumerName}. ${KAFKA_BOOTSTRAP} inside the
+ * HOCON is a Kora config placeholder — leave it as is.
  *
  * Requirements:
- * - Docker must be running
- * - testImplementation "org.testcontainers:kafka"
- * - testImplementation "ru.tinkoff.kora:kafka"
+ *     annotationProcessor     "io.koraframework:annotation-processors"
+ *     testAnnotationProcessor "io.koraframework:annotation-processors"
+ *     implementation          "io.koraframework:kafka"
+ *     testImplementation      "io.koraframework:test-junit5"
+ *     testImplementation      "io.goodforgod:testcontainers-extensions-kafka:0.15.0"
+ *     testImplementation      "org.awaitility:awaitility:4.3.0"
+ *
+ * Two things this template exists to get right:
+ *
+ * 1. A Kafka consumer is not a dependency of anything the test injects, so the trimmed graph would
+ *    drop it and nothing would ever be consumed. @KafkaListener on a method of ${consumerName}
+ *    generates the interface ${consumerName}Module in the SAME PACKAGE AS THE CONSUMER (import it
+ *    when the test lives elsewhere); listing it in @KoraAppTest(modules = ...) turns its factory
+ *    methods into graph roots. The alternative is to inject the generated Lifecycle by its tag:
+ *        @Tag(${consumerName}Module.${consumerName}${consumerMethodName}Tag.class)
+ *        @TestComponent
+ *        private Lifecycle consumerLifecycle;
+ *
+ * 2. There is no flat kafka.bootstrapServers key. The broker address belongs in the per-consumer /
+ *    per-producer driverProperties, under the native Kafka client property names, at exactly the
+ *    config path named in @KafkaListener / @KafkaPublisher.
  */
-@Testcontainers
-@KoraAppTest(Application.class)
-class ${producerName}Test implements KoraAppTestConfigModifier {
+@TestcontainersKafka(mode = ContainerMode.PER_RUN, topics = @Topics({ "${topicName}" }))
+@KoraAppTest(value = Application.class, modules = ${consumerName}Module.class)
+class ${consumerName}Test implements KoraAppTestConfigModifier {
 
-    @Container
-    static final KafkaContainer KAFKA = new KafkaContainer(
-        DockerImageName.parse("confluentinc/cp-kafka:7.5.0")
-    ).withStartupTimeout(java.time.Duration.ofSeconds(60));
+    @ConnectionKafka
+    private KafkaConnection connection;
 
     @TestComponent
-    private ${producerName} ${producerVarName};
+    private ${publisherName} ${publisherVarName};
 
     @TestComponent
-    private ${consumerName} ${consumerVarName};
+    private ${serviceName} ${serviceVarName};
 
-    @NotNull
+    /**
+     * When the production application.conf already reads ${?KAFKA_BOOTSTRAP}, this one line is all
+     * the test needs, and the rest of the Kafka config stays exactly as production has it:
+     *
+     *   return KoraConfigModification.ofSystemProperty("KAFKA_BOOTSTRAP",
+     *           connection.params().bootstrapServers());
+     *
+     * The inline block below is the fallback for a config without that placeholder. Remember that
+     * ofString REPLACES application.conf, so it must carry every key the graph needs.
+     */
     @Override
     public KoraConfigModification config() {
-        // Kora Kafka config is per-listener / per-publisher. The broker address goes into
-        // driverProperties using native Kafka client property names. There is no flat
-        // kafka.bootstrapServers key. Match these paths to your @KafkaListener strings.
         return KoraConfigModification.ofString("""
-            kafka {
-                ${consumerConfigPath} {
-                    topics = ["${topicName}"]
-                    offset = "earliest"
+                kafka {
+                  consumer.${consumerConfigName} {
+                    topics = "${topicName}"
+                    pollTimeout = 250ms
                     driverProperties {
-                        "bootstrap.servers" = ${KAFKA_BOOTSTRAP_SERVERS}
-                        "group.id" = "test-consumer-group"
+                      "bootstrap.servers" = ${KAFKA_BOOTSTRAP}
+                      "group.id" = "${consumerConfigName}-test"
+                      "auto.offset.reset" = "earliest"
+                      "enable.auto.commit" = true
                     }
-                }
-                ${producerConfigPath} {
+                    telemetry.logging.enabled = true
+                  }
+                  producer.${producerConfigName} {
                     driverProperties {
-                        "bootstrap.servers" = ${KAFKA_BOOTSTRAP_SERVERS}
+                      "bootstrap.servers" = ${KAFKA_BOOTSTRAP}
                     }
+                  }
+                  producer.${producerConfigName}-topic {
+                    topic = "${topicName}"
+                  }
                 }
-            }
-            """)
-            .withSystemProperty("KAFKA_BOOTSTRAP_SERVERS", KAFKA.getBootstrapServers());
-    }
-
-    @BeforeEach
-    void setup() {
-        // Reset any state if needed
+                """)
+                .withSystemProperty("KAFKA_BOOTSTRAP", connection.params().bootstrapServers());
     }
 
     @Test
-    void shouldSendMessageAndConsume() throws Exception {
+    void publisherSendsMessageToTopic() {
         // given
-        var message = new ${messageName}("test-id", 100.0);
-        var receivedMessages = new ArrayList<${messageName}>();
-        var latch = new CountDownLatch(1);
-
-        // Setup consumer to capture messages
-        // This depends on your consumer implementation
-        // Example with spy or callback:
-        // doAnswer(invocation -> {
-        //     receivedMessages.add(invocation.getArgument(0));
-        //     latch.countDown();
-        //     return null;
-        // }).when(${consumerVarName}).consume(any(${messageName}.class));
+        var subscription = connection.subscribe("${topicName}");
 
         // when
-        ${producerVarName}.send(message);
+        ${publisherVarName}.send(new ${messageName}("test-id", "test-payload"));
 
         // then
-        // assertTrue(latch.await(5, TimeUnit.SECONDS), "Message not consumed within timeout");
-        // assertEquals(1, receivedMessages.size());
-        // assertEquals("test-id", receivedMessages.get(0).id());
+        var received = subscription.assertReceivedAtLeast(1).get(0);
+        assertEquals("test-id", received.value().asJson().getString("id"));
     }
 
     @Test
-    void shouldSendMultipleMessages() throws Exception {
-        // given
-        var messages = List.of(
-            new ${messageName}("id-1", 10.0),
-            new ${messageName}("id-2", 20.0),
-            new ${messageName}("id-3", 30.0)
-        );
+    void listenerProcessesMessageFromTopic() {
+        // given / when
+        connection.send("${topicName}", Event.ofValueAndRandomKey(
+                "{\"id\":\"test-id\",\"payload\":\"test-payload\"}"));
 
-        // when
-        messages.forEach(${producerVarName}::send);
+        // then — consumption is asynchronous, so poll for the observable side effect
+        Awaitility.await()
+                .atMost(Duration.ofSeconds(15))
+                .pollExecutorService(Executors.newSingleThreadExecutor())
+                .until(() -> ${serviceVarName}.find("test-id").isPresent());
 
-        // then
-        // Verify all messages were consumed
-        // Awaitility.await().atMost(Duration.ofSeconds(5))
-        //     .untilAsserted(() -> assertEquals(3, receivedMessages.size()));
-    }
-
-    @Test
-    void shouldHandleMessageProcessingError() throws Exception {
-        // given
-        var message = new ${messageName}("error-id", 0.0);
-
-        // Setup consumer to throw exception
-        // doThrow(new ProcessingException("Error"))
-        //     .when(${consumerVarName}).consume(any(${messageName}.class));
-
-        // when
-        ${producerVarName}.send(message);
-
-        // then
-        // Verify error handling (DLQ, retry, logging, etc.)
-        // verify(errorHandler).handle(any(), any());
+        assertEquals("test-payload", ${serviceVarName}.find("test-id").orElseThrow().payload());
     }
 }

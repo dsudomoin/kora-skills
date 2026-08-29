@@ -1,33 +1,44 @@
 package ${package}
 
-import ru.tinkoff.kora.database.common.annotation.Column
-import ru.tinkoff.kora.database.common.annotation.Embedded
-import ru.tinkoff.kora.database.jdbc.EntityJdbc
-import ru.tinkoff.kora.database.common.annotation.Id
-import ru.tinkoff.kora.database.common.annotation.Table
-import java.util.UUID
+import io.koraframework.database.common.annotation.Column
+import io.koraframework.database.common.annotation.Embedded
+import io.koraframework.database.common.annotation.Id
+import io.koraframework.database.common.annotation.Table
+import io.koraframework.database.jdbc.annotation.EntityJdbc
 
 /**
- * Entity with composite ID (two UUID fields).
- * Composite ID is implemented as a nested data class with @Embedded annotation.
+ * Entity with a composite primary key for a Kora 2.0 JDBC repository (Kotlin).
  *
- * Key patterns:
- * - Nested data class for the composite key (ID)
- * - @field:Embedded flattens the composite key fields into the parent table
- * - @field:Id marks the composite key as the primary key
- * - Use %{id#where} in repository queries to match all key columns
+ * Pattern:
+ * - a nested data class holds the key components;
+ * - `@field:Id @field:Embedded` on the parent property flattens them into the parent's columns;
+ * - the nested key type does NOT need @EntityJdbc — it is expanded into the parent's mapper;
+ * - `@field:Embedded("prefix_")` would prepend a prefix to every nested column name.
+ *
+ * Use `@field:` throughout: Kora reads the field, not the constructor parameter.
+ *
+ * Query it with %{id#where} (parameter named `id`) or %{entity#where = @id} (entity parameter);
+ * both expand to `${id1_column} = ? AND ${id2_column} = ?`.
+ *
+ * Matching DDL (give the key columns the SQL type that matches ${id1_type} / ${id2_type}):
+ *   CREATE TABLE ${table_name} (
+ *       ${id1_column} <key type> NOT NULL,
+ *       ${id2_column} <key type> NOT NULL,
+ *       name varchar(255) NOT NULL,
+ *       quantity integer NOT NULL,
+ *       note text,
+ *       PRIMARY KEY (${id1_column}, ${id2_column})
+ *   );
  */
 @EntityJdbc
 @Table("${table_name}")
 data class ${entity_name}(
     @field:Id @field:Embedded val id: ID,
-    @field:Column("name") val name: String,
-    @field:Column("field1") val field1: String,
-    @field:Column("field2") val field2: String? = null
+    val name: String,
+    val quantity: Int,
+    val note: String? = null
 ) {
-    /**
-     * Composite ID class with two fields.
-     */
+    /** Composite key: both components are part of the primary key. */
     data class ID(
         @field:Column("${id1_column}") val ${id1_field}: ${id1_type},
         @field:Column("${id2_column}") val ${id2_field}: ${id2_type}

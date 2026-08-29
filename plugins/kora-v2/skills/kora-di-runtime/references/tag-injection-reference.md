@@ -1,546 +1,260 @@
-# Kora @Tag Disambiguation Reference
+# `@Tag` Reference — disambiguation in Kora 2.0
 
-**Source:** [Kora Container Documentation](../../../.kora-agent/kora-docs/mkdocs/docs/en/documentation/container.md)
-
-Complete reference for using `@Tag` to disambiguate same-type components in Kora applications.
+**Kora 2.0** · `io.koraframework.common.annotation.Tag`
 
 ---
 
-## Table of Contents
-
-1. [@Tag Annotation](#tag-annotation)
-2. [Tag Classes](#tag-classes)
-3. [Tagged Injection](#tagged-injection)
-4. [Common Patterns](#common-patterns)
-5. [Troubleshooting](#troubleshooting)
-
----
-
-## @Tag Annotation
-
-When multiple implementations of the same interface exist, use `@Tag` to specify which one to inject.
+## 1. The annotation
 
 ```java
-// Tag classes (simple marker classes)
-public final class RedisTag {}
-public final class CaffeineTag {}
+package io.koraframework.common.annotation;
 
-// Tagged implementations
-@Tag(RedisTag.class)
-@Component
-public final class RedisCache implements Cache {
-    // Redis implementation
-}
-
-@Tag(CaffeineTag.class)
-@Component
-public final class CaffeineCache implements Cache {
-    // In-memory implementation
-}
-
-// Tagged injection
-@Component
-public final class UserService {
-    private final Cache redisCache;
-    private final Cache localCache;
-
-    public UserService(
-        @Tag(RedisTag.class) Cache redisCache,
-        @Tag(CaffeineTag.class) Cache localCache
-    ) {
-        this.redisCache = redisCache;
-        this.localCache = localCache;
-    }
-}
-```
-
----
-
-## Tag Classes
-
-### Use Simple Marker Classes
-
-**Recommended approach:**
-
-```java
-// GOOD: Simple tag class
-public final class RedisTag {}
-public final class PostgresTag {}
-public final class PrimaryTag {}
-```
-
-**Avoid custom annotations:**
-
-```java
-// BAD: Unnecessary boilerplate
-@Target({ElementType.TYPE, ElementType.PARAMETER})
 @Retention(RetentionPolicy.RUNTIME)
-@Tag(RedisTag.class)
-public @interface RedisCache {}
+@Target({ElementType.METHOD, ElementType.PARAMETER, ElementType.FIELD, ElementType.TYPE, ElementType.TYPE_USE})
+public @interface Tag {
+
+    @Tag(Any.class)
+    @interface Any {}
+
+    @Tag(Factory.class)
+    @interface Factory {}
+
+    Class<?> value();
+}
 ```
 
-### Why Simple Classes Are Better
+The value is a **`Class`**, never a string. Both nested marker types from 1.x survive under the same
+names; `Tag.Factory` is new in 2.0 and is described in §5.
 
-| Aspect | Simple Class | Custom Annotation |
-|--------|--------------|-------------------|
-| Boilerplate | Minimal | Heavy (meta-annotations) |
-| Annotation processing | Not needed | Required |
-| Readability | Clear intent | Indirect |
-| IDE navigation | Direct | Through meta-annotation |
-
-### Tag Class Naming Conventions
-
-```java
-// By technology
-public final class RedisTag {}
-public final class PostgresTag {}
-public final class KafkaTag {}
-public final class ElasticsearchTag {}
-
-// By role
-public final class PrimaryTag {}
-public final class SecondaryTag {}
-public final class ReadOnlyTag {}
-public final class WriteTag {}
-
-// By environment
-public final class ProdTag {}
-public final class DevTag {}
-public final class TestTag {}
-
-// By strategy
-public final class SyncTag {}
-public final class AsyncTag {}
-public final class BatchTag {}
-public final class StreamingTag {}
-```
+> Import from **`io.koraframework.common.annotation`**. `io.koraframework.common` holds
+> `Configurer`, `Either`, `Principal`, `PromisedProxy` and the `liveness/`, `naming/`, `readiness/`,
+> `telemetry/`, `util/` subpackages — no DI annotations.
 
 ---
 
-## Tagged Injection
+## 2. Matching rules
 
-### On Constructor Parameters
+Compile-time matching is `TagUtils.tagsMatch(requiredTag, providedTag)`:
+
+| Injection point | Component untagged | Component `@Tag(A.class)` | Component `@Tag(B.class)` |
+|---|---|---|---|
+| untagged | match | no | no |
+| `@Tag(A.class)` | no | match | no |
+| `@Tag(Tag.Any.class)` | match | match | match |
+
+Two facts follow that surprise people:
+
+- an **untagged** injection point does not see tagged components. Tagging one implementation of an
+  interface removes it from every untagged consumer of that interface;
+- `Tag.Any` is meaningful only at the **injection point**. Putting `@Tag(Tag.Any.class)` on a
+  component is not a wildcard registration.
+
+---
+
+## 3. Tag classes
+
+A tag is a type token. Any type works; a small, empty, purpose-named class is what the migrated
+examples use, and it keeps rename/find-usages working.
 
 ```java
-@Component
-public final class PaymentService {
-    private final PaymentGateway primaryGateway;
-    private final PaymentGateway backupGateway;
-
-    public PaymentService(
-        @Tag(PrimaryTag.class) PaymentGateway primaryGateway,
-        @Tag(SecondaryTag.class) PaymentGateway backupGateway
-    ) {
-        this.primaryGateway = primaryGateway;
-        this.backupGateway = backupGateway;
-    }
+public final class RedisTag {
+    private RedisTag() {}
 }
 ```
 
-### On Class (Component-Level Tag)
-
-```java
-@Tag(PrimaryTag.class)
-@Component
-public final class PrimaryDatabase implements Database {
-    public void query(String sql) { /* Primary DB */ }
-}
-
-@Tag(SecondaryTag.class)
-@Component
-public final class SecondaryDatabase implements Database {
-    public void query(String sql) { /* Secondary DB */ }
-}
-
-// Injection point
-@Component
-public final class UserService {
-    private final Database database;
-
-    // Gets PrimaryDatabase
-    public UserService(@Tag(PrimaryTag.class) Database database) {
-        this.database = database;
-    }
-}
+```kotlin
+class RedisTag private constructor()
 ```
 
-### On Factory Methods
+Where the tag belongs to one module, nesting it keeps the namespace tidy — this is the shape used in
+the migrated DI guide:
 
 ```java
 @Module
-public interface CacheModule {
+public interface SmsModule {
 
-    @Tag(RedisTag.class)
-    @DefaultComponent
-    default Cache redisCache(Config config) {
-        return new RedisCache(config.getConfig("redis"));
+    final class SmsTag {
+        private SmsTag() {}
     }
 
-    @Tag(CaffeineTag.class)
-    default Cache caffeineCache() {
-        return new CaffeineCache();
-    }
+    @Tag(SmsTag.class)
+    default Notifier smsNotifier(@Nullable SmsCellularProvider provider) { … }
 }
 ```
 
----
+Referenced as `@Tag(SmsModule.SmsTag.class)` from outside the module.
 
-## Common Patterns
+Reusing an existing type as a tag is legal and common in framework modules — e.g. Kora's own HTTP
+server interceptors are tagged with the `HttpServer` interface itself. Prefer a dedicated marker for
+application code, where the intent is not otherwise obvious.
 
-### Pattern 1: Primary/Secondary Databases
+### Annotation tags
+
+`TagUtils.parseTagValue` also reads a tag off an annotation that is *itself* meta-annotated with
+`@Tag`. That is how `Tag.Any` and `Tag.Factory` work, and you can define your own:
 
 ```java
-// Tag classes
-public final class PrimaryTag {}
-public final class SecondaryTag {}
+@Tag(RedisTag.class)
+@Retention(RetentionPolicy.RUNTIME)
+@Target({ElementType.TYPE, ElementType.METHOD, ElementType.PARAMETER})
+public @interface Redis {}
+```
 
-// Primary database
-@Tag(PrimaryTag.class)
+`@Redis` then behaves exactly like `@Tag(RedisTag.class)`. Useful when one tag is repeated across
+many injection points; unnecessary otherwise.
+
+---
+
+## 4. Where `@Tag` goes
+
+**On a component class** — the component is registered under that tag:
+
+```java
+@Tag(RedisTag.class)
 @Component
-public final class PrimaryDatabase implements Database {
-    public void query(String sql) { /* Primary DB */ }
-}
+public final class RedisCache implements Cache { … }
+```
 
-// Secondary database
-@Tag(SecondaryTag.class)
-@Component
-public final class SecondaryDatabase implements Database {
-    public void query(String sql) { /* Secondary DB */ }
-}
+**On a factory method** — the produced component is registered under that tag:
 
-// Service with primary/secondary
+```java
+@Tag(RedisTag.class)
+default Cache redisCache(RedisConfig config) { … }
+```
+
+**On an injection point** — constructor parameter or module-method parameter:
+
+```java
 @Component
 public final class UserService {
-    private final Database primaryDb;
-    private final Database secondaryDb;
 
-    public UserService(
-        @Tag(PrimaryTag.class) Database primaryDb,
-        @Tag(SecondaryTag.class) Database secondaryDb
-    ) {
-        this.primaryDb = primaryDb;
-        this.secondaryDb = secondaryDb;
-    }
+    public UserService(@Tag(RedisTag.class) Cache remote,
+                       @Tag(LocalTag.class) Cache local) { … }
+}
+```
 
-    public User get(String id) {
-        // Read from secondary (read replica)
-        return secondaryDb.query("SELECT * FROM users WHERE id = ?", id);
-    }
+**Overriding a module method in `@KoraApp`** — the override must repeat the tag, otherwise it
+registers an untagged component and the tagged consumers stop seeing it:
 
-    public void save(User user) {
-        // Write to primary
-        primaryDb.execute("INSERT INTO users VALUES (?, ?)", user.id(), user.name());
+```java
+@KoraApp
+public interface Application extends EmailModule {
+
+    @Tag(EmailModule.EmailTag.class)
+    @Override
+    default Supplier<String> emailNotifierHeaderSupplier() {
+        return () -> "[EMAIL OVERRIDDEN] ";
     }
 }
 ```
 
-### Pattern 2: Multi-Environment Configuration
+Kotlin is the same, with `::class`:
 
-```java
-// Environment tags
-public final class ProdTag {}
-public final class DevTag {}
-public final class TestTag {}
-
-// Production email service
-@Tag(ProdTag.class)
+```kotlin
 @Component
-public final class ProdEmailService implements EmailService {
-    private final SmtpClient smtp;
-
-    public ProdEmailService(SmtpClient smtp) {
-        this.smtp = smtp;
-    }
-
-    public void send(String to, String subject, String body) {
-        smtp.send(to, subject, body);  // Real email
-    }
-}
-
-// Dev email service (logs instead)
-@Tag(DevTag.class)
-@Component
-public final class DevEmailService implements EmailService {
-    public void send(String to, String subject, String body) {
-        System.out.println("[DEV EMAIL] To: " + to);
-        System.out.println("Subject: " + subject);
-        System.out.println("Body: " + body);
-    }
-}
-
-// Test email service (no-op)
-@Tag(TestTag.class)
-@Component
-public final class TestEmailService implements EmailService {
-    public void send(String to, String subject, String body) {
-        // No-op in tests
-    }
-}
-```
-
-### Pattern 3: Multiple Message Brokers
-
-```java
-// Broker tags
-public final class KafkaTag {}
-public final class RabbitTag {}
-public final class SqsTag {}
-
-// Kafka producer
-@Tag(KafkaTag.class)
-@Component
-public final class KafkaProducer implements MessageProducer {
-    public void send(String topic, String message) {
-        // Send to Kafka
-    }
-}
-
-// RabbitMQ producer
-@Tag(RabbitTag.class)
-@Component
-public final class RabbitProducer implements MessageProducer {
-    public void send(String queue, String message) {
-        // Send to RabbitMQ
-    }
-}
-
-// SQS producer
-@Tag(SqsTag.class)
-@Component
-public final class SqsProducer implements MessageProducer {
-    public void send(String queueUrl, String message) {
-        // Send to SQS
-    }
-}
-
-// Message router
-@Component
-public final class MessageRouter {
-    private final Map<String, MessageProducer> producers;
-
-    public MessageRouter(
-        @Tag(KafkaTag.class) MessageProducer kafka,
-        @Tag(RabbitTag.class) MessageProducer rabbit,
-        @Tag(SqsTag.class) MessageProducer sqs
-    ) {
-        this.producers = Map.of(
-            "kafka", kafka,
-            "rabbit", rabbit,
-            "sqs", sqs
-        );
-    }
-
-    public void send(String broker, String destination, String message) {
-        producers.get(broker).send(destination, message);
-    }
-}
-```
-
-### Pattern 4: Cache Hierarchy
-
-```java
-// Cache level tags
-public final class L1Tag {}  // Local cache
-public final class L2Tag {}  // Distributed cache
-
-// L1: Local Caffeine cache
-@Tag(L1Tag.class)
-@Component
-public final class L1Cache implements Cache {
-    private final Cache<String, Object> caffeine;
-
-    public L1Cache() {
-        this.caffeine = Caffeine.newBuilder()
-            .maximumSize(1000)
-            .expireAfterWrite(Duration.ofMinutes(5))
-            .build();
-    }
-
-    public void put(String key, Object value) {
-        caffeine.put(key, value);
-    }
-
-    public Object get(String key) {
-        return caffeine.getIfPresent(key);
-    }
-}
-
-// L2: Redis distributed cache
-@Tag(L2Tag.class)
-@Component
-public final class L2Cache implements Cache {
-    private final RedisClient redis;
-
-    public L2Cache(RedisClient redis) {
-        this.redis = redis;
-    }
-
-    public void put(String key, Object value) {
-        redis.set(key, value);
-    }
-
-    public Object get(String key) {
-        return redis.get(key);
-    }
-}
-
-// Cache coordinator
-@Component
-public final class CacheCoordinator {
-    private final Cache l1Cache;
-    private final Cache l2Cache;
-
-    public CacheCoordinator(
-        @Tag(L1Tag.class) Cache l1Cache,
-        @Tag(L2Tag.class) Cache l2Cache
-    ) {
-        this.l1Cache = l1Cache;
-        this.l2Cache = l2Cache;
-    }
-
-    public Object get(String key) {
-        // Try L1 first
-        var value = l1Cache.get(key);
-        if (value != null) {
-            return value;
-        }
-
-        // Fall back to L2
-        value = l2Cache.get(key);
-        if (value != null) {
-            l1Cache.put(key, value);  // Populate L1
-        }
-        return value;
-    }
-
-    public void put(String key, Object value) {
-        l1Cache.put(key, value);
-        l2Cache.put(key, value);
-    }
-}
-```
-
-### Pattern 5: Strategy Selection
-
-```java
-// Compression strategy tags
-public final class GzipTag {}
-public final class ZipTag {}
-public final class Lz4Tag {}
-
-// GZIP compressor
-@Tag(GzipTag.class)
-@Component
-public final class GzipCompressor implements Compressor {
-    public byte[] compress(byte[] data) { /* GZIP */ }
-    public byte[] decompress(byte[] data) { /* GZIP */ }
-}
-
-// ZIP compressor
-@Tag(ZipTag.class)
-@Component
-public final class ZipCompressor implements Compressor {
-    public byte[] compress(byte[] data) { /* ZIP */ }
-    public byte[] decompress(byte[] data) { /* ZIP */ }
-}
-
-// LZ4 compressor
-@Tag(Lz4Tag.class)
-@Component
-public final class Lz4Compressor implements Compressor {
-    public byte[] compress(byte[] data) { /* LZ4 */ }
-    public byte[] decompress(byte[] data) { /* LZ4 */ }
-}
-
-// Compressor selector
-@Component
-public final class CompressionService {
-    private final Map<String, Compressor> compressors;
-
-    public CompressionService(
-        @Tag(GzipTag.class) Compressor gzip,
-        @Tag(ZipTag.class) Compressor zip,
-        @Tag(Lz4Tag.class) Compressor lz4
-    ) {
-        this.compressors = Map.of(
-            "gzip", gzip,
-            "zip", zip,
-            "lz4", lz4
-        );
-    }
-
-    public byte[] compress(byte[] data, String algorithm) {
-        return compressors.get(algorithm).compress(data);
-    }
-}
+class UserService(
+    @Tag(RedisTag::class) private val remote: Cache,
+    @Tag(LocalTag::class) private val local: Cache
+)
 ```
 
 ---
 
-## Troubleshooting
+## 5. `Tag.Factory` — the tag of the enclosing factory module
 
-### Ambiguous Dependency Error
+`@FactoryModule` (new in 2.0) marks a module method whose **return value is itself a module**: the
+returned object is registered as a component and its own methods are processed as component
+providers.
 
-**Error:** `Found multiple components of type Cache`
+Inside such a factory module, `@Tag(Tag.Factory.class)` means *"the tag of the factory-module method
+that produced this module"*. The processor substitutes it in two places:
 
-**Solution:** Add `@Tag` to disambiguate:
+- on a provider method of the factory module — `ComponentDeclaration.fromModule` replaces the tag
+  with the factory module's tag;
+- on a **parameter** of such a method — `ComponentDependencyHelper.parseDependencyClaims` does the
+  same, so the method resolves its dependencies from its own tagged family.
 
-```java
-// WRONG: Ambiguous
-public UserService(Cache cache) {}
+Used outside a factory module it is a compile error:
 
-// CORRECT: Tagged
-public UserService(@Tag(RedisTag.class) Cache cache) {}
+```
+@Tag.Factory can only be used inside factory modules.
+
+Fix:
+  - Move this provider to a factory module (@FactoryModule).
+  - Replace @Tag.Factory with an explicit @Tag(...) value.
 ```
 
-### Wrong Implementation Injected
-
-**Problem:** Getting CaffeineCache instead of RedisCache
-
-**Check:**
-1. Is the correct `@Tag` used on injection point?
-2. Are both implementations tagged correctly?
-3. Is the tag class the same (not a different class with same name)?
-
-### Tag on Only One Implementation
-
-**Problem:** Tagged injection fails
-
-**Check:** ALL implementations of the same type should be tagged, or use `@DefaultComponent` for untagged:
+**Why it exists.** It lets one factory module class be instantiated several times under different
+tags and produce several independently-configured families of components of the same types, without
+writing the tags into the module itself. Kora's own AWS S3 module is exactly this shape:
 
 ```java
-// WRONG: Only one tagged
-@Tag(RedisTag.class)
-@Component
-public final class RedisCache implements Cache {}
+public interface AwsS3ClientModule {
 
-@Component
-public final class CaffeineCache implements Cache {}  // Untagged
+    @FactoryModule
+    default AwsS3ClientFactoryModule awsS3ClientFactoryModule() {
+        return new AwsS3ClientFactoryModule("s3client.aws");
+    }
+}
 
-// CORRECT: Both tagged
-@Tag(RedisTag.class)
-@Component
-public final class RedisCache implements Cache {}
+public class AwsS3ClientFactoryModule {
 
-@Tag(CaffeineTag.class)
-@Component
-public final class CaffeineCache implements Cache {}
+    private final String configPath;
+
+    public AwsS3ClientFactoryModule(String configPath) { this.configPath = configPath; }
+
+    @Tag(Tag.Factory.class)
+    public AwsS3Config awsS3Config(Config config, ConfigValueMapper<AwsS3Config> mapper) {
+        return mapper.mapOrThrow(config.get(configPath));
+    }
+
+    @Tag(Tag.Factory.class)
+    public S3Client awsS3Client(@Tag(Tag.Factory.class) AwsS3Config config,
+                                @Tag(Tag.Factory.class) AwsS3ClientFactory factory) {
+        return factory.create(config);
+    }
+}
 ```
 
-### Missing Tag Class Import
+The seemingly alarming `@Tag(Tag.Factory.class)` on `awsS3Client` does **not** make the `S3Client`
+tagged for consumers: `awsS3ClientFactoryModule()` itself carries no tag, so `Tag.Factory` resolves
+to "no tag" and applications inject a plain `S3Client`. Add a tag to the factory-module method and
+the whole family — config, HTTP client, `S3Client` — moves under that tag together.
 
-**Problem:** Compilation error — class not found
-
-**Check:** Tag class is in correct package and imported:
-
-```java
-import com.example.config.tags.RedisTag;  // Full path
-```
+To declare a second, differently-configured client, add another `@FactoryModule` method with its own
+tag and config path.
 
 ---
 
-## See Also
+## 6. Tags and collections
 
-- [SKILL.md](../SKILL.md) — Runtime DI overview
-- [Collection Injection Reference](collection-injection-reference.md) — All<T>, Tag.Any patterns
-- [Container Documentation](../../../.kora-agent/kora-docs/mkdocs/docs/en/documentation/container.md) — Official docs
+`@Tag` on an `All<T>` parameter selects which components are collected — see
+[`collection-injection-reference.md`](collection-injection-reference.md).
+
+## 7. Tags and interceptors
+
+A `GraphInterceptor` is matched against a component by exact type **and** by tag, with the
+interceptor's tag on the "required" side: an untagged interceptor intercepts only untagged
+components, and `@Tag(Tag.Any.class)` on the interceptor intercepts every tag. See
+[`graph-interceptor-reference.md`](graph-interceptor-reference.md).
+
+---
+
+## 8. Pitfalls
+
+| Symptom | Cause |
+|---|---|
+| ambiguous-dependency build error | two untagged components of one type — tag them, or mark one `@DefaultComponent` |
+| "no component found" after tagging one implementation | untagged consumers no longer match; tag the injection point too |
+| a `@KoraApp` override silently disconnects consumers | the override dropped the `@Tag` |
+| `@Tag.Factory can only be used inside factory modules` | used outside a `@FactoryModule`-provided module |
+| Kotlin `ClassCastException: String cannot be cast to KSType` in KSP | a 1.x string-valued annotation left in place; 2.0 tags are `Class`/`KClass` |
+| tag imported from `io.koraframework.common.Tag` | wrong package — it is `io.koraframework.common.annotation.Tag` |
+
+---
+
+## See also
+
+- [`collection-injection-reference.md`](collection-injection-reference.md) — `All<T>` and tag semantics
+- [`graph-interceptor-reference.md`](graph-interceptor-reference.md) — tag matching for interceptors
+- [`kora-di-compile`](../../kora-di-compile/SKILL.md) — `@Module`, `@FactoryModule`, `@DefaultComponent` declarations

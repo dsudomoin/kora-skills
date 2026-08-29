@@ -1,158 +1,219 @@
 # Structured Logging Reference
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/logging-slf4j.md`
+Machine-readable values on a log record, from `io.koraframework.logging.common.arg` and
+`…logging.common.masking` (artifact `io.koraframework:logging-common`, transitively present with
+`logging-logback`).
 
 ## Contents
 
-- [StructuredArgument API](#structuredargument-api)
+- [The Jackson 3 generator](#the-jackson-3-generator)
+- [StructuredArgument — arg / marker / value](#structuredargument--arg--marker--value)
 - [Typed overloads](#typed-overloads)
-- [Writer lambda (custom shapes)](#writer-lambda-custom-shapes)
-- [Marker vs parameter](#marker-vs-parameter)
-- [Supported types](#supported-types)
-- [JSON output example](#json-output-example)
+- [Writer lambdas](#writer-lambdas)
+- [StructuredArgumentMapper and @Json types](#structuredargumentmapper-and-json-types)
+- [Masking with @Mask](#masking-with-mask)
+- [How a structured value reaches the output](#how-a-structured-value-reaches-the-output)
 - [Best practices](#best-practices)
 
-## StructuredArgument API
+## The Jackson 3 generator
 
-Kora provides `ru.tinkoff.kora.logging.common.arg.StructuredArgument` for machine-readable
-structured logging. Structured data can be passed two ways:
+Every structured value is written through **Jackson 3**: `tools.jackson.core.JsonGenerator`, not
+`com.fasterxml.jackson.core.JsonGenerator`. Jackson 3 renamed the field-writing methods, and this
+is the single most common porting error in logging code:
 
-- **Parameter** (`StructuredArgument.arg(...)`) — interpolated into the `{}` position of the message.
-- **Marker** (`StructuredArgument.marker(...)`) — attached as metadata, not interpolated.
+| Jackson 2 (Kora 1.x) | Jackson 3 (Kora 2.0) |
+|---|---|
+| `writeStringField(name, value)` | **`writeStringProperty(name, value)`** |
+| `writeNumberField(name, value)` | **`writeNumberProperty(name, value)`** |
+| `writeFieldName(name)` | **`writeName(name)`** |
 
-```java
-import ru.tinkoff.kora.logging.common.arg.StructuredArgument;
-```
+`writeStartObject()`, `writeStartObject(pojo)`, `writeEndObject()`, `writeStartArray(pojo)`,
+`writeString`, `writeNumber`, `writeBoolean` and `writeNull` keep their names. Jackson 3 throws the
+unchecked `tools.jackson.core.JacksonException`, so none of these need a `try/catch`.
 
-```kotlin
-import ru.tinkoff.kora.logging.common.arg.StructuredArgument
-```
+## `StructuredArgument` — arg / marker / value
+
+`io.koraframework.logging.common.arg.StructuredArgument` has three static entry points; all of them
+produce something that carries a `fieldName` plus a JSON body.
+
+| Factory | Returns | How you pass it | Rendered by `ConsoleTextRecordEncoder` |
+|---|---|---|---|
+| `StructuredArgument.arg(name, …)` | `StructuredArgument` | as a message parameter: `log.info("… {}", arg)` | appended as `\tname=<json>`; the `{}` position gets the argument's `toString()` — see the note below |
+| `StructuredArgument.marker(name, …)` | `org.slf4j.Marker` | as the marker: `log.info(marker, "…")` | appended as `\tname=<json>` only |
+| `StructuredArgument.value(writer)` | `StructuredArgumentWriter` | as an SLF4J key/value: `log.atInfo().addKeyValue("name", value)` | appended as `\tname=<json>` only |
+
+`value(...)` is what Kora's own component telemetry uses (`addKeyValue("httpRequest", …)`,
+`addKeyValue("sqlQuery", …)`), and it is the cleanest form for new code: the key lives in
+`addKeyValue`, and the message stays a constant string.
+
+**The `{}` position does not get JSON.** SLF4J interpolates a message parameter with its
+`toString()`, and `ArgumentWithValueAndWriter` / `ArgumentWithWriter` are package-private records
+with no `toString()` override — so `log.info("Created user {}", arg("user", map))` renders
+`Created user ArgumentWithValueAndWriter[fieldName=user, value=..., writer=...]` on the message
+line, with the real JSON on the appended `\tuser={…}` line. That is another reason to prefer
+`marker(...)` or `addKeyValue` + `value(...)` and keep the message a constant.
 
 ## Typed overloads
 
-The simplest and safest form uses the typed overloads. `arg`/`marker` accept `String`,
-`Integer`, `Long`, `Boolean`, and `Map<String, String>` directly.
+`arg` and `marker` both accept `String`, `Integer`, `Long`, `Boolean` and `Map<String,String>`
+directly, plus `(String fieldName, StructuredArgumentWriter writer)` and
+`(String fieldName, T value, JsonWriter<T> writer)`.
 
 ===! "Java"
 
     ```java
-    var requestArg = StructuredArgument.arg("requestId", requestId);     // String
-    log.info("Request {} processed", requestArg);
+    import io.koraframework.logging.common.arg.StructuredArgument;
 
-    var countArg = StructuredArgument.arg("count", items.size());        // Integer
-    log.info("Loaded {}", countArg);
-
-    var attrs = StructuredArgument.arg("user", Map.of(                   // Map<String,String>
+    log.info("Request {} processed", StructuredArgument.arg("requestId", requestId));   // String
+    log.info("Loaded {}", StructuredArgument.arg("count", items.size()));               // Integer
+    log.info("User {} logged in", StructuredArgument.arg("user", Map.of(                // Map<String,String>
         "id", user.id(),
-        "role", user.role()));
-    log.info("User {} logged in", attrs);
+        "role", user.role())));
+
+    log.info(StructuredArgument.marker("userId", userId), "User action performed");     // metadata only
     ```
 
 === "Kotlin"
 
     ```kotlin
-    val requestArg = StructuredArgument.arg("requestId", requestId)      // String
-    logger.info("Request {} processed", requestArg)
+    import io.koraframework.logging.common.arg.StructuredArgument
 
-    val attrs = StructuredArgument.arg("user", mapOf(                    // Map<String,String>
+    log.info("Request {} processed", StructuredArgument.arg("requestId", requestId))
+    log.info("User {} logged in", StructuredArgument.arg("user", mapOf(
         "id" to user.id,
-        "role" to user.role))
-    logger.info("User {} logged in", attrs)
+        "role" to user.role)))
+
+    log.info(StructuredArgument.marker("userId", userId), "User action performed")
     ```
 
-## Writer lambda (custom shapes)
+A `null` value is written as JSON `null` (`ArgumentWithValueAndWriter.writeTo` checks it), so a
+nullable field does not need a guard.
 
-For values that are not one of the typed overloads, pass a writer lambda. The lambda receives a
-Jackson `JsonGenerator`, so use Jackson generator methods (`writeString`, `writeNumber`,
-`writeStartObject`/`writeEndObject`, `writeStringField`, `writeNumberField`). There is no
-two-argument `writeString(name, value)`.
+## Writer lambdas
+
+For anything that is not one of the typed overloads, supply a `StructuredArgumentWriter` —
+a functional interface, `void writeTo(JsonGenerator generator)`.
 
 ===! "Java"
 
     ```java
-    // Single value
-    var idArg = StructuredArgument.arg("requestId", gen -> gen.writeString(requestId));
-    log.info("Request {} processed", idArg);
-
-    // Nested object: open an object, then write named fields
-    var userArg = StructuredArgument.arg("user", gen -> {
-        gen.writeStartObject();
-        gen.writeStringField("id", user.getId());
-        gen.writeStringField("email", user.getEmail());
-        gen.writeEndObject();
-    });
-    log.info("User created {}", userArg);
+    log.atInfo()
+       .addKeyValue("user", StructuredArgument.value(gen -> {
+           gen.writeStartObject();
+           gen.writeStringProperty("id", user.id());
+           gen.writeStringProperty("email", user.email());
+           gen.writeNumberProperty("age", user.age());
+           gen.writeEndObject();
+       }))
+       .log("User created");
     ```
 
 === "Kotlin"
 
     ```kotlin
-    val idArg = StructuredArgument.arg("requestId") { it.writeString(requestId) }
-    logger.info("Request {} processed", idArg)
-
-    val userArg = StructuredArgument.arg("user") { gen ->
-        gen.writeStartObject()
-        gen.writeStringField("id", user.id)
-        gen.writeStringField("email", user.email)
-        gen.writeEndObject()
-    }
-    logger.info("User created {}", userArg)
+    log.atInfo()
+        .addKeyValue("user", StructuredArgument.value { gen ->
+            gen.writeStartObject()
+            gen.writeStringProperty("id", user.id)
+            gen.writeStringProperty("email", user.email)
+            gen.writeNumberProperty("age", user.age)
+            gen.writeEndObject()
+        })
+        .log("User created")
     ```
 
-## Marker vs parameter
+`StructuredArgumentWriter.writeToString()` renders the same JSON into a `String` using the shared
+`JsonModule.JSON_FACTORY`, which is what the pattern converters use.
 
-| Form | Call | Appears in message text? | Use for |
-|------|------|--------------------------|---------|
-| Parameter | `log.info("... {}", arg)` | Yes (at the `{}` position) | Values you want rendered in the line |
-| Marker | `log.info(marker, "...")` | No (metadata only) | Filtering / structured-only context |
+## `StructuredArgumentMapper` and `@Json` types
 
-===! "Java"
+`StructuredArgumentMapper<T>` (`void write(JsonGenerator gen, T value)`, plus
+`writeToString(T)`) bridges a whole domain type into a log record. `LoggingModule` supplies two
+generic `@DefaultComponent` factories:
 
-    ```java
-    var marker = StructuredArgument.marker("userId", userId);
-    log.info(marker, "User action performed");
-    ```
+```java
+@Json @DefaultComponent
+default <T> StructuredArgumentMapper<T> jsonStructuredArgumentMapper(JsonWriter<T> writer) { … }
 
-=== "Kotlin"
+@DefaultComponent
+default <T> MaskedStructuredArgumentMapper<T> maskedStructuredArgumentMapper(JsonWriter<T> writer, MaskingRules<T> rules) { … }
 
-    ```kotlin
-    val marker = StructuredArgument.marker("userId", userId)
-    logger.info(marker, "User action performed")
-    ```
-
-## Supported types
-
-The typed `arg`/`marker` overloads accept:
-
-| Type | Notes |
-|------|-------|
-| `String` | rendered as a JSON string |
-| `Integer` | rendered as a JSON number |
-| `Long` | rendered as a JSON number |
-| `Boolean` | rendered as a JSON boolean |
-| `Map<String, String>` | rendered as a nested JSON object |
-| anything else | supply a writer lambda over the Jackson `JsonGenerator` |
-
-## JSON output example
-
-With `LogstashEncoder`, structured arguments produce:
-
-```json
-{
-  "@timestamp": "2024-01-15T10:30:00.000Z",
-  "level": "INFO",
-  "logger": "com.example.UserService",
-  "message": "User created {}",
-  "user": {
-    "id": "usr-123",
-    "email": "user@example.com"
-  }
-}
+@Json @DefaultComponent
+default <T> MaskedStructuredArgumentMapper<T> jsonMaskedStructuredArgumentMapper(JsonWriter<T> writer, MaskingRules<T> rules) { … }
 ```
+
+They consume the compile-time `JsonWriter<T>` that `@Json` generates, so a type only needs `@Json`
+(see [`kora-json`](../../kora-json/SKILL.md)) to be loggable as a nested JSON object. The
+`@Json`-tagged variants write a real nested object; the untagged masked variant writes the JSON as
+a single escaped **string** property (`MaskedStructuredArgumentMapper(writer, rules, structured)`
+with `structured = false`).
+
+## Masking with `@Mask`
+
+`io.koraframework.logging.common.annotation.Mask` marks values that must never reach the log
+verbatim.
+
+```java
+import io.koraframework.json.common.annotation.Json;
+import io.koraframework.logging.common.annotation.Mask;
+import io.koraframework.logging.common.masking.MaskingKeepLast;
+
+@Json
+@Mask
+public record Payment(String id,
+                      @Mask String cvv,                       // MaskingFull   -> "***"
+                      @Mask(MaskingKeepLast.class) String pan, // MaskingKeepLast -> "***1234"
+                      long amount) {}
+```
+
+- `@Mask` targets `TYPE`, `FIELD`, `RECORD_COMPONENT`, `PARAMETER`, `METHOD` and `TYPE_USE`; its
+  single attribute is `Class<? extends MaskingStrategy> value() default MaskingFull.class`.
+- `@Mask` **on the type** is what makes the processor run: `LoggingAnnotationProcessor` only reacts
+  to `@Mask` on a class or record (not an interface, not an abstract class) and generates a
+  `@Module` interface named `<Type>MaskingRulesModule` with a `@DefaultComponent` factory returning
+  `MaskingRules<Type>`. The name comes from `NameUtils.generatedType`, which prefixes the **outer
+  classes**: a nested `Outer.Payment` yields `Outer_Payment_MaskingRulesModule`, not
+  `Payment_MaskingRulesModule`. An interface or abstract class annotated `@Mask` is a compile
+  error, not a silent skip (`"Only classes and records can be annotated with @Mask"` /
+  `"Abstract classes can't be annotated with @Mask"`).
+- Built-in strategies, all `@DefaultComponent`s of `LoggingModule`:
+  `MaskingFull` (replacement `***`), `MaskingKeepFirst` (first 4 chars + `***`),
+  `MaskingKeepLast` (`***` + last 4 chars). A custom `MaskingStrategy`
+  (`String mask(Object value)`) can be a regular Kora `@Component` with constructor parameters.
+- Rules are matched by `MaskingRules.strategy(path, fieldName)`: a single segment (`password`)
+  matches that JSON field name **anywhere**; a dotted path (`user.password`) matches only from the
+  logged root; `*` matches exactly one dynamic segment (`users.*.password`).
+- Build rules by hand where you need to:
+  `MaskingRules.builder(Payment.class).mask("cvv", new MaskingFull()).build()`. Select a custom
+  rules class for one logged parameter or result with `@Mapping(CustomRules.class)`.
+- JSON `null` is never masked; map **keys** are never masked as values.
+
+Masking of `@Log`-ged method arguments and results is driven by the same annotations but wired by
+the aspect — see [`kora-aop-logging`](../../kora-aop-logging/SKILL.md).
+
+## How a structured value reaches the output
+
+```
+log.atInfo().addKeyValue("k", StructuredArgument.value(w))
+        │
+        ▼
+Logback event (KeyValuePair / Marker / argument array)
+        │
+        ▼  KoraAsyncAppender.append  →  KoraLoggingEvent(… koraMdc, spanContext)
+        │
+        ▼  ConsoleTextRecordEncoder  →  "\tk={…json…}"
+```
+
+An encoder that does not know about `StructuredArgument` — a plain `<pattern>` encoder — drops the
+value entirely: `%msg` renders `arg(...)` through `toString()` and never sees a marker or a
+key/value pair. This is why the example apps use `ConsoleTextRecordEncoder` in
+`src/main/resources/logback.xml`.
 
 ## Best practices
 
-- Use the typed overloads (`arg("k", value)`) where possible; reach for the writer lambda only
-  for nested/custom shapes.
-- Write only the fields you need — never dump whole entities containing secrets or PII.
-- Always parameterize the message (`log.info("user {}", arg)`); never concatenate strings.
+- Prefer `addKeyValue` + `StructuredArgument.value(...)` for new code; keep the message a constant.
+- Use the typed overloads before reaching for a writer lambda.
+- Write only the fields you need. Do not dump whole entities — combine `@Json` with `@Mask` when
+  a type has to be logged whole.
+- Always parameterize (`log.info("user {}", arg)`); never concatenate.
+- Remember the generator is Jackson 3: `writeStringProperty`, not `writeStringField`.

@@ -1,382 +1,283 @@
-# SOAP Client Error Handling Reference
+# SOAP Client Error Handling — Kora 2.0
 
-**Complete guide to SOAP error types and handling patterns.**
+Every exception type here exists in
+`io.koraframework.soap.client.common.exception` in the Kora 2.0 `soap-client` module. Nothing on this
+page is inherited from the Kora 1.x API surface — several 1.x names were renamed or re-parented.
 
 ---
 
-## Exception Hierarchy
+## 1. Hierarchy
+
+```
+java.lang.RuntimeException
+└── io.koraframework.soap.client.common.exception.SoapException
+    ├── SoapFaultException                  // SOAP Fault not matched by a declared WSDL fault
+    ├── SoapInvalidHttpResponseException    // HTTP status other than 200 or 500
+    ├── SoapRequestMarshallingException     // JAXB could not marshal the request envelope
+    └── SoapResponseUnmarshallingException  // JAXB could not unmarshal the response
+```
+
+Separately, and **not** under `SoapException`:
 
 ```
 java.lang.Exception
-└── ru.tinkoff.kora.soap.client.common.SoapException
-    ├── SoapRequestMarshallingException
-    ├── SoapResponseUnmarshallingException
-    ├── InvalidHttpResponseSoapException
-    └── SoapServiceException (wraps SOAP faults)
+└── <generated @WebFault exception>         // e.g. TestError1Msg — one per <wsdl:fault>
+```
+
+Two renames from Kora 1.x that a package-only migration will not catch:
+
+| Kora 1.x | Kora 2.x |
+|---|---|
+| `InvalidHttpResponseSoapException` | `SoapInvalidHttpResponseException` |
+| `SoapRequestMarshallingException` / `SoapResponseUnmarshallingException` extend `RuntimeException` | both extend `SoapException` |
+
+Because the marshalling exceptions are now inside the hierarchy, a single `catch (SoapException e)`
+covers **all** SOAP-layer failures. In 1.x it did not.
+
+---
+
+## 2. Where each one comes from
+
+| Exception | Raised by | Trigger |
+|---|---|---|
+| `SoapRequestMarshallingException` | `JakartaSoapEnvelopeMapper.marshal` | `JAXBException` while marshalling the request envelope |
+| `SoapResponseUnmarshallingException` | `JakartaSoapEnvelopeMapper.unmarshal` | `JAXBException` while unmarshalling the response or a multipart part |
+| `SoapInvalidHttpResponseException` | `SoapRequestExecutor.call` | HTTP status is neither `200` nor `500` |
+| `SoapFaultException` | generated client method | HTTP `500` whose `<soap:Fault>` detail matches no declared fault type |
+| generated `@WebFault` exception | generated client method | HTTP `500` whose fault detail deserialises to that fault's `getFaultInfo()` type |
+| `SoapException` (base, wrapping) | `SoapRequestExecutor.call` | `IOException` or `HttpClientException` from the transport |
+
+---
+
+## 3. `SoapFaultException` and `SoapFault`
+
+```java
+public class SoapFaultException extends SoapException {
+    public SoapFaultException(String message, SoapFault fault) { … }
+    public SoapFault getFault();
+}
+```
+
+The message is `"<faultcode> <faultstring>"`, built by the executor.
+
+`io.koraframework.soap.client.common.envelope.SoapFault` is a JAXB type, so its accessors follow the
+XML element names — **lower-case, not camel-cased**:
+
+| Accessor | Type | XML element |
+|---|---|---|
+| `getFaultcode()` | `javax.xml.namespace.QName` | `<faultcode>` |
+| `getFaultstring()` | `String` | `<faultstring>` |
+| `getFaultactor()` | `String` | `<faultactor>` |
+| `getDetail()` | `SoapFaultDetail` | `<detail>` |
+
+`getDetail()` returns `null` when the fault carried no `<detail>` element. `SoapFaultDetail.getAny()`
+itself never returns `null` — it lazily creates the list — but it is empty when nothing was
+unmarshalled, so both checks are needed.
+
+`getFaultcode()` is a `QName`: compare with `getLocalPart()`, or use `toString()` for logging, and do
+not assume it is a plain string. That `QName` is **`javax.xml.namespace.QName`** from the JDK's
+`java.xml` module — one of the few `javax.*` names that is correct in Kora 2.0 code and must not be
+"migrated" to a `jakarta` package.
+
+```java
+catch (SoapFaultException e) {
+    var fault = e.getFault();
+    var code = fault.getFaultcode();                // QName, e.g. {http://…}Server
+    log.warn("SOAP fault {}: {}", code.getLocalPart(), fault.getFaultstring());
+
+    var detail = fault.getDetail();
+    if (detail != null && !detail.getAny().isEmpty()) {
+        var first = detail.getAny().get(0);          // a JAXB object, if the type is known to the context
+    }
+}
 ```
 
 ---
 
-## SoapException
+## 4. Typed WSDL faults
 
-Base class for all SOAP-related errors.
+A `<wsdl:fault>` makes `wsdl2java` generate a checked exception annotated `@WebFault`, with a
+`getFaultInfo()` returning the fault payload type. The generated client compares the first element of
+`fault.getDetail().getAny()` against each declared fault's payload type and throws the matching
+exception; only when nothing matches does it fall back to `SoapFaultException`.
 
 ```java
-public class SoapException extends RuntimeException {
-    private final String serviceName;
-    private final String methodName;
-    private final String url;
-
-    public SoapException(String serviceName, String methodName, String url, String message, Throwable cause) {
-        super(message, cause);
-        this.serviceName = serviceName;
-        this.methodName = methodName;
-        this.url = url;
-    }
-
-    public String getServiceName() { return serviceName; }
-    public String getMethodName() { return methodName; }
-    public String getUrl() { return url; }
+try {
+    var response = service.test(request);
+    return response.getVal1();
+} catch (TestError1Msg e) {              // declared in the WSDL — checked
+    var info = e.getFaultInfo();         // typed payload
+    return fallbackFor(info);
+} catch (SoapFaultException e) {         // fault, but not one the contract declares
+    throw new IllegalStateException("Unexpected SOAP fault: " + e.getMessage(), e);
 }
 ```
 
-**Usage:**
+Catch order matters: the typed fault is **not** a `SoapException`, so `catch (SoapException)` will not
+swallow it, but `catch (Exception)` will. Put the typed faults first and keep them distinct.
+
+---
+
+## 5. `SoapInvalidHttpResponseException`
+
+Raised for any status code other than `200` and `500` — an HTML error page from a proxy, a `404`, a
+`503`. It carries **no** status-code or body accessor; the constructor formats them into the message:
+
 ```java
-try {
-    soapClient.processPayment(request);
-} catch (SoapException e) {
-    logger.error("SOAP call failed: {}#{}", e.getServiceName(), e.getMethodName());
+new SoapInvalidHttpResponseException(code, responseBody);
+// message: "Invalid http response code for SOAP request: 503\n<first 500 bytes of the body>"
+```
+
+So do not write `e.getStatusCode()` or `e.getResponseBody()` — those do not exist. If you need the
+status code for branching, get it from telemetry (`http.response.status_code` is on the span and on
+`rpc.client.duration`) or add an HTTP client interceptor.
+
+---
+
+## 6. Transport failures
+
+`SoapRequestExecutor` wraps transport errors:
+
+```java
+} catch (IOException | HttpClientException e) {
+    throw new SoapException(e);
+}
+```
+
+There is therefore **no bare `ConnectException`** to catch at the SOAP layer. Inspect the cause:
+
+```java
+catch (SoapException e) {
+    var cause = e.getCause();
+    if (cause instanceof HttpClientTimeoutException) {
+        // soapClient.<Service>.timeout or the transport read timeout elapsed
+    } else if (cause instanceof HttpClientConnectionException) {
+        // DNS / TCP / TLS failure — wrong url, service down, firewall
+    }
     throw e;
 }
 ```
 
+`io.koraframework.http.client.common.exception.HttpClientException` is the abstract base;
+`HttpClientConnectionException`, `HttpClientTimeoutException`, `HttpClientResponseException`,
+`HttpClientEncoderException`, `HttpClientDecoderException` and `HttpClientUnknownException` are its
+subtypes.
+
 ---
 
-## SOAP Faults (SoapServiceException)
-
-SOAP faults from the server are wrapped in `SoapServiceException`.
+## 7. Complete catch template
 
 ```java
+import io.koraframework.soap.client.common.exception.*;
+
 try {
-    soapClient.processPayment(request);
-} catch (SoapServiceException e) {
-    SoapFault fault = e.getSoapFault();
-    
-    String faultCode = fault.getFaultCode();      // "soap:Server"
-    String faultString = fault.getFaultString();  // "Insufficient funds"
-    String detail = fault.getDetail();            // XML detail element
-    
-    // Handle specific fault codes
-    switch (faultCode) {
-        case "INSUFFICIENT_FUNDS":
-            // Business logic handling
-            break;
-        case "INVALID_CARD":
-            // Business logic handling
-            break;
-        default:
-            // Unknown fault
-            throw e;
-    }
+    var response = service.test(request);
+    return Result.ok(response.getVal1());
+
+} catch (TestError1Msg e) {                          // 1. declared WSDL faults, most specific first
+    return Result.businessError(e.getFaultInfo());
+
+} catch (SoapFaultException e) {                     // 2. undeclared SOAP fault
+    return Result.unexpectedFault(e.getFault().getFaultcode().getLocalPart());
+
+} catch (SoapInvalidHttpResponseException e) {       // 3. not a SOAP response at all
+    return Result.serviceUnavailable(e.getMessage());
+
+} catch (SoapRequestMarshallingException e) {        // 4. our request is malformed — never retry
+    throw new IllegalArgumentException("Invalid SOAP request payload", e);
+
+} catch (SoapResponseUnmarshallingException e) {     // 5. their response is malformed
+    throw new IllegalStateException("Unparseable SOAP response", e);
+
+} catch (SoapException e) {                          // 6. transport: inspect e.getCause()
+    return Result.transportFailure(e);
 }
 ```
 
-### SoapFault Structure
-
-```java
-public class SoapFault {
-    private final String faultCode;      // SOAP fault code
-    private final String faultString;    // Human-readable message
-    private final String faultActor;     // Who caused the fault
-    private final String detail;         // Application-specific error info (XML)
-
-    public String getFaultCode() { ... }
-    public String getFaultString() { ... }
-    public String getFaultActor() { ... }
-    public String getDetail() { ... }
-}
-```
-
-### Common SOAP Fault Codes
-
-| Fault Code | Meaning | Handling |
-|------------|---------|----------|
-| `soap:Client` | Client error (bad request) | Fix request, validate input |
-| `soap:Server` | Server error | Retry, fallback, alert |
-| `soap:VersionMismatch` | Wrong SOAP version | Check WSDL, update client |
-| `soap:MustUnderstand` | Header not understood | Check SOAP headers |
-
----
-
-## SoapRequestMarshallingException
-
-Request serialization failed.
-
-**Causes:**
-- Null required fields in DTO
-- Invalid field values
-- JAXB marshalling error
-
-```java
+```kotlin
 try {
-    soapClient.processPayment(request);
-} catch (SoapRequestMarshallingException e) {
-    logger.error("Failed to marshal request", e);
-    // Log the invalid request
-    logger.error("Invalid request: {}", request);
-    throw new IllegalArgumentException("Invalid payment request", e);
+    val response = service.test(request)
+    Result.ok(response.val1)
+} catch (e: TestError1Msg) {
+    Result.businessError(e.faultInfo)
+} catch (e: SoapFaultException) {
+    Result.unexpectedFault(e.fault.faultcode.localPart)
+} catch (e: SoapInvalidHttpResponseException) {
+    Result.serviceUnavailable(e.message)
+} catch (e: SoapRequestMarshallingException) {
+    throw IllegalArgumentException("Invalid SOAP request payload", e)
+} catch (e: SoapResponseUnmarshallingException) {
+    throw IllegalStateException("Unparseable SOAP response", e)
+} catch (e: SoapException) {
+    Result.transportFailure(e)
 }
 ```
 
-**Prevention:**
-```java
-// Validate before calling
-if (request.getAmount() == null || request.getAmount() <= 0) {
-    throw new IllegalArgumentException("Amount must be positive");
-}
-if (request.getCurrency() == null) {
-    throw new IllegalArgumentException("Currency is required");
-}
-soapClient.processPayment(request);
-```
+The response object and its fields come from a Java contract, so from Kotlin they are platform types
+— `response.val1` is `String?`. Treat every payload field as nullable unless the WSDL marks it
+required and you have verified the generated model.
 
 ---
 
-## SoapResponseUnmarshallingException
+## 8. Which failures may be retried
 
-Response deserialization failed.
+| Failure | Retry? |
+|---|---|
+| `HttpClientConnectionException` cause | Yes — transient network |
+| `HttpClientTimeoutException` cause | Only if the operation is idempotent |
+| `SoapInvalidHttpResponseException` with `5xx` in the message | Usually yes |
+| `SoapInvalidHttpResponseException` with `4xx` | No — the request or the URL is wrong |
+| `SoapResponseUnmarshallingException` | No — the contract and the peer disagree |
+| `SoapRequestMarshallingException` | Never — the request is malformed locally |
+| Typed `@WebFault` / `SoapFaultException` | Never — these are business outcomes |
 
-**Causes:**
-- Server returns unexpected XML structure
-- Missing required fields in response
-- JAXB unmarshalling error
-
-```java
-try {
-    PaymentResponse response = soapClient.processPayment(request);
-} catch (SoapResponseUnmarshallingException e) {
-    logger.error("Failed to unmarshal response", e);
-    // Log raw response for debugging
-    throw new IllegalStateException("Invalid response from payment service", e);
-}
-```
-
----
-
-## InvalidHttpResponseSoapException
-
-HTTP response is not valid SOAP.
-
-**Causes:**
-- Server returns HTML error page (404, 500, 503)
-- Server returns plain text error
-- Network proxy returns error page
+Do not hand-roll a retry loop. Use the Kora 2.0 resilience aspects on the component that wraps the
+call — string names became typed specification interfaces in 2.0:
 
 ```java
-try {
-    soapClient.processPayment(request);
-} catch (InvalidHttpResponseSoapException e) {
-    int statusCode = e.getStatusCode();  // e.g., 503
-    String responseBody = e.getResponseBody();  // HTML error page
-    
-    logger.error("Invalid SOAP response: HTTP {}", statusCode);
-    logger.error("Response body: {}", responseBody.substring(0, 500));
-    
-    if (statusCode == 503) {
-        // Service unavailable - retry with backoff
-        throw new ServiceUnavailableException("Payment service unavailable", e);
-    } else if (statusCode >= 500) {
-        // Server error - retry
-        throw new ServerErrorException("Payment service error", e);
-    } else {
-        // Client error - don't retry
-        throw new ClientErrorException("Invalid payment request", e);
-    }
-}
+@RetrySpec("resilient.retry.soapClient")
+public interface SoapClientRetry extends Retry {}
 ```
-
----
-
-## ConnectException
-
-Network-level connection failure.
-
-**Causes:**
-- Service URL incorrect
-- Service is down
-- Network/firewall issues
-- DNS resolution failure
-
-```java
-try {
-    soapClient.processPayment(request);
-} catch (ConnectException e) {
-    logger.error("Cannot connect to payment service", e);
-    // Fallback to alternative payment provider
-    return alternativePaymentProvider.process(request);
-}
-```
-
----
-
-## Error Handling Patterns
-
-### Pattern 1: Retry with Backoff
 
 ```java
 @Component
-public class PaymentServiceWithRetry {
+public class CustomerService {          // not final — AOP generates a subclass
 
-    private final SimpleService soapClient;
-    private final RetryConfig retryConfig;
+    private final SimpleService service;
 
-    public PaymentServiceWithRetry(SimpleService soapClient, RetryConfig retryConfig) {
-        this.soapClient = soapClient;
-        this.retryConfig = retryConfig;
+    public CustomerService(SimpleService service) {
+        this.service = service;
     }
 
-    public PaymentResponse processWithRetry(PaymentRequest request) {
-        int attempts = 0;
-        Throwable lastException = null;
-
-        while (attempts < retryConfig.maxAttempts) {
-            try {
-                return soapClient.processPayment(request);
-            } catch (SoapServiceException e) {
-                // Business error - don't retry
-                throw e;
-            } catch (Exception e) {
-                // Transient error - retry
-                attempts++;
-                lastException = e;
-                if (attempts < retryConfig.maxAttempts) {
-                    Thread.sleep(retryConfig.delayMs * attempts);  // Linear backoff
-                }
-            }
-        }
-
-        throw new RuntimeException("Failed after " + retryConfig.maxAttempts + " attempts", lastException);
+    @Retryable(SoapClientRetry.class)
+    public TestResponse lookup(TestRequest request) {
+        return service.test(request);
     }
 }
 ```
 
-### Pattern 2: Circuit Breaker
-
-```java
-@Component
-public class PaymentServiceWithCircuitBreaker {
-
-    private final SimpleService soapClient;
-    private final CircuitBreaker circuitBreaker;
-
-    public PaymentServiceWithCircuitBreaker(SimpleService soapClient) {
-        this.soapClient = soapClient;
-        this.circuitBreaker = new CircuitBreaker(5, 30000);  // 5 failures, 30s timeout
-    }
-
-    public PaymentResponse process(PaymentRequest request) {
-        if (!circuitBreaker.allowRequest()) {
-            throw new CircuitBreakerOpenException("Payment service circuit is open");
-        }
-
-        try {
-            PaymentResponse response = soapClient.processPayment(request);
-            circuitBreaker.recordSuccess();
-            return response;
-        } catch (Exception e) {
-            circuitBreaker.recordFailure();
-            throw e;
-        }
-    }
-}
-```
-
-### Pattern 3: Fallback
-
-```java
-@Component
-public class PaymentServiceWithFallback {
-
-    private final SimpleService primaryClient;
-    private final SimpleService backupClient;
-
-    public PaymentServiceWithFallback(
-            @Tag(Primary.class) SimpleService primaryClient,
-            @Tag(Backup.class) SimpleService backupClient) {
-        this.primaryClient = primaryClient;
-        this.backupClient = backupClient;
-    }
-
-    public PaymentResponse process(PaymentRequest request) {
-        try {
-            return primaryClient.processPayment(request);
-        } catch (ConnectException | InvalidHttpResponseSoapException e) {
-            logger.warn("Primary payment service failed, using backup", e);
-            return backupClient.processPayment(request);
-        }
-    }
-}
-```
-
-### Pattern 4: Error Translation
-
-```java
-@Component
-public class PaymentFacade {
-
-    private final SimpleService soapClient;
-
-    public PaymentFacade(SimpleService soapClient) {
-        this.soapClient = soapClient;
-    }
-
-    public PaymentResult process(PaymentRequest request) {
-        try {
-            PaymentResponse response = soapClient.processPayment(request);
-            return PaymentResult.success(response.getTransactionId());
-        } catch (SoapServiceException e) {
-            String faultCode = e.getSoapFault().getFaultCode();
-            switch (faultCode) {
-                case "INSUFFICIENT_FUNDS":
-                    return PaymentResult.insufficientFunds();
-                case "INVALID_CARD":
-                    return PaymentResult.invalidCard();
-                case "CARD_EXPIRED":
-                    return PaymentResult.cardExpired();
-                default:
-                    return PaymentResult.unknownError(faultCode);
-            }
-        } catch (ConnectException e) {
-            return PaymentResult.serviceUnavailable();
-        }
-    }
-}
-```
+`@Retryable`, `@CircuitBreakable`, `@Timeout` and `@RateLimited` all take a specification **class**,
+not a name string. A `final` class (Kotlin: a class that is not `open`) fails the build with
+`AOP aspect cannot be applied to class '…' because the class is final`. Full API and configuration:
+[`kora-aop-resilient`](../../kora-aop-resilient/SKILL.md).
 
 ---
 
-## Logging Best Practices
+## 9. Logging failures safely
 
-### DO: Log structured error information
-
-```java
-catch (SoapException e) {
-    logger.error("SOAP call failed: service={}, method={}, url={}",
-        e.getServiceName(),
-        e.getMethodName(),
-        e.getUrl(),
-        e);
-}
-```
-
-### DON'T: Log sensitive data
+SOAP payloads routinely carry personal data, card numbers and credentials. The client logs full
+envelopes only at `TRACE` (see [telemetry-reference.md](telemetry-reference.md)), so the risk in your
+own `catch` blocks is what *you* write:
 
 ```java
-// BAD - may log sensitive data
-logger.error("Request: {}", request);  // May contain card numbers, passwords
+// Do not: the request object stringifies the whole payload
+log.error("SOAP call failed for request {}", request, e);
 
-// GOOD - log only non-sensitive info
-logger.error("SOAP call failed: service={}, method={}",
-    e.getServiceName(),
-    e.getMethodName());
+// Do: identity and outcome, no payload
+log.error("SOAP call failed: service={} method={} fault={}",
+          "SimpleService", "test", e.getMessage(), e);
 ```
+
+`SoapFaultException.getMessage()` is `"<faultcode> <faultstring>"` — service-authored text, safe to
+log. `SoapInvalidHttpResponseException.getMessage()` embeds up to 500 bytes of the peer's response
+body, which may not be; log it at `DEBUG` if the peer is untrusted.

@@ -1,33 +1,67 @@
 package ${package}
 
-import io.grpc.*
+import io.grpc.CallOptions
+import io.grpc.Channel
+import io.grpc.ClientCall
+import io.grpc.ClientInterceptor
+import io.grpc.ForwardingClientCall
+import io.grpc.Metadata
+import io.grpc.MethodDescriptor
+import io.koraframework.common.annotation.Component
+import io.koraframework.common.annotation.Tag
 import ${proto_package}.${service_name}Grpc
-import ru.tinkoff.kora.common.Component
-import ru.tinkoff.kora.common.Tag
 
 /**
- * Client interceptor for ${service_name} gRPC service.
- * Use for logging, metrics, authentication, or other cross-cutting concerns.
+ * Client interceptor scoped to the ${service_name} channel (Kora 2.0).
+ *
+ * The tag MUST be the protoc-generated outer class ${service_name}Grpc — that is the tag
+ * ManagedChannelLifecycle uses to collect All<ClientInterceptor>. Tagging the stub class,
+ * a Kora module class, or leaving the tag off compiles and starts cleanly, and the interceptor
+ * simply never runs. Cover it with a test that asserts the header arrives.
+ *
+ * Kora appends its own GrpcClientTelemetryInterceptor and GrpcClientConfigInterceptor after the
+ * collected components; neither can be removed from the graph.
+ *
+ * ${service_name}AuthConfig below is an ordinary Kora config interface — create it next to this
+ * class and back it with the auth.apiKey section of application.conf:
+ *
+ * ```
+ * @ConfigSource("auth.apiKey")   // io.koraframework.config.common.annotation.ConfigSource
+ * interface ${service_name}AuthConfig {
+ *     fun value(): String
+ * }
+ * ```
  */
 @Tag(${service_name}Grpc::class)
 @Component
-class ${service_name}ClientInterceptor : ClientInterceptor {
+class ${service_name}ClientInterceptor(
+    // gRPC metadata is the only auth mechanism for a Kora gRPC client — there is no
+    // @HttpClient-style auth annotation. Inject the credential source (e.g. a @ConfigSource
+    // interface) and read it per call; the interceptor outlives every individual token.
+    private val authConfig: ${service_name}AuthConfig
+) : ClientInterceptor {
 
-    override fun <ReqT, RespT> interceptCall(
+    // The type parameters must be `Any?`-bounded to match the @NullMarked Java signature;
+    // with `: Any` Kotlin reports "'interceptCall' overrides nothing".
+    override fun <ReqT : Any?, RespT : Any?> interceptCall(
         method: MethodDescriptor<ReqT, RespT>,
         callOptions: CallOptions,
         next: Channel
     ): ClientCall<ReqT, RespT> {
-        // Add custom logic here (logging, metrics, tracing, etc.).
-        // To add metadata headers, wrap the call and put headers in start():
-        //
-        // return object : ForwardingClientCall.SimpleForwardingClientCall<ReqT, RespT>(next.newCall(method, callOptions)) {
-        //     override fun start(responseListener: Listener<RespT>, headers: Metadata) {
-        //         headers.put(Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER), "Bearer $token")
-        //         super.start(responseListener, headers)
-        //     }
-        // }
+        // The call has not been sent yet here — headers must be written in start(), before
+        // super.start(), or they never reach the wire.
+        return object : ForwardingClientCall.SimpleForwardingClientCall<ReqT, RespT>(
+            next.newCall(method, callOptions)
+        ) {
+            override fun start(responseListener: Listener<RespT>, headers: Metadata) {
+                headers.put(AUTHORIZATION, authConfig.value())
+                super.start(responseListener, headers)
+            }
+        }
+    }
 
-        return next.newCall(method, callOptions)
+    companion object {
+        private val AUTHORIZATION: Metadata.Key<String> =
+            Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER)
     }
 }

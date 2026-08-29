@@ -1,187 +1,229 @@
 package ${package}
 
-import org.flywaydb.core.Flyway
 import org.json.JSONObject
-import org.junit.jupiter.api.AfterAll
-import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.slf4j.LoggerFactory
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.Network
 import org.testcontainers.containers.PostgreSQLContainer
+import org.testcontainers.containers.output.Slf4jLogConsumer
 import org.testcontainers.containers.wait.strategy.Wait
 import org.testcontainers.images.builder.ImageFromDockerfile
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
+import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
-import java.nio.file.Paths
+import java.nio.file.Path
 import java.sql.DriverManager
 import java.time.Duration
+import java.util.UUID
 
 /**
- * Black-box test template for ${testName}.
+ * The application under test. Kora ships no Testcontainers integration, so this wrapper is
+ * ordinary application code: it builds the image, exposes both Kora ports, and gates startup
+ * on the readiness probe.
  *
- * Uses standard Testcontainers for PostgreSQL and Docker container.
+ * Port 8085 is the system server (`httpServer.system.port`), which serves `/system/readiness`,
+ * `/system/liveness` and `/metrics`. Port 8080 is the public API (`httpServer.port`). Waiting
+ * on a log line would bind the test to Kora startup message wording, which is not part of the
+ * framework's contract.
+ */
+class AppContainer : GenericContainer<AppContainer> {
+
+    // image names must be lowercase
+    private constructor() : super(
+        ImageFromDockerfile("my-service-black-box")
+            .withDockerfile(Path.of("../my-service-app/Dockerfile"))
+    )
+
+    private constructor(image: DockerImageName) : super(image)
+
+    init {
+        withExposedPorts(8080, 8085)
+        withStartupTimeout(Duration.ofSeconds(30))
+        waitingFor(Wait.forHttp("/system/readiness").forPort(8085).forStatusCode(200))
+        withLogConsumer(Slf4jLogConsumer(LoggerFactory.getLogger(AppContainer::class.java)))
+    }
+
+    fun getURI(): URI = URI.create("http://" + host + ":" + getMappedPort(8080))
+
+    fun getSystemURI(): URI = URI.create("http://" + host + ":" + getMappedPort(8085))
+
+    companion object {
+        /** Reuses a prebuilt image when APP_IMAGE is set (CI), otherwise builds the Dockerfile. */
+        fun build(): AppContainer {
+            val appImage = System.getenv("APP_IMAGE")
+            return if (!appImage.isNullOrBlank()) AppContainer(DockerImageName.parse(appImage)) else AppContainer()
+        }
+    }
+}
+
+/**
+ * Black-box test for ${testName}: runs the packaged application image and drives it only
+ * through its HTTP API.
+ *
+ * Requires a running Docker daemon. Wire the distribution build into the test task:
+ * ```
+ * tasks.test {
+ *     dependsOn(":my-service-app:distTar")
+ *     inputs.file("../my-service-app/Dockerfile")
+ *     inputs.file("../my-service-app/build/distributions/application.tar")
+ * }
+ * ```
+ *
+ * The containers live in a `companion object` with `@JvmStatic`: the Testcontainers JUnit
+ * extension only manages static fields, and a plain Kotlin property is an instance member.
  */
 @Testcontainers
 class ${testName} {
 
-    companion object {
-        // Shared network for containers
-        val network = Network.newNetwork()
-
-        // PostgreSQL container with Flyway migrations
-        @JvmField
-        @Container
-        val postgres = PostgreSQLContainer("postgres:15-alpine")
-            .withNetwork(network)
-            .withNetworkAliases("db")
-            .withDatabaseName("testdb")
-            .withUsername("test")
-            .withPassword("test")
-            .withInitScript("db/migration/V1__init.sql")
-
-        // Application container using GenericContainer directly
-        val container = createAppContainer()
-            .withNetwork(network)
-
-        // Helper method to create application container
-        private fun createAppContainer(): GenericContainer<*> {
-            val appImage = System.getenv("APP_IMAGE")
-            val c = if (appImage != null && appImage.isNotBlank()) {
-                GenericContainer(DockerImageName.parse(appImage))
-            } else {
-                GenericContainer(ImageFromDockerfile("myapp:test")
-                    .withDockerfile(Paths.get("Dockerfile").toAbsolutePath()))
-            }
-
-            return c.withExposedPorts(8080, 8085)
-                .withStartupTimeout(Duration.ofSeconds(120))
-                .waitingFor(Wait.forHttp("/system/readiness").forPort(8085).forStatusCode(200))
-        }
-
-        private fun getURI(container: GenericContainer<*>): java.net.URI {
-            return java.net.URI.create("http://" + container.host + ":" + container.getMappedPort(8080))
-        }
-
-        @JvmStatic
-        @BeforeAll
-        fun beforeAll() {
-            // Migrate database
-            Flyway.configure()
-                .dataSource(
-                    postgres.jdbcUrl,
-                    postgres.username,
-                    postgres.password
-                )
-                .locations("db/migration")
-                .load()
-                .migrate()
-
-            // Configure and start application container
-            container.withEnv(
-                mapOf(
-                    "DB_URL" to postgres.jdbcUrl,
-                    "DB_USER" to postgres.username,
-                    "DB_PASS" to postgres.password
-                )
-            )
-            container.start()
-        }
-
-        @JvmStatic
-        @AfterAll
-        fun afterAll() {
-            container.stop()
-        }
-    }
-
-    private val httpClient = HttpClient.newHttpClient()
+    private val httpClient: HttpClient = HttpClient.newHttpClient()
 
     @Test
-    fun `should create resource`() {
-        // given
-        val requestBody = JSONObject().put("name", "test-resource")
+    fun `system probes should be healthy`() {
+        assertEquals(200, get(APP.getSystemURI().resolve("/system/liveness")).statusCode())
+        assertEquals(200, get(APP.getSystemURI().resolve("/system/readiness")).statusCode())
+    }
 
-        // when
+    /**
+     * A 200 from `/metrics` is not evidence that metrics work: with no `MetricsScraper` in the
+     * graph the handler still answers 200 with the body `# Metric Scraper disabled`.
+     *
+     * This test asserts on content, and needs two things from the application:
+     *  - `implementation("io.koraframework:micrometer-module")` on its runtime classpath;
+     *  - `httpServer.telemetry.metrics.enabled = true` - component metrics default to false in
+     *    Kora 2.0, so `http_server_*` series are absent without it.
+     */
+    @Test
+    fun `metrics should expose real series`() {
+        get(APP.getURI().resolve("/api/resources/does-not-exist"))   // produce one sample
+
+        val response = get(APP.getSystemURI().resolve("/metrics"))
+
+        assertEquals(200, response.statusCode())
+        assertFalse(response.body().contains("Metric Scraper disabled"), "no MetricsScraper in the graph")
+        assertTrue(response.body().contains("kora_up"), "meter registry is not live")
+        assertTrue(response.body().contains("http_server_request_duration"), "component metrics are disabled")
+    }
+
+    @Test
+    fun `create resource should return 201`() {
+        val response = sendJson(
+            "POST", "/api/resources",
+            JSONObject().put("name", "test-resource").put("email", uniqueEmail("test"))
+        )
+
+        assertEquals(201, response.statusCode())
+        val body = JSONObject(response.body())
+        assertTrue(body.has("id"))
+        assertEquals("test-resource", body.getString("name"))
+    }
+
+    @Test
+    fun `get resource should return created resource`() {
+        val created = sendJson(
+            "POST", "/api/resources",
+            JSONObject().put("name", "readable").put("email", uniqueEmail("read"))
+        )
+        val id = JSONObject(created.body()).getString("id")
+
+        val response = get(APP.getURI().resolve("/api/resources/$id"))
+
+        assertEquals(200, response.statusCode())
+        assertEquals("readable", JSONObject(response.body()).getString("name"))
+    }
+
+    @Test
+    fun `get missing resource should return 404`() {
+        assertEquals(404, get(APP.getURI().resolve("/api/resources/999999")).statusCode())
+    }
+
+    @Test
+    fun `invalid body should return 400`() {
         val request = HttpRequest.newBuilder()
-            .POST(HttpRequest.BodyPublishers.ofString(requestBody.toString()))
-            .uri(getURI(container).resolve("/api/resources"))
+            .POST(HttpRequest.BodyPublishers.ofString("{}"))
+            .uri(APP.getURI().resolve("/api/resources"))
             .header("Content-Type", "application/json")
-            .timeout(Duration.ofSeconds(5))
+            .timeout(Duration.ofSeconds(10))
             .build()
 
-        val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
-
-        // then
-        org.junit.jupiter.api.Assertions.assertEquals(200, response.statusCode())
-        val responseBody = JSONObject(response.body())
-        org.junit.jupiter.api.Assertions.assertTrue(responseBody.has("id"))
-        org.junit.jupiter.api.Assertions.assertEquals("test-resource", responseBody.getString("name"))
+        assertEquals(400, httpClient.send(request, HttpResponse.BodyHandlers.ofString()).statusCode())
     }
 
     @Test
-    fun `should get resource`() {
-        // given - create resource first
-        val createRequest = HttpRequest.newBuilder()
-            .POST(HttpRequest.BodyPublishers.ofString("""{"name":"test"}"""))
-            .uri(getURI(container).resolve("/api/resources"))
-            .header("Content-Type", "application/json")
-            .timeout(Duration.ofSeconds(5))
-            .build()
-        val createResponse = httpClient.send(createRequest, HttpResponse.BodyHandlers.ofString())
-        val resourceId = JSONObject(createResponse.body()).getString("id")
+    fun `delete resource should remove row`() {
+        val created = sendJson(
+            "POST", "/api/resources",
+            JSONObject().put("name", "doomed").put("email", uniqueEmail("del"))
+        )
+        val id = JSONObject(created.body()).getString("id")
 
-        // when
-        val getRequest = HttpRequest.newBuilder()
-            .GET()
-            .uri(getURI(container).resolve("/api/resources/$resourceId"))
-            .timeout(Duration.ofSeconds(5))
-            .build()
-
-        val getResponse = httpClient.send(getRequest, HttpResponse.BodyHandlers.ofString())
-
-        // then
-        org.junit.jupiter.api.Assertions.assertEquals(200, getResponse.statusCode())
-    }
-
-    @Test
-    fun `should delete resource`() {
-        // given - create resource first
-        val createRequest = HttpRequest.newBuilder()
-            .POST(HttpRequest.BodyPublishers.ofString("""{"name":"test"}"""))
-            .uri(getURI(container).resolve("/api/resources"))
-            .header("Content-Type", "application/json")
-            .timeout(Duration.ofSeconds(5))
-            .build()
-        val createResponse = httpClient.send(createRequest, HttpResponse.BodyHandlers.ofString())
-        val resourceId = JSONObject(createResponse.body()).getString("id")
-
-        // when
         val deleteRequest = HttpRequest.newBuilder()
             .DELETE()
-            .uri(getURI(container).resolve("/api/resources/$resourceId"))
-            .timeout(Duration.ofSeconds(5))
+            .uri(APP.getURI().resolve("/api/resources/$id"))
+            .timeout(Duration.ofSeconds(10))
             .build()
+        assertEquals(204, httpClient.send(deleteRequest, HttpResponse.BodyHandlers.ofString()).statusCode())
 
-        val deleteResponse = httpClient.send(deleteRequest, HttpResponse.BodyHandlers.ofString())
+        assertEquals(404, get(APP.getURI().resolve("/api/resources/$id")).statusCode())
 
-        // then
-        org.junit.jupiter.api.Assertions.assertEquals(200, deleteResponse.statusCode())
-
-        // Verify database state using JDBC
-        DriverManager.getConnection(
-            postgres.jdbcUrl,
-            postgres.username,
-            postgres.password
-        ).use { conn ->
+        // the host-mapped address is the right one here: this runs in the test JVM, not in a container
+        DriverManager.getConnection(POSTGRES.jdbcUrl, POSTGRES.username, POSTGRES.password).use { conn ->
             conn.createStatement().use { stmt ->
-                val rs = stmt.executeQuery("SELECT COUNT(*) FROM resources")
+                val rs = stmt.executeQuery("SELECT COUNT(*) FROM resources WHERE id = '$id'")
                 rs.next()
-                org.junit.jupiter.api.Assertions.assertEquals(0, rs.getInt(1))
+                assertEquals(0, rs.getInt(1))
             }
         }
+    }
+
+    private fun get(uri: URI): HttpResponse<String> {
+        val request = HttpRequest.newBuilder().GET().uri(uri).timeout(Duration.ofSeconds(10)).build()
+        return httpClient.send(request, HttpResponse.BodyHandlers.ofString())
+    }
+
+    private fun sendJson(method: String, path: String, payload: JSONObject): HttpResponse<String> {
+        val request = HttpRequest.newBuilder()
+            .uri(APP.getURI().resolve(path))
+            .header("Content-Type", "application/json")
+            .timeout(Duration.ofSeconds(10))
+
+        when (method) {
+            "POST" -> request.POST(HttpRequest.BodyPublishers.ofString(payload.toString()))
+            "PUT" -> request.PUT(HttpRequest.BodyPublishers.ofString(payload.toString()))
+            else -> throw IllegalArgumentException("Unsupported method: $method")
+        }
+
+        return httpClient.send(request.build(), HttpResponse.BodyHandlers.ofString())
+    }
+
+    // a static container is shared by every method: unique data, not a fresh container
+    private fun uniqueEmail(prefix: String): String = prefix + "-" + UUID.randomUUID() + "@example.com"
+
+    companion object {
+
+        @Container
+        @JvmStatic
+        private val POSTGRES = PostgreSQLContainer("postgres:16-alpine")
+            .withNetwork(Network.SHARED)
+            .withNetworkAliases("postgres")
+            .withStartupTimeout(Duration.ofSeconds(30))
+
+        @Container
+        @JvmStatic
+        private val APP = AppContainer.build()
+            .withNetwork(Network.SHARED)
+            .dependsOn(POSTGRES)
+            // container port 5432 over the shared network - NOT POSTGRES.jdbcUrl, which is the
+            // host-mapped address and is unreachable from inside the network
+            .withEnv("POSTGRES_JDBC_URL", "jdbc:postgresql://postgres:5432/" + POSTGRES.databaseName)
+            .withEnv("POSTGRES_USER", POSTGRES.username)
+            .withEnv("POSTGRES_PASS", POSTGRES.password)
     }
 }

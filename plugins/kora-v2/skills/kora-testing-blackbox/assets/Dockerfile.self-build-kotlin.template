@@ -1,61 +1,63 @@
-# Multi-stage Dockerfile for a Kora Kotlin application
-# Builds the application inside Docker + minimal runtime image
+# Multi-stage image for a Kora 2.0 Kotlin application: builds inside Docker, so the
+# host needs no JDK or Gradle.
 #
-# Advantages:
-# - No local Gradle/JDK required on the host
-# - Reproducible build in CI/CD
-# - JDK 17 for the build stage (recommended for Kotlin), JRE 25 for runtime
-#
-# Usage:
-#   docker build -t myapp:1.0.0 .
+#   docker build -t myapp:1.0.0 -f Dockerfile.self-build-kotlin .
 #   docker run -p 8080:8080 -p 8085:8085 myapp:1.0.0
+#
+# The build stage must be JDK 25. Kotlin does not lower the floor: the Kora 2.0 Kotlin
+# examples set jvmToolchain(25) alongside a Java toolchain of 25, KSP runs on that same
+# JVM, and the Gradle JVM itself must be 25+ because io.koraframework:openapi-generator
+# resolves on the buildscript classpath.
+#
+# Note: the Kora 2.0 example projects build on the host and only package the result
+# (see Dockerfile.template). Verify the BUILD_IMAGE tag against your registry.
 
-# ============================================
-# Stage 1: Build (JDK 17, Alpine)
-# ============================================
-FROM gradle:9.5.1-jdk17-alpine AS build
+# syntax=docker/dockerfile:1
 
-WORKDIR /home/gradle/src
-
-# Copy only build files to cache dependencies
-COPY build.gradle* settings.gradle* gradle.properties* ./
-COPY gradle/ ./gradle/
-
-# Cache dependencies (layer is rebuilt only when build.gradle changes)
-RUN gradle dependencies --no-daemon || true
-
-# Copy source code
-COPY . .
-
-# Build the distribution
-RUN gradle installDist --no-daemon
-
-# ============================================
-# Stage 2: Runtime (JRE 25, Jammy)
-# ============================================
+ARG BUILD_IMAGE=eclipse-temurin:25-jdk-jammy
 ARG RUN_IMAGE=eclipse-temurin:25-jre-jammy
+
+# ============================================
+# Stage 1: build
+# ============================================
+FROM ${BUILD_IMAGE} AS build
+
+WORKDIR /src
+
+# Wrapper and build scripts first, so the dependency layer caches independently of sources
+COPY gradlew gradlew.bat ./
+COPY gradle/ ./gradle/
+COPY settings.gradle* build.gradle* gradle.properties* ./
+RUN ./gradlew --no-daemon dependencies || true
+
+COPY . .
+RUN ./gradlew --no-daemon distTar
+
+# ============================================
+# Stage 2: runtime
+# ============================================
 FROM ${RUN_IMAGE}
 
 ARG TARGET_DIR=/opt/app
 
-# Copy the distribution from the build stage
-COPY --from=build /home/gradle/src/build/distributions/*.tar application.tar
+COPY --from=build /src/build/distributions/*.tar /application.tar
 
-RUN mkdir $TARGET_DIR && \
-    tar -xf application.tar -C $TARGET_DIR && \
-    rm application.tar
+RUN mkdir -p $TARGET_DIR \
+ && tar -xf /application.tar -C $TARGET_DIR \
+ && rm /application.tar
 
-# Create a non-root user for security
 ARG DOCKER_USER=app
 RUN groupadd -r $DOCKER_USER && useradd -rg $DOCKER_USER $DOCKER_USER
 USER $DOCKER_USER
 
-# Ports: 8080 (public API), 8085 (private API: /system/liveness, /system/readiness, /metrics)
+# 8080 - public API (httpServer.port)
+# 8085 - system API (httpServer.system.port): /system/readiness, /system/liveness, /metrics
 EXPOSE 8080/tcp
 EXPOSE 8085/tcp
 
-# Health check for Kubernetes/Docker
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+# curl is present in the eclipse-temurin jammy images; a slim or distroless base needs
+# a different probe, or the check fails for a reason that looks like a broken application
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:8085/system/readiness || exit 1
 
-CMD [ "/opt/app/application/bin/application" ]
+CMD ["/opt/app/application/bin/application"]

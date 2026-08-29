@@ -1,42 +1,55 @@
+// Kora 2.x — single-module Kotlin service.
+// Kora 2.0 artifacts are built for Java 25; the toolchain below is the minimum, not a preference.
+
 plugins {
-    kotlin("jvm") version "1.9.25"
-    id("com.google.devtools.ksp") version "1.9.25-1.0.20"
+    kotlin("jvm") version "2.4.10"
+    id("com.google.devtools.ksp") version "2.3.11"
     id("application")
 }
 
-val koraBom: Configuration by configurations.creating
-configurations {
-    ksp.get().extendsFrom(koraBom)
-    compileOnly.get().extendsFrom(koraBom)
-    api.get().extendsFrom(koraBom)
-    implementation.get().extendsFrom(koraBom)
+repositories {
+    mavenCentral()
 }
 
+// koraVersion lives in gradle.properties; bound to a local so the templates below read as
+// plain Kotlin string interpolation rather than Gradle property lookups.
 val koraVersion: String by project
+
 dependencies {
-    koraBom(platform("ru.tinkoff.kora:kora-parent:$koraVersion"))
-    ksp("ru.tinkoff.kora:symbol-processors")
+    implementation(platform("io.koraframework:kora-bom:$koraVersion"))
 
-    // Basic dependencies
-    implementation("ru.tinkoff.kora:logging-logback")
-    implementation("ru.tinkoff.kora:config-hocon")
+    // Mandatory. The ksp configuration is NOT covered by the BOM platform, so the processor
+    // carries an explicit version. Without it nothing is generated and the only symptom is
+    // "unresolved reference: ApplicationGraph".
+    ksp("io.koraframework:symbol-processors:$koraVersion")
 
-    // Add more dependencies as needed:
-    // implementation("ru.tinkoff.kora:database-jdbc")
-    // implementation("ru.tinkoff.kora:validation-module")
-    // implementation("ru.tinkoff.kora:micrometer-module")
+    implementation("io.koraframework:config-hocon")
+    implementation("io.koraframework:logging-logback")
+
+    // Add as needed — every one of these also needs its module in the @KoraApp supertype list:
+    // implementation("io.koraframework:json-common")             // JsonModule
+    // implementation("io.koraframework:database-jdbc")           // JdbcDatabaseModule
+    // implementation("io.koraframework:validation-module")       // ValidationModule
+    // implementation("io.koraframework:micrometer-module")       // MetricsModule
+    // implementation("io.koraframework:http-server-undertow")    // UndertowPublicHttpServerModule
+
+    // Test sources that declare Kora annotations need their own processor
+    kspTest("io.koraframework:symbol-processors:$koraVersion")
+    testImplementation("io.koraframework:test-junit5")
 }
 
 kotlin {
-    jvmToolchain(25)
-    sourceSets.main {
-        kotlin.srcDir("build/generated/ksp/main/kotlin")
-        kotlin.srcDir("build/generated/kora/main/kotlin")
+    jvmToolchain {
+        languageVersion.set(JavaLanguageVersion.of(25))
+        vendor.set(JvmVendorSpec.ADOPTIUM)
     }
+    sourceSets.main { kotlin.srcDir("build/generated/ksp/main/kotlin") }
+    sourceSets.test { kotlin.srcDir("build/generated/ksp/test/kotlin") }
 }
 
 application {
     applicationName = "application"
+    // A top-level `fun main()` in Application.kt compiles into <packagePath>.ApplicationKt
     mainClass.set("${packagePath}.ApplicationKt")
     applicationDefaultJvmArgs = listOf("-Dfile.encoding=UTF-8")
 }
@@ -45,17 +58,17 @@ tasks.distTar {
     archiveFileName.set("application.tar")
 }
 
-tasks.compileKotlin {
-    kotlinOptions {
-        // jvmTarget is automatically set by jvmToolchain
-        freeCompilerArgs = listOf("-Xjsr305=strict")
-    }
-}
+// Only for the "test @KoraApp extends the production @KoraApp" pattern. Without it the test graph
+// silently loses the production @Component classes — KSP only warns.
+// ksp {
+//     arg("kora.app.submodule.enabled", "true")
+// }
 
 tasks.test {
     useJUnitPlatform()
     testLogging {
         events("passed", "skipped", "failed")
         showStandardStreams = true
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
     }
 }

@@ -1,472 +1,232 @@
-# Kora Optional Dependency Reference
+# Optional and lazy dependencies — `@Nullable`, `ValueOf<T>`, `PromiseOf<T>`
 
-**Source:** [Kora Container Documentation](../../../.kora-agent/kora-docs/mkdocs/docs/en/documentation/container.md)
-
-Complete reference for optional dependencies using `@Nullable` and `ValueOf<T>` in Kora applications.
-
----
-
-## Table of Contents
-
-1. [@Nullable Optional Dependencies](#nullable-optional-dependencies)
-2. [ValueOf<T> for Lazy Dependencies](#valueoft-for-lazy-dependencies)
-3. [When to Use Each](#when-to-use-each)
-4. [Common Patterns](#common-patterns)
-5. [Troubleshooting](#troubleshooting)
+**Kora 2.0** · `io.koraframework.application.graph.{ValueOf, PromiseOf}` ·
+`org.jspecify.annotations.Nullable`
 
 ---
 
-## @Nullable Optional Dependencies
+## 1. `@Nullable` — the dependency may be absent
 
-### Basic Usage
+Marking an injection point nullable tells the processor that a missing component is acceptable: the
+graph builds, and the parameter receives `null`.
 
-Use `@Nullable` when a dependency may not exist in the container.
+### Java — JSpecify, and it is type-use
+
+Kora 2.0 uses **JSpecify** (`org.jspecify.annotations.Nullable`, version `1.0.1`, transitive with
+`io.koraframework:common`). The processor accepts any annotation whose type name ends in `.Nullable`,
+so it is the compiler — not Kora — that is strict about *where* the annotation may appear.
+
+`@Nullable` is a **type-use** annotation. On a plain parameter the declaration position is fine:
 
 ```java
-@Component
-public final class UserService {
-    private final EmailService emailService;
+import org.jspecify.annotations.Nullable;
 
-    public UserService(@Nullable EmailService emailService) {
-        this.emailService = emailService;  // May be null
+@Module
+public interface SmsModule {
+
+    final class SmsTag {
+        private SmsTag() {}
     }
 
-    public void createUser(User user) {
-        // Save user
-        userRepository.insert(user);
+    @Tag(SmsTag.class)
+    default Notifier smsNotifier(@Nullable SmsCellularProvider provider) {
+        return (user, message) -> {
+            if (provider == null) {
+                System.out.println("[SMS] " + user + "@" + message);
+            } else {
+                System.out.println("+" + provider.getCode() + " [SMS] " + user + "@" + message);
+            }
+        };
+    }
+}
+```
 
-        // Send email if service is available
-        if (emailService != null) {
-            emailService.sendWelcomeEmail(user);
+Position starts to matter as soon as the type is nested, generic or an array:
+
+| Intent | Correct | Wrong |
+|---|---|---|
+| nullable nested type | `Config.@Nullable Inner inner` | `@Nullable Config.Inner inner` |
+| nullable array | `String @Nullable [] names` | `@Nullable String[] names` (nullable *elements*) |
+| nullable element | `List<@Nullable String> names` | `@Nullable List<String> names` (nullable *list*) |
+| nullable wrapper | `@Nullable ValueOf<Tracer> tracer` | — |
+
+A wrong position is a `javac` error:
+`type annotation @org.jspecify.annotations.Nullable is not expected here`.
+
+**Do not add a null check the compiler already gives you, and do not swallow the absence silently.**
+The point of an optional dependency is a real fallback path.
+
+### Kotlin — nullability is the type
+
+```kotlin
+@Module
+interface SmsModule {
+
+    class SmsTag private constructor()
+
+    @Tag(SmsTag::class)
+    fun smsNotifier(provider: SmsCellularProvider?): Notifier = Notifier { user, message ->
+        if (provider == null) {
+            println("[SMS] $user@$message")
+        } else {
+            println("+${provider.getCode()} [SMS] $user@$message")
         }
     }
 }
 ```
 
-### Supported Nullable Annotations
+KSP treats `isMarkedNullable` as the optional marker. Do not carry JSpecify annotations into Kotlin
+sources; `@field:Nullable` in particular is an invalid target under Kotlin 2.4.
 
-Any of these annotations work:
+### When it is the wrong tool
 
-```java
-import javax.annotation.Nullable;
-import jakarta.annotation.Nullable;
-import org.jetbrains.annotations.Nullable;
-import jakarta.annotation.Nullable;
-```
-
-### Kotlin Nullability
-
-In Kotlin, use nullable type syntax:
-
-```kotlin
-@Component
-class UserService(
-    private val emailService: EmailService?  // Nullable type
-) {
-    fun createUser(user: User) {
-        userRepository.insert(user)
-        emailService?.sendWelcomeEmail(user)  // Safe call
-    }
-}
-```
+`@Nullable` is for a dependency that may genuinely not be in the container — an optional telemetry
+exporter, an optional provider from a module the application may not plug in. It is not a way to
+silence an "ambiguous dependency" error, and it is not a substitute for `@DefaultComponent` when what
+you actually want is a fallback implementation.
 
 ---
 
-## ValueOf<T> for Lazy Dependencies
-
-### Purpose
-
-`ValueOf<T>` provides lazy access to dependencies with two key benefits:
-
-1. **Breaking circular dependencies** — Lazy reference avoids cycle detection
-2. **Preventing cascading refreshes** — Dependency changes don't trigger refresh of dependent component
-
-### API
+## 2. `ValueOf<T>` — current value, no refresh cascade
 
 ```java
+package io.koraframework.application.graph;
+
 public interface ValueOf<T> {
-    T get();           // Get current instance
-    void refresh();    // Force refresh (if refreshable)
+
+    T get();
+
+    default <Q> ValueOf<Q> map(Function<T, Q> mapper);
+    default ValueOf<Optional<T>> optional();
+
+    static <T> ValueOf<Optional<T>> emptyOptional();
 }
 ```
 
-### Basic Usage
+**There is no `refresh()` method.** Refreshing the graph is `RefreshableGraph.refresh(Node<?>)` — see
+[`runtime-graph-api-reference.md`](runtime-graph-api-reference.md). `ValueOf` is purely a handle.
+
+Two properties, both verified by the framework's own `GraphTest`:
+
+- `get()` always returns the **current** instance of that node (`valueOfAlwaysPointsOnTheCurrentObject`);
+- a component that depends on `ValueOf<B>` is **not** recreated when `B` is refreshed
+  (`refreshDoesntAffectDependentObjectWithValueOf`), whereas a direct dependency on `B` is.
 
 ```java
-@Component
-public final class HttpClient {
-    private final ValueOf<AuthConfig> config;
+package com.example.api;
 
-    public HttpClient(ValueOf<AuthConfig> config) {
-        this.config = config;
-        // Config NOT yet accessed
-    }
-
-    public Response get(String url) {
-        // Access config when needed
-        AuthConfig currentConfig = config.get();
-        return httpClient.execute(url, currentConfig.getToken());
-    }
-}
-```
-
----
-
-## Use Case 1: Breaking Circular Dependencies
-
-### Problem
-
-```
-ServiceA → ServiceB
-    ↑          ↓
-    └──────────┘
-(Circular dependency error!)
-```
-
-### Solution
-
-Use `ValueOf` in one direction:
-
-```java
-@Component
-public final class ServiceA {
-    private final ValueOf<ServiceB> serviceB;
-
-    public ServiceA(ValueOf<ServiceB> serviceB) {
-        this.serviceB = serviceB;
-    }
-
-    public void doSomething() {
-        // Lazy access — cycle avoided
-        serviceB.get().doOther();
-    }
-}
+import io.koraframework.application.graph.ValueOf;
+import io.koraframework.common.annotation.Component;
 
 @Component
-public final class ServiceB {
-    private final ServiceA serviceA;  // Direct dependency
+public final class ApiClient {
 
-    public ServiceB(ServiceA serviceA) {
-        this.serviceA = serviceA;
+    private final HttpClient http;
+    private final ValueOf<AuthConfig> auth;
+
+    public ApiClient(HttpClient http, ValueOf<AuthConfig> auth) {
+        this.http = http;
+        this.auth = auth;
     }
 
-    public void doOther() {
-        serviceA.doSomething();
-    }
-}
-```
-
-**How it works:**
-- `ValueOf<ServiceB>` is a lazy reference
-- Kora doesn't need ServiceB to create ServiceA
-- ServiceB is accessed only when `get()` is called
-
----
-
-## Use Case 2: Preventing Cascading Refreshes
-
-### Scenario
-
-Config changes at runtime, but you don't want dependent components to refresh.
-
-### Without ValueOf (cascades)
-
-```java
-@Component
-public final class HttpClient {
-    private final AuthConfig config;
-
-    public HttpClient(AuthConfig config) {
-        this.config = config;
-    }
-
-    // When config refreshes, HttpClient also refreshes
-    // This may cause connection pool reset, etc.
-}
-```
-
-### With ValueOf (no cascade)
-
-```java
-@Component
-public final class HttpClient {
-    private final ValueOf<AuthConfig> config;
-
-    public HttpClient(ValueOf<AuthConfig> config) {
-        this.config = config;
-    }
-
-    // When config refreshes:
-    // - Config is refreshed
-    // - HttpClient survives (not refreshed)
-    // - HttpClient uses new config via get()
-}
-```
-
-### When to Use ValueOf
-
-| Scenario | Use ValueOf? | Reason |
-|----------|--------------|--------|
-| HTTP request handlers | Yes | Handler may refresh, server should survive |
-| Config dependencies | Yes | Config changes shouldn't cascade |
-| Cache dependencies | Yes | Cache refresh shouldn't cascade |
-| Database connections | No | Connection changes should propagate |
-| Core services | No | Service changes should be consistent |
-
----
-
-## Use Case 3: HTTP Server with Request Handlers
-
-Kora HTTP servers use `ValueOf` for request handlers:
-
-```java
-@Root
-@Component
-public final class HttpServer implements Lifecycle {
-    private final ValueOf<UserHandler> userHandler;
-    private final ValueOf<OrderHandler> orderHandler;
-
-    public HttpServer(
-        ValueOf<UserHandler> userHandler,
-        ValueOf<OrderHandler> orderHandler
-    ) {
-        this.userHandler = userHandler;
-        this.orderHandler = orderHandler;
-    }
-
-    @Override
-    public void init() {
-        // Start server with current handler versions
-        // If handlers are refreshed, server picks up new versions
-        router.get("/users", req -> userHandler.get().handle(req));
-        router.post("/orders", req -> orderHandler.get().handle(req));
-    }
-
-    @Override
-    public void release() {
-        // Stop server
+    public Response fetch(String path) {
+        var token = auth.get().token();   // always the current config
+        return http.get(path, token);
     }
 }
 ```
-
-**Benefit:** Handler refreshes don't require server restart.
-
----
-
-## Use Case 4: Lazy Initialization
-
-Delay expensive initialization until first use:
-
-```java
-@Component
-public final class ReportGenerator {
-    private final ValueOf<ExpensiveResource> resource;
-
-    public ReportGenerator(ValueOf<ExpensiveResource> resource) {
-        this.resource = resource;
-    }
-
-    public Report generate() {
-        // Resource only initialized when first report is generated
-        ExpensiveResource r = resource.get();
-        return r.generateReport();
-    }
-}
-```
-
----
-
-## Common Patterns
-
-### Pattern 1: Optional Feature Toggle
-
-```java
-@Component
-public final class AnalyticsService {
-    private final AnalyticsTracker tracker;
-
-    public AnalyticsService(@Nullable AnalyticsTracker tracker) {
-        this.tracker = tracker;
-    }
-
-    public void trackEvent(String event, Map<String, Object> data) {
-        if (tracker != null) {
-            tracker.track(event, data);
-        }
-        // Silently skip if tracker not configured
-    }
-}
-```
-
-### Pattern 2: Fallback Implementation
-
-```java
-@Component
-public final class CacheService {
-    private final Cache primaryCache;
-    private final Cache fallbackCache;
-
-    public CacheService(
-        @Tag(PrimaryTag.class) Cache primaryCache,
-        @Nullable @Tag(FallbackTag.class) Cache fallbackCache
-    ) {
-        this.primaryCache = primaryCache;
-        this.fallbackCache = fallbackCache;
-    }
-
-    public Object get(String key) {
-        // Try primary first
-        Object value = primaryCache.get(key);
-        if (value != null) {
-            return value;
-        }
-
-        // Fall back to secondary if available
-        if (fallbackCache != null) {
-            value = fallbackCache.get(key);
-            if (value != null) {
-                primaryCache.put(key, value);  // Populate primary
-                return value;
-            }
-        }
-
-        return null;
-    }
-}
-```
-
-### Pattern 3: Configurable Notifications
-
-```java
-@Component
-public final class OrderService {
-    private final OrderRepository repository;
-    private final ValueOf<NotificationConfig> config;
-
-    public OrderService(
-        OrderRepository repository,
-        ValueOf<NotificationConfig> config
-    ) {
-        this.repository = repository;
-        this.config = config;
-    }
-
-    public Order createOrder(Order order) {
-        Order saved = repository.insert(order);
-
-        // Check config at runtime
-        NotificationConfig currentConfig = config.get();
-        if (currentConfig.shouldSendConfirmation()) {
-            sendConfirmation(saved);
-        }
-
-        return saved;
-    }
-
-    private void sendConfirmation(Order order) {
-        // Send confirmation email/SMS
-    }
-}
-```
-
-### Pattern 4: Optional Metrics
-
-```java
-@Component
-public final class PaymentProcessor {
-    private final PaymentGateway gateway;
-    private final MeterRegistry meterRegistry;
-
-    public PaymentProcessor(
-        PaymentGateway gateway,
-        @Nullable MeterRegistry meterRegistry
-    ) {
-        this.gateway = gateway;
-        this.meterRegistry = meterRegistry;
-    }
-
-    public PaymentResult process(Payment payment) {
-        long start = System.nanoTime();
-
-        PaymentResult result;
-        try {
-            result = gateway.process(payment);
-        } finally {
-            // Record metrics if available
-            if (meterRegistry != null) {
-                long duration = System.nanoTime() - start;
-                meterRegistry.timer("payment.process")
-                    .record(duration, TimeUnit.NANOSECONDS);
-            }
-        }
-
-        return result;
-    }
-}
-```
-
----
-
-## Troubleshooting
-
-### Null Pointer Exception
-
-**Problem:** `NullPointerException` when using optional dependency
-
-**Solution:** Always check for null before use:
-
-```java
-// WRONG: Assuming non-null
-public UserService(EmailService emailService) {
-    emailService.send();  // May throw NPE!
-}
-
-// CORRECT: Null check
-public UserService(@Nullable EmailService emailService) {
-    if (emailService != null) {
-        emailService.send();
-    }
-}
-```
-
-### ValueOf.get() Returns Null
-
-**Problem:** `ValueOf.get()` returns null or throws exception
-
-**Check:**
-1. Is the dependency a valid `@Component`?
-2. Are all its dependencies satisfied?
-3. Is it in a scanned package?
-
-### Circular Dependency Not Resolved
-
-**Problem:** Still getting circular dependency error with ValueOf
-
-**Check:**
-1. Is `ValueOf` used in **one direction only**?
-2. Is the other direction a direct dependency?
-3. Are both components `@Component` annotated?
-
-### Kotlin Null Safety
-
-**Problem:** Kotlin complains about nullable types
-
-**Solution:** Use safe call operator or explicit null check:
 
 ```kotlin
-// Safe call
-emailService?.sendWelcomeEmail(user)
-
-// Or explicit check
-if (emailService != null) {
-    emailService.sendWelcomeEmail(user)
+@Component
+class ApiClient(
+    private val http: HttpClient,
+    private val auth: ValueOf<AuthConfig>
+) {
+    fun fetch(path: String): Response = http.get(path, auth.get().token())
 }
 ```
 
+Reach for `ValueOf<T>` when:
+
+- rebuilding this component on every refresh of that dependency is expensive or disruptive (an open
+  server socket, a warm cache, a connection pool);
+- you need the latest value per call rather than a snapshot taken at construction.
+
+Do **not** use it as a general-purpose laziness knob. A direct dependency is cheaper to read and
+gives the container a real ordering edge.
+
+### `@Nullable ValueOf<T>`
+
+`ValueOf` and `PromiseOf` have dedicated nullable claim types, so both spellings are meaningful:
+
+```java
+public MetricsReporter(@Nullable ValueOf<MeterRegistry> registry) { … }
+```
+
+```kotlin
+class MetricsReporter(private val registry: ValueOf<MeterRegistry>?)
+```
+
+Here it is the *component* that may be absent — `registry` itself is `null`, not `registry.get()`.
+
 ---
 
-## See Also
+## 3. `PromiseOf<T>` — the weaker handle
 
-- [SKILL.md](../SKILL.md) — Runtime DI overview
-- [GraphInterceptor Reference](graph-interceptor-reference.md) — Component wrapping during graph build
-- [Container Documentation](../../../.kora-agent/kora-docs/mkdocs/docs/en/documentation/container.md) — Official docs
+```java
+public interface PromiseOf<T> {
+
+    Optional<T> get();
+
+    default <Q> PromiseOf<Q> map(Function<T, Q> mapper);
+    default PromiseOf<Optional<T>> optional();
+
+    static <T> PromiseOf<T> of(T value);
+    static <T> PromiseOf<T> promiseOfNull();
+    static <T> PromiseOf<Optional<T>> emptyOptional();
+}
+```
+
+`get()` returns `Optional<T>`, so a promise can be unresolved. This is what the processor uses to
+break dependency cycles: when it must, it generates a `PromisedProxy` implementation of the cycle's
+interface (`io.koraframework.common.PromisedProxy`, plus `RefreshListener`) that delegates through a
+`PromiseOf`.
+
+Declare `PromiseOf<T>` yourself when a dependency is legitimately resolvable only after graph
+construction. For an ordinary cycle between two of your own components, prefer either extracting the
+shared piece into a third component or `ValueOf<T>` on one side — both are easier to read than a
+promise.
+
+---
+
+## 4. Choosing
+
+| Need | Use |
+|---|---|
+| component may be missing from the container | `@Nullable T` / `T?` |
+| always read the latest instance; survive its refresh | `ValueOf<T>` |
+| break a refresh cascade | `ValueOf<T>` |
+| break a construction cycle | restructure, else `ValueOf<T>` / `PromiseOf<T>` |
+| optional *and* refresh-isolated | `@Nullable ValueOf<T>` / `ValueOf<T>?` |
+| every implementation, refresh-isolated | `All<ValueOf<T>>` |
+
+---
+
+## 5. Pitfalls
+
+| Symptom | Cause |
+|---|---|
+| `type annotation @Nullable is not expected here` | JSpecify `@Nullable` in a non-type-use position |
+| `cannot find symbol: method refresh()` on `ValueOf` | 1.x memory — refresh lives on `RefreshableGraph` |
+| NPE on an optional dependency | `@Nullable` added, fallback path not written |
+| consumer still rebuilt on refresh | dependency declared directly, not as `ValueOf<T>` |
+| `@field:Nullable` rejected by Kotlin | invalid target; use `T?` |
+| `Optional<T>` constructor parameter not injected | `Optional` is not a Kora claim type |
+
+---
+
+## See also
+
+- [`collection-injection-reference.md`](collection-injection-reference.md) — `All<ValueOf<T>>`, `All<PromiseOf<T>>`
+- [`runtime-graph-api-reference.md`](runtime-graph-api-reference.md) — `RefreshableGraph.refresh`, `RefreshListener`
+- [`lifecycle-reference.md`](lifecycle-reference.md) — what a refresh does to `Lifecycle` components

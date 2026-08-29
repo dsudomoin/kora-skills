@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """
-OpenAPI Specification Validator for Kora OpenAPI Generator
+OpenAPI Specification Validator for Kora
 
-Validates OpenAPI 3.x specifications before code generation.
-Checks for common issues that may cause generation failures.
+Read-only lint for OpenAPI 3.x documents that are generated from and/or published by a Kora 2.0
+service (openapi.management.files). Catches the issues that make code generation fail or make a
+published document render empty: missing openapi/info fields, operations without operationId or
+responses, self-referencing schemas, and security schemes the Kora generator handles specially.
+
+This is a lint, not a full OpenAPI 3.x schema validator, and it never writes anything.
 
 Usage:
-    python validate_openapi.py --spec openapi.yaml
-    python validate_openapi.py --spec openapi.yaml --strict
+    python3 validate_openapi.py --spec openapi.yaml
+    python3 validate_openapi.py --spec openapi.yaml --strict   # warnings fail the run too
+    python3 validate_openapi.py --spec openapi.yaml --json     # machine-readable report
+
+Exit code: 0 when the document passes, 1 otherwise.
 """
 
 import argparse
@@ -219,7 +226,12 @@ class OpenAPIValidator:
             except Exception as e:
                 self.errors.append(f"Validation error in {validator.__name__}: {e}")
 
-        return len(self.errors) == 0
+        if self.errors:
+            return False
+
+        # --strict promises "treat warnings as errors", so it has to affect the verdict too,
+        # not only the checks that consult self.strict while collecting.
+        return not (self.strict and self.warnings)
 
     def report(self) -> str:
         """Generate validation report."""
@@ -242,7 +254,9 @@ class OpenAPIValidator:
 
         lines.append("")
         if self.errors:
-            lines.append("Result: FAILED - Fix errors before code generation")
+            lines.append("Result: FAILED - Fix errors before generating or publishing")
+        elif self.warnings and self.strict:
+            lines.append("Result: FAILED - warnings are errors under --strict")
         elif self.warnings:
             lines.append("Result: PASSED with warnings")
         else:
@@ -253,7 +267,7 @@ class OpenAPIValidator:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Validate OpenAPI specification for Kora code generation'
+        description='Lint an OpenAPI 3.x document before generating from it or publishing it via openapi.management'
     )
     parser.add_argument(
         '--spec', '-s',

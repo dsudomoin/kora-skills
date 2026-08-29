@@ -1,7 +1,9 @@
 # Request Mapping Reference
 
 Binding request data to handler parameters: `@Path`, `@Query`, `@Header`, `@Cookie`, request
-bodies (`@Json`, form data), optional parameters, and custom `@Mapping`.
+bodies, optionality, and custom `HttpServerRequestMapper`.
+
+All four binding annotations live in **`io.koraframework.http.common.annotation`**.
 
 ## Contents
 
@@ -9,24 +11,35 @@ bodies (`@Json`, form data), optional parameters, and custom `@Mapping`.
 - [@Query](#query)
 - [@Header](#header)
 - [@Cookie](#cookie)
-- [Request body](#request-body)
 - [Optional parameters](#optional-parameters)
-- [Type conversion](#type-conversion)
-- [Custom parameter mapping](#custom-parameter-mapping)
+- [Request body](#request-body)
+- [Custom request mapping](#custom-request-mapping)
+- [Reading the raw request](#reading-the-raw-request)
+- [Parameter errors are 400](#parameter-errors-are-400)
 
 ---
 
 ## @Path
 
-Extracts a `{...}` path segment. The name defaults to the argument name.
+Extracts a `{...}` path segment. The name defaults to the argument name; use `@Path("name")` only
+when they differ.
 
 ```java
 @HttpRoute(method = HttpMethod.GET, path = "/users/{userId}/orders/{orderId}")
 public OrderResponse getOrder(@Path String userId, @Path String orderId) { /* ... */ }
 ```
 
-Use `@Path("name")` only when the argument name differs from the segment. The name must match a
-`{...}` segment in the route.
+Supported types (the processor emits a dedicated parser per type):
+
+| Type | Notes |
+|---|---|
+| `String` | |
+| `int` / `long` / `double` | primitives |
+| `boolean` | |
+| `UUID` | |
+
+A path segment always exists once the route matched, so `@Path` parameters are never optional and
+collections are not supported.
 
 ---
 
@@ -36,12 +49,35 @@ Extracts a query parameter; the name defaults to the argument name.
 
 ```java
 @HttpRoute(method = HttpMethod.GET, path = "/users")
-public List<UserResponse> list(@Query("page") int page,
+public List<UserResponse> list(@Query int page,
                                @Query("ids") List<String> ids) { /* ... */ }
 // GET /users?page=1&ids=1&ids=2
 ```
 
-`List<T>` collects repeated query parameters.
+Kora binds a parameter in one of two ways:
+
+**Direct parsers** — `String`, `Integer`/`int`, `Long`/`long`, `Double`/`double`,
+`Boolean`/`boolean`, `UUID`, plus `List<T>` and **`Set<T>`** of each. `List`/`Set` collect
+repeated parameters.
+
+**Anything else** resolves through an `HttpServerParameterReader<T>` from the graph.
+`HttpServerParameterReaderModule` supplies these as `@DefaultComponent`s, so they need no wiring:
+
+| Reader | Types |
+|---|---|
+| enums | any `T extends Enum<T>`, matched on `Enum::name` |
+| date/time | `LocalDate`, `LocalTime`, `LocalDateTime`, `OffsetTime`, `OffsetDateTime`, `ZonedDateTime`, `Duration` |
+| numeric | `Float`, `BigInteger`, `BigDecimal` |
+| JSON | any `T` that has a generated `JsonReader<T>` |
+
+Supply your own for a domain type by declaring a `@Component` `HttpServerParameterReader<T>`; a
+reader that throws produces a `400` with the message you give
+`HttpServerParameterReader.of(converter, message)`.
+
+> On `2.0.0.RC1` a `Boolean` query value is parsed with `Boolean.parseBoolean`, so anything other
+> than `"true"` silently becomes `false`. A post-RC1 commit tightened this to reject values that
+> are not exactly `"true"`/`"false"` with a `400`. Validate booleans yourself if the distinction
+> matters on RC1.
 
 ---
 
@@ -55,45 +91,93 @@ public UserResponse get(@Header("Authorization") String auth,
                         @Nullable @Header("X-Request-Id") String requestId) { /* ... */ }
 ```
 
-`List<String>` collects repeated header values.
+Supported: `String`, `Integer`, `Long`, `Double`, `UUID`, plus `List<T>`/`Set<T>` of each, and any
+type with an `HttpServerParameterReader<T>` in the graph.
 
 ---
 
 ## @Cookie
 
-Extracts a cookie value.
+Extracts a cookie. Two shapes are supported: the raw
+`io.koraframework.http.common.cookie.Cookie`, or its value as a `String`.
 
 ```java
 @HttpRoute(method = HttpMethod.GET, path = "/me")
 public UserResponse me(@Cookie("sessionId") String sessionId) { /* ... */ }
+
+@HttpRoute(method = HttpMethod.GET, path = "/me/raw")
+public UserResponse raw(@Cookie("sessionId") Cookie cookie) { /* ... */ }
 ```
+
+---
+
+## Optional parameters
+
+Parameters are **required** by default; a missing required parameter produces a `400`. There is no
+`required = false` attribute anywhere — nullability alone controls optionality.
+
+**Java** uses JSpecify, which ships with Kora 2.0:
+
+```java
+import org.jspecify.annotations.Nullable;
+
+@HttpRoute(method = HttpMethod.GET, path = "/users")
+public List<UserResponse> list(@Nullable @Query Integer page,
+                               @Nullable @Query Integer size) {
+    return userService.findAll(page == null ? 0 : page, size == null ? 10 : size);
+}
+```
+
+Use the boxed type (`Integer`, not `int`) for an optional parameter — a primitive cannot be null.
+JSpecify's `@Nullable` is a **type-use** annotation, so position matters on nested and array types
+(`List<@Nullable String>`, `String @Nullable []`); a wrong position is a compile error.
+
+**Kotlin** uses a nullable type and no annotation at all:
+
+```kotlin
+@HttpRoute(method = HttpMethod.GET, path = "/users")
+fun list(@Query page: Int?, @Query size: Int?): List<UserResponse> =
+    userService.findAll(page ?: 0, size ?: 10)
+```
+
+Do not carry Java nullability annotations into Kotlin — `@field:Nullable` is not a valid target
+under Kotlin 2.4.
 
 ---
 
 ## Request body
 
-A method argument without a binding annotation is treated as the request body. Supported raw
-types out of the box: `byte[]`, `ByteBuffer`, `String`.
+A method argument without a binding annotation is treated as the request body. Mappers supplied
+out of the box (`HttpServerRequestMapperModule`):
+
+| Body type | Notes |
+|---|---|
+| `byte[]`, `ByteBuffer` | raw bytes |
+| `String` | decoded text |
+| `InputStream` | streamed |
+| `HttpBodyInput` | the raw body handle |
+| `HttpServerRequest` | the whole request |
+| `FormUrlEncoded` | `application/x-www-form-urlencoded` |
+| `FormMultipart` | `multipart/form-data` |
+| any `T` with `@Json` | via the generated `JsonReader<T>` |
 
 ### JSON
 
-Annotate the body parameter with `@Json` (and the method with `@Json` for the response). Requires
-the `json-module` dependency.
+Annotate the body parameter with `@Json`, and the method with `@Json` for a JSON response.
+Requires `io.koraframework:json-common` — the 1.x artifact `json-module` does not exist in 2.0.
 
 ```java
 @HttpRoute(method = HttpMethod.POST, path = "/users")
 @Json
 public UserResponse create(@Json UserRequest request) {
-    return userService.createUser(request);
+    return userService.create(request);
 }
 
+@Json
 public record UserRequest(String email, String name) {}
 ```
 
-### Form data
-
-Use `FormUrlEncoded` for `application/x-www-form-urlencoded` bodies, or `FormMultipart` for
-multipart bodies:
+### Forms
 
 ```java
 @HttpRoute(method = HttpMethod.POST, path = "/submit")
@@ -105,58 +189,21 @@ public String upload(FormMultipart form) { /* ... */ }
 
 ---
 
-## Optional parameters
-
-Parameters are **required (NotNull)** by default. Mark optional ones with `@Nullable` (any
-`jakarta.annotation.Nullable` / `javax.annotation.Nullable` / `org.jetbrains.annotations.Nullable`
-will do); in Kotlin use a nullable type.
+## Custom request mapping
 
 ```java
-// Java
-@HttpRoute(method = HttpMethod.GET, path = "/users")
-public List<UserResponse> list(@Nullable @Query("page") Integer page,
-                               @Nullable @Query("size") Integer size) {
-    int pageNum = page == null ? 0 : page;
-    int pageSize = size == null ? 10 : size;
-    return userService.getUsers(pageNum, pageSize);
+public interface HttpServerRequestMapper<T> extends Mapping.MappingFunction {
+    @Nullable T apply(HttpServerRequest request) throws Exception;
 }
 ```
 
-```kotlin
-// Kotlin
-@HttpRoute(method = HttpMethod.GET, path = "/users")
-fun list(@Query("page") page: Int?, @Query("size") size: Int?): List<UserResponse> =
-    userService.getUsers(page ?: 0, size ?: 10)
-```
-
-There is no `required` attribute on `@Query`/`@Header`/`@Cookie`; nullability controls
-optionality.
-
----
-
-## Type conversion
-
-Kora converts the raw string parameter into the target type at compile time:
-
-| Type | Example |
-|---|---|
-| `String` | `@Query String name` |
-| `int` / `Integer` | `@Query Integer page` |
-| `long` / `Long` | `@Query Long offset` |
-| `boolean` / `Boolean` | `@Query Boolean active` |
-| `List<T>` | `@Query List<String> ids` (repeated params) |
-
----
-
-## Custom parameter mapping
-
-Implement `HttpServerRequestMapper<T>` and reference it with `@Mapping` to build a value from the
-raw request:
+Implement it and reference it with `@Mapping` to build a value from the raw request:
 
 ```java
 public record UserContext(String userId, String traceId) {}
 
-public static final class RequestMapper implements HttpServerRequestMapper<UserContext> {
+@Component                                   // required — see below
+public static final class UserContextRequestMapper implements HttpServerRequestMapper<UserContext> {
     @Override
     public UserContext apply(HttpServerRequest request) {
         return new UserContext(
@@ -166,7 +213,72 @@ public static final class RequestMapper implements HttpServerRequestMapper<UserC
 }
 
 @HttpRoute(method = HttpMethod.GET, path = "/ctx")
-public String handle(@Mapping(RequestMapper.class) UserContext context) { /* ... */ }
+public HttpServerResponse handle(@Mapping(UserContextRequestMapper.class) UserContext context) {
+    /* ... */
+}
 ```
+
+**`@Mapping(X.class)` makes the generated module ask the graph for `X` itself**, not for
+`HttpServerRequestMapper<T>`. So `X` must be a component — `@Component` on the class, or a module
+method returning it — **even when it has no constructor dependencies**. Omitting it fails at
+compile time:
+
+```
+error: No component found for dependency:
+    com.example.UserContextRequestMapper (no tags)
+  Fix:
+    - Add @Component to an implementation of com.example.UserContextRequestMapper.
+```
+
+In Kotlin the `apply` parameter follows the contract exactly; the return type is nullable:
+
+```kotlin
+@Component
+class UserContextRequestMapper : HttpServerRequestMapper<UserContext> {
+    override fun apply(request: HttpServerRequest): UserContext =
+        UserContext(request.headers().getFirst("x-user-id"), request.headers().getFirst("x-trace-id"))
+}
+```
+
+---
+
+## Reading the raw request
+
+`HttpServerRequest` (`io.koraframework.http.server.common.request`) exposes:
+
+```java
+String host();  String scheme();  String method();  String path();
+@Nullable String pathTemplate();          // the matched route template, null when unrouted
+Map<String, String> pathParams();
+HttpHeaders headers();
+List<Cookie> cookies();
+Map<String, List<String>> queryParams();
+HttpBodyInput body();
+long requestStartTimeInNanos();
+HttpServerRequestBuilder toBuilder();     // derive a modified request
+```
+
+There is **no attribute map** on the request and no `Context` — see
+[Request Enrichment](context-propagation-reference.md) for passing values from an interceptor to a
+handler.
+
+---
+
+## Parameter errors are 400
+
+The generated handler wraps every parameter parse in a `try/catch`:
+
+```java
+try {
+    userId = HttpRequestHandlerUtils.parsePathString(_request, "userId");
+} catch (Exception _e) {
+    if (_e instanceof HttpServerResponse) throw _e;
+    else throw HttpServerResponseException.of(400, _e);
+}
+```
+
+So a malformed `int`, a missing required `@Query`, or a body that fails to deserialize becomes a
+`400` automatically. Throwing something that *is* an `HttpServerResponse` (such as
+`HttpServerResponseException`) from a custom mapper preserves your own status code instead.
 
 **See also:** [Response Types](response-types-reference.md), [Controller & Routing](controller-routing-reference.md).

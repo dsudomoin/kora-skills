@@ -1,3 +1,16 @@
+// Kora 2.0 gRPC server — Java.
+// gradle.properties must define: koraVersion=2.0.0.RC1 (and optionally grpcPort=8090)
+//
+// VERSION RULE — read before editing any coordinate below.
+// kora-bom constrains ONLY io.koraframework:* artifacts. It pins nothing under io.grpc or
+// com.google.protobuf, so every one of those is yours to keep consistent:
+//   * every io.grpc:* artifact  -> 1.83.1  (the version io.koraframework:grpc-server brings in
+//                                  via grpc-okhttp/grpc-stub; a stale pin fails at RUNTIME with
+//                                  AbstractMethodError: ... 'buildClientTransportServers(List, MetricRecorder)')
+//   * com.google.protobuf:protoc -> 3.25.3 (grpc-protobuf:1.83.1 brings protobuf-java 3.25.9;
+//                                  protoc 4.x gencode calls com.google.protobuf.RuntimeVersion,
+//                                  which does not exist in 3.25.9 -> NoClassDefFoundError)
+
 plugins {
     id "java"
     id "application"
@@ -6,12 +19,12 @@ plugins {
 
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
+        languageVersion = JavaLanguageVersion.of(25)   // Kora 2.0 artifacts are class-file 69
         vendor = JvmVendorSpec.ADOPTIUM
     }
 }
 
-// koraBom feeds the Kora BOM into every configuration so versions are inherited.
+// koraBom feeds the Kora BOM into every configuration so io.koraframework:* versions are inherited.
 configurations {
     koraBom
     annotationProcessor.extendsFrom(koraBom)
@@ -19,28 +32,54 @@ configurations {
     implementation.extendsFrom(koraBom)
     api.extendsFrom(koraBom)
     testImplementation.extendsFrom(koraBom)
+    testCompileOnly.extendsFrom(koraBom)
     testAnnotationProcessor.extendsFrom(koraBom)
 }
 
 dependencies {
-    koraBom platform("ru.tinkoff.kora:kora-parent:$koraVersion")
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+    annotationProcessor "io.koraframework:annotation-processors"
 
-    // gRPC Server
-    implementation "ru.tinkoff.kora:grpc-server"
-    implementation "io.grpc:grpc-protobuf:1.74.0"
-    implementation "javax.annotation:javax.annotation-api:1.3.2"
+    // gRPC server
+    implementation "io.koraframework:grpc-server"
+    implementation "io.grpc:grpc-protobuf:1.83.1"
+    compileOnly "javax.annotation:javax.annotation-api:1.3.2"   // generated stubs use @Generated
 
-    // Configuration (HOCON) and logging
-    implementation "ru.tinkoff.kora:config-hocon"
-    implementation "ru.tinkoff.kora:logging-logback"
+    // Optional: gRPC Server Reflection (grpcurl / Postman). Required for reflectionEnabled = true.
+    implementation "io.grpc:grpc-services:1.83.1"
 
-    // Optional: gRPC Server Reflection (grpcurl / Postman gRPC)
-    implementation "io.grpc:grpc-services:1.74.0"
+    // Configuration and logging
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
 
-    // Test dependencies
-    testImplementation "ru.tinkoff.kora:test-junit5"
-    testImplementation "org.testcontainers:junit-jupiter:1.21.4"
+    // Optional telemetry: needed for grpcServer.telemetry.metrics / .tracing to produce anything
+    // implementation "io.koraframework:micrometer-module"
+    // implementation "io.koraframework:opentelemetry-tracing"
+
+    // Tests
+    testAnnotationProcessor "io.koraframework:annotation-processors"
+    testCompileOnly "javax.annotation:javax.annotation-api:1.3.2"
+    testImplementation "io.koraframework:test-junit5"
+    // A test that opens a client channel needs a client transport, pinned to the SAME 1.83.1:
+    // testImplementation "io.grpc:grpc-netty:1.83.1"
+}
+
+protobuf {
+    protoc { artifact = "com.google.protobuf:protoc:3.25.3" }
+    plugins {
+        grpc { artifact = "io.grpc:protoc-gen-grpc-java:1.83.1" }
+    }
+    generateProtoTasks {
+        all()*.plugins { grpc {} }
+    }
+}
+
+// The generated stubs are Java in both languages — they belong to the java source set.
+sourceSets {
+    main.java {
+        srcDirs "build/generated/source/proto/main/grpc"
+        srcDirs "build/generated/source/proto/main/java"
+    }
 }
 
 application {
@@ -49,32 +88,25 @@ application {
     applicationDefaultJvmArgs = ["-Dfile.encoding=UTF-8"]
 }
 
-protobuf {
-    protoc { artifact = "com.google.protobuf:protoc:3.25.3" }
-    plugins {
-        grpc { artifact = "io.grpc:protoc-gen-grpc-java:1.74.0" }
-    }
-    generateProtoTasks {
-        all()*.plugins { grpc {} }
-    }
-}
-
-sourceSets {
-    main.java {
-        srcDirs "build/generated/source/proto/main/grpc"
-        srcDirs "build/generated/source/proto/main/java"
-    }
-}
-
-// Run task with environment variables
 run {
     environment([
-            "GRPC_PORT": grpcPort ?: "8090",
+            "GRPC_PORT": (project.findProperty("grpcPort") ?: "8090").toString(),
     ])
 }
 
-// Tests need the generated protobuf sources first
-test.dependsOn tasks.generateProto
+test {
+    dependsOn tasks.generateProto
+    useJUnitPlatform()
+    testLogging {
+        showStandardStreams = true
+        events("passed", "skipped", "failed")
+        exceptionFormat = "full"
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = "UTF-8"
+}
 
 distTar {
     archiveFileName = "application.tar"

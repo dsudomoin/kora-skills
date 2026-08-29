@@ -1,31 +1,40 @@
 package com.example.interceptor;
 
-import java.util.concurrent.CompletionException;
-import java.util.concurrent.CompletionStage;
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.common.Context;
-import ru.tinkoff.kora.common.Tag;
-import ru.tinkoff.kora.http.common.body.HttpBody;
-import ru.tinkoff.kora.http.server.common.HttpServerInterceptor;
-import ru.tinkoff.kora.http.server.common.HttpServerModule;
-import ru.tinkoff.kora.http.server.common.HttpServerRequest;
-import ru.tinkoff.kora.http.server.common.HttpServerResponse;
-import ru.tinkoff.kora.http.server.common.HttpServerResponseException;
-import ru.tinkoff.kora.json.common.JsonWriter;
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Tag;
+import io.koraframework.http.common.body.HttpBody;
+import io.koraframework.http.server.common.HttpServer;
+import io.koraframework.http.server.common.interceptor.HttpServerInterceptor;
+import io.koraframework.http.server.common.request.HttpServerRequest;
+import io.koraframework.http.server.common.response.HttpServerResponse;
+import io.koraframework.http.server.common.response.HttpServerResponseException;
+import io.koraframework.json.common.JsonWriter;
+import io.koraframework.json.common.annotation.Json;
 
 /**
- * Global error-to-JSON interceptor.
+ * Server-scoped error-to-JSON interceptor — Kora 2.0.
  *
- * Centralizes exception handling for every route: chain.process(...).exceptionally(...) maps
- * exceptions to JSON responses. Kora has no separate "exception handler" type — this is the
- * idiomatic way to translate errors. Register globally with @Tag(HttpServerModule.class).
+ * Kora has no @ControllerAdvice equivalent; centralized error translation is an interceptor.
+ *
+ * Three things changed from the 1.x version of this template:
+ * 1. @Tag(HttpServer.class), not @Tag(HttpServerModule.class) — the old tag compiles and the
+ *    interceptor is silently never invoked.
+ * 2. The call is synchronous: plain try/catch replaces .exceptionally(...), and there is no
+ *    CompletionException to unwrap.
+ * 3. JsonWriter.toByteArray no longer declares a checked exception, so wrapping it in
+ *    try/catch (IOException) is now a compile error:
+ *      "exception IOException is never thrown in body of corresponding try statement".
+ *    The *Unchecked variants no longer exist either.
+ *
+ * HttpServerResponseException implements HttpServerResponse, so returning the caught exception
+ * preserves the status, headers and body the handler intended.
  */
-@Tag(HttpServerModule.class)
+@Tag(HttpServer.class)
 @Component
 public final class ErrorInterceptor implements HttpServerInterceptor {
 
-    @ru.tinkoff.kora.json.common.annotation.Json
-    public record ErrorResponse(String message) {}
+    @Json
+    public record ErrorResponse(String code, String message) {}
 
     private final JsonWriter<ErrorResponse> errorWriter;
 
@@ -34,30 +43,20 @@ public final class ErrorInterceptor implements HttpServerInterceptor {
     }
 
     @Override
-    public CompletionStage<HttpServerResponse> intercept(Context context,
-                                                         HttpServerRequest request,
-                                                         InterceptChain chain) throws Exception {
-        return chain.process(context, request).exceptionally(throwable -> {
-            Throwable cause = unwrap(throwable);
-            if (cause instanceof HttpServerResponseException e) {
-                return json(e.code(), e.getMessage());
-            }
-            if (cause instanceof IllegalArgumentException) {
-                return json(400, "Invalid request parameters");
-            }
-            return json(500, "An unexpected error occurred");
-        });
-    }
-
-    private HttpServerResponse json(int code, String message) {
-        return HttpServerResponse.of(code, HttpBody.json(errorWriter.toByteArrayUnchecked(new ErrorResponse(message))));
-    }
-
-    private static Throwable unwrap(Throwable throwable) {
-        Throwable current = throwable;
-        while (current instanceof CompletionException && current.getCause() != null) {
-            current = current.getCause();
+    public HttpServerResponse intercept(HttpServerRequest request, InterceptChain chain) throws Exception {
+        try {
+            return chain.process(request);
+        } catch (HttpServerResponseException e) {
+            return e;
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return json(400, "BAD_REQUEST", e.getMessage());
+        } catch (Exception e) {
+            return json(500, "INTERNAL_ERROR", "An unexpected error occurred");
         }
-        return current;
+    }
+
+    private HttpServerResponse json(int code, String errorCode, String message) {
+        return HttpServerResponse.of(code,
+                HttpBody.json(errorWriter.toByteArray(new ErrorResponse(errorCode, message))));
     }
 }

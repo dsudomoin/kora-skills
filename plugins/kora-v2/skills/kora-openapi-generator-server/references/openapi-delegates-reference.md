@@ -1,381 +1,263 @@
-# OpenAPI Delegates Reference
+# OpenAPI Delegates Reference — Kora 2.x
 
-**Generated into:** `$buildDir/generated/<api-name>-server/<apiPackage>/`
+The `*ApiDelegate` interface is the **only** implementation point of a generated Kora HTTP
+server. Everything in this document was read out of the generated output of
+`io.koraframework:openapi-generator` at `2.0.0.RC1`.
 
 ## Contents
 
-- [1. Overview](#1-overview)
-- [2. Generated Interface Structure](#2-generated-interface-structure)
-- [3. Implementation Pattern](#3-implementation-pattern) (sync / async / reactive / suspend)
-- [4. Method Signature Mapping](#4-method-signature-mapping)
-- [5. Configuration Options](#5-configuration-options) (`requestInDelegateParams`, `delegateMethodBodyMode`)
-- [6. Generated Files Summary](#6-generated-files-summary)
-- [7. Common Issues](#7-common-issues)
-- [8. Related](#8-related)
+- [1. Shape of the generated interface](#1-shape-of-the-generated-interface)
+- [2. Implementing it](#2-implementing-it)
+- [3. Signature mapping rules](#3-signature-mapping-rules)
+- [4. Parameter order](#4-parameter-order)
+- [5. `requestInDelegateParams`](#5-requestindelegateparams)
+- [6. `delegateMethodBodyMode`](#6-delegatemethodbodymode)
+- [7. Form and multipart operations](#7-form-and-multipart-operations)
+- [8. Raw and binary bodies](#8-raw-and-binary-bodies)
+- [9. Signature-mismatch troubleshooting](#9-signature-mismatch-troubleshooting)
+- [10. Related](#10-related)
 
 ---
 
-## 1. Overview
+## 1. Shape of the generated interface
 
-Generated `*ApiDelegate` interfaces are the **only implementation point** for OpenAPI server code. Delegates separate business logic from HTTP transport concerns.
-
-**Key characteristics:**
-- One interface per OpenAPI tag (e.g., `UsersApiDelegate`, `OrdersApiDelegate`)
-- Methods return sealed `*ApiResponses` interfaces (NOT `ResponseEntity<T>`)
-- Generated — **never edit**
-- Implement with `@Component` for DI discovery
-
----
-
-## 2. Generated Interface Structure
-
-### Example OpenAPI Spec
-
-```yaml
-tags:
-  - name: users
-    description: User management operations
-
-paths:
-  /users/{userId}:
-    get:
-      tags: [users]
-      operationId: getUser
-      parameters:
-        - name: userId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        "200":
-          description: User found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UserResponseTO'
-        "404":
-          description: User not found
-  
-  /users:
-    post:
-      tags: [users]
-      operationId: createUser
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/UserRequestTO'
-      responses:
-        "201":
-          description: Created
-        "400":
-          description: Invalid input
-```
-
-### Generated Delegate Interface
+One `public interface` per OpenAPI tag, named `<Tag as classname>Delegate`. For tag `pets` the
+generator produces `PetsApiDelegate`:
 
 ```java
-// build/generated/user-api-server/com/example/userapi/api/UserApiDelegate.java
-package com.example.userapi.api;
+@Generated("io.koraframework.openapi.generator.javagen.ServerApiDelegateGenerator")
+public interface PetsApiDelegate {
 
-import com.example.userapi.model.UserRequestTO;
-import java.util.concurrent.CompletionStage;
+  @HttpRoute(method = "GET", path = "/pets")
+  PetsApiResponses.ListPetsApiResponse listPets(
+      @Header("firstHeader") String firstHeader,
+      @Query("requiredLimit") int requiredLimit,
+      @Query("limit") @Nullable Integer limit) throws Exception;
 
-public interface UserApiDelegate {
-
-    /**
-     * GET /users/{userId}
-     * 
-     * @param userId User UUID (path parameter)
-     * @return Sealed response interface with 200, 404, 500 variants
-     */
-    UserApiResponses.GetUserApiResponse getUser(String userId);
-
-    /**
-     * POST /users
-     * 
-     * @param request User creation request body
-     * @return Sealed response interface with 201, 400, 500 variants
-     */
-    UserApiResponses.CreateUserApiResponse createUser(UserRequestTO request);
+  @HttpRoute(method = "GET", path = "/pets/{petId}")
+  PetsApiResponses.ShowPetByIdApiResponse showPetById(@Path("petId") String petId) throws Exception;
 }
 ```
-
----
-
-## 3. Implementation Pattern
-
-### Synchronous Delegate (Recommended)
-
-```java
-package com.example.userapi.api;
-
-import com.example.userapi.model.UserResponseTO;
-import com.example.userapi.model.ErrorResponseTO;
-import ru.tinkoff.kora.common.Component;
-
-@Component
-public final class UserApiDelegateImpl implements UserApiDelegate {
-    
-    private final UserService userService;
-    private final UserMapper mapper;
-
-    public UserApiDelegateImpl(UserService userService, UserMapper mapper) {
-        this.userService = userService;
-        this.mapper = mapper;
-    }
-
-    @Override
-    public UserApiResponses.GetUserApiResponse getUser(String userId) {
-        return userService.findById(userId)
-            .<UserApiResponses.GetUserApiResponse>map(user -> 
-                new UserApiResponses.GetUserApiResponse.GetUser200ApiResponse(
-                    mapper.toResponse(user)
-                )
-            )
-            .orElseGet(() -> 
-                new UserApiResponses.GetUserApiResponse.GetUser404ApiResponse(
-                    new ErrorResponseTO("User not found: " + userId)
-                )
-            );
-    }
-
-    @Override
-    public UserApiResponses.CreateUserApiResponse createUser(UserRequestTO request) {
-        try {
-            var user = userService.create(mapper.toEntity(request));
-            return new UserApiResponses.CreateUserApiResponse.CreateUser201ApiResponse(
-                mapper.toResponse(user)
-            );
-        } catch (EmailAlreadyExistsException e) {
-            return new UserApiResponses.CreateUserApiResponse.CreateUser400ApiResponse(
-                new ErrorResponseTO(e.getMessage())
-            );
-        }
-    }
-}
-```
-
-### Async Delegate (CompletionStage)
-
-```java
-@Component
-public final class UserApiDelegateImpl implements UserApiDelegate {
-    
-    private final UserService userService;
-
-    @Override
-    public CompletionStage<UserApiResponses.GetUserApiResponse> getUser(String userId) {
-        return userService.findByIdAsync(userId)
-            .thenApply(user -> 
-                user.<UserApiResponses.GetUserApiResponse>map(u -> 
-                    new UserApiResponses.GetUserApiResponse.GetUser200ApiResponse(
-                        mapper.toResponse(u)
-                    )
-                )
-                .orElseGet(() -> 
-                    new UserApiResponses.GetUserApiResponse.GetUser404ApiResponse(
-                        new ErrorResponseTO("Not found")
-                    )
-                )
-            );
-    }
-}
-```
-
-### Reactive Delegate (Mono)
-
-```java
-@Component
-public final class UserApiDelegateImpl implements UserApiDelegate {
-    
-    private final UserService userService;
-
-    @Override
-    public Mono<UserApiResponses.GetUserApiResponse> getUser(String userId) {
-        return userService.findByIdReactive(userId)
-            .map(user -> 
-                new UserApiResponses.GetUserApiResponse.GetUser200ApiResponse(
-                    mapper.toResponse(user)
-                )
-            )
-            .defaultIfEmpty(
-                new UserApiResponses.GetUserApiResponse.GetUser404ApiResponse(
-                    new ErrorResponseTO("Not found")
-                )
-            );
-    }
-}
-```
-
-### Kotlin Suspend Delegate
 
 ```kotlin
-@Component
-class UserApiDelegateImpl(
-    private val userService: UserService
-) : UserApiDelegate {
+@Generated("io.koraframework.openapi.generator.kotlingen.ServerApiDelegateGenerator")
+public interface PetsApiDelegate {
 
-    override suspend fun getUser(userId: String): UserApiResponses.GetUserApiResponse {
-        val user = userService.findById(userId)
-        return if (user != null) {
-            UserApiResponses.GetUserApiResponse.GetUser200ApiResponse(
-                mapper.toResponse(user)
-            )
-        } else {
-            UserApiResponses.GetUserApiResponse.GetUser404ApiResponse(
-                ErrorResponseTO("User not found: $userId")
-            )
+  @HttpRoute(method = "GET", path = "/pets")
+  public fun listPets(
+    @Header(value = "firstHeader") firstHeader: String,
+    @Query(value = "requiredLimit") requiredLimit: Int,
+    @Query(value = "limit") limit: Int?,
+  ): PetsApiResponses.ListPetsApiResponse
+}
+```
+
+Facts to rely on:
+
+- **The interface and every method are `public`.** No package-private generated API in 2.0.
+- **Java methods declare `throws Exception`.** Your override may narrow it away entirely, and
+  the migrated examples do — but only if you throw nothing checked.
+- **Kotlin methods are plain `fun`, never `suspend`.** Contracts are synchronous.
+- The return type is always a nested type of `<Tag>ApiResponses` — see
+  [Response Reference](openapi-response-reference.md).
+- The routing annotations (`@HttpRoute`, `@Path`, `@Query`, `@Header`, `@Cookie`, `@Json`) that
+  appear on the interface are documentation of the contract; routing is actually driven by the
+  generated `*ApiController`. Do not copy them onto your implementation.
+
+## 2. Implementing it
+
+===! ":fontawesome-brands-java: `Java`"
+
+    ```java
+    package com.example.petapi.delegate;
+
+    import io.koraframework.common.annotation.Component;
+    import org.jspecify.annotations.Nullable;
+    import com.example.petapi.api.PetApiDelegate;
+    import com.example.petapi.api.PetApiResponses;
+    import com.example.petapi.model.Pet;
+
+    @Component
+    public final class PetDelegate implements PetApiDelegate {
+
+        private final PetService petService;
+
+        public PetDelegate(PetService petService) {
+            this.petService = petService;
+        }
+
+        @Override
+        public PetApiResponses.GetPetByIdApiResponse getPetById(long petId) {
+            var pet = petService.find(petId);
+            return pet == null
+                ? new PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse()
+                : new PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse(pet);
         }
     }
+    ```
+
+=== ":simple-kotlin: `Kotlin`"
+
+    ```kotlin
+    package com.example.petapi.delegate
+
+    import io.koraframework.common.annotation.Component
+    import com.example.petapi.api.PetApiDelegate
+    import com.example.petapi.api.PetApiResponses
+
+    @Component
+    class PetDelegate(private val petService: PetService) : PetApiDelegate {
+
+        override fun getPetById(petId: Long): PetApiResponses.GetPetByIdApiResponse {
+            val pet = petService.find(petId)
+                ?: return PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse()
+            return PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse(pet)
+        }
+    }
+    ```
+
+`@Component` is `io.koraframework.common.annotation.Component`. Without it the compile-time
+graph fails with *"No component found for dependency … PetApiDelegate"* while building the
+generated `PetApiController`.
+
+Keep business logic in injected services. The delegate's job is to translate between generated
+transport models and your domain, and to pick a response record.
+
+## 3. Signature mapping rules
+
+| OpenAPI | Generated |
+|---|---|
+| `tags[0]` | interface name `<Tag>ApiDelegate` |
+| `operationId` | method name |
+| `in: path` | parameter annotated `@Path("<name>")` |
+| `in: query` | parameter annotated `@Query("<name>")` |
+| `in: header` | parameter annotated `@Header("<name>")` |
+| `in: cookie` | parameter annotated `@Cookie("<name>")` |
+| JSON `requestBody` | parameter annotated `@Json`, typed as the model |
+| `required: false` | parameter is boxed and annotated `@Nullable` (Java) / typed `T?` (Kotlin) |
+| `required: true`, primitive schema | unboxed primitive (`int`, `long`, `boolean`) |
+| `responses` | return type `<Tag>ApiResponses.<Op>ApiResponse` |
+| `deprecated: true` | `@Deprecated` on the method |
+
+`format` matters: `format: uuid` → `java.util.UUID`, `format: date` → `LocalDate`,
+`format: date-time` → `OffsetDateTime`, `format: binary` → `byte[]`, `type: string` with
+`format: uri` → `java.net.URI`, `type: number` → `BigDecimal`.
+
+## 4. Parameter order
+
+The generator appends parameters in a fixed order. Match it exactly:
+
+1. `HttpServerRequest _serverRequest` — only with `requestInDelegateParams: "true"`
+2. `HttpHeaders _headers` — only when the operation has a non-JSON or bare-object body
+3. every `path` / `query` / `header` / `cookie` / body parameter, in spec order, skipping form
+   parameters and any header turned implicit by `implicitHeaders` / `implicitHeadersRegex`
+4. `<Op>FormParam form` — only for operations with form parameters
+
+## 5. `requestInDelegateParams`
+
+```groovy
+configOptions = [mode: "java-server", requestInDelegateParams: "true"]
+```
+
+adds `HttpServerRequest` as the first argument of **every** controller and delegate method:
+
+```java
+PetsApiResponses.CreatePetsApiResponse createPets(HttpServerRequest _serverRequest) throws Exception;
+```
+
+Use it for things the contract cannot express — a trace header a gateway injects, the remote
+address, raw query access. It is all-or-nothing: there is no per-operation switch, and turning it
+on changes every existing signature at once.
+
+`HttpServerRequest` is `io.koraframework.http.server.common.request.HttpServerRequest`. Kora 2.0
+has no `Context` — request-scoped state travels as ordinary method arguments or through the
+`Principal` established by an interceptor.
+
+## 6. `delegateMethodBodyMode`
+
+| Value | Delegate methods | Extra output |
+|---|---|---|
+| `none` (default) | `abstract` | — |
+| `throwException` | `default` bodies that `throw new UnsupportedOperationException("Not yet implemented")` (Kotlin: `TODO()`) | `<Tag>ApiModule`, a `@Module` interface with `default <Tag>ApiDelegate default<Tag>ApiDelegate() { return new <Tag>ApiDelegate() {}; }` |
+
+The 1.x spelling `throw-exception` is rejected — `DelegateMethodBodyMode.of` accepts only `none`
+and `throwException`.
+
+```java
+@Generated("io.koraframework.openapi.generator.javagen.ServerApiModuleGenerator")
+@Module
+public interface PetsApiModule {
+  default PetsApiDelegate defaultPetsApiDelegate() {
+    return new PetsApiDelegate() {};
+  }
 }
 ```
 
----
+That module method is **not** `@DefaultComponent`, and `@Module` interfaces are auto-discovered
+by the `@KoraApp` processor. So if you also declare your own `@Component` delegate, two
+candidates satisfy the same dependency and the graph build fails with *"Multiple components
+match"*. Use `throwException` only to stand a contract up before any handler exists; switch back
+to `none` (or delete the flag) the moment you write a real delegate.
 
-## 4. Method Signature Mapping
+## 7. Form and multipart operations
 
-| OpenAPI | Delegate Method |
-|---------|-----------------|
-| `operationId` | Method name |
-| `tags` | Interface name (`*ApiDelegate`) |
-| `parameters` (path/query) | Method arguments |
-| `requestBody` | Method argument (DTO) |
-| `responses` | Return type (`*ApiResponses.*ApiResponse`) |
-
-### Parameter Mapping Examples
-
-```yaml
-# Path + Query parameters
-/users/{userId}/orders/{orderId}?includeItems=true
-```
+An operation with `application/x-www-form-urlencoded` or `multipart/form-data` gets its form
+fields grouped into a record generated **inside the controller**, passed through a generated
+request mapper:
 
 ```java
-UserApiResponses.GetOrderApiResponse getOrder(
-    String userId,      // path
-    String orderId,     // path
-    Boolean includeItems // query
-);
+PetsApiResponses.UpdatePetWithFormApiResponse updatePetWithForm(
+    @Path("petId") long petId,
+    @Mapping(PetsApiServerRequestMappers.UpdatePetWithFormFormParamRequestMapper.class)
+    PetsApiController.UpdatePetWithFormFormParam form) throws Exception;
 ```
 
-### Request Body Mapping
+The record's components follow the form schema; `format: binary` fields become
+`FormMultipart.FormPart` (or `List<FormMultipart.FormPart>` for arrays), and every other
+non-string field is read through an `HttpServerParameterReader`.
 
-```yaml
-requestBody:
-  required: true
-  content:
-    application/json:
-      schema:
-        $ref: '#/components/schemas/CreateUserRequest'
-```
+Multipart form mapping and parsing received fixes **after** `2.0.0.RC1` (on `master`). If a
+multipart operation misbehaves on RC1, that is the known cause — the delegate signature shape
+above is unchanged.
+
+## 8. Raw and binary bodies
+
+A body that is not JSON, or a bare `type: object` with no schema, changes two things:
+
+- the delegate gains a leading `HttpHeaders _headers` parameter so you can read the real
+  `Content-Type`;
+- the body type follows `configOptions.rawBodyMode`: `BYTES` (default) → `byte[]`, `BODY` →
+  `HttpBodyInput` on the server, `OBJECT` → `Object` decoded as JSON.
 
 ```java
-UserApiResponses.CreateUserApiResponse createUser(
-    @Valid CreateUserRequest request  // @Valid if validation enabled
-);
+DefaultApiResponses.FormImagePatchApiResponse formImagePatch(HttpHeaders _headers, byte[] body)
+        throws Exception;
 ```
 
----
+`HttpHeaders` is `io.koraframework.http.common.header.HttpHeaders`.
 
-## 5. Configuration Options
+## 9. Signature-mismatch troubleshooting
 
-### requestInDelegateParams
+`method does not override or implement a method from a supertype` (Java) and
+`'…' overrides nothing` (Kotlin) both mean the same thing: your implementation and the
+regenerated interface disagree. In a 1.x → 2.x migration the causes, in order of frequency:
 
-Include `HttpServerRequest` as delegate method argument:
+| Symptom in your code | Fix |
+|---|---|
+| `Mono<…>`, `Flux<…>`, `CompletionStage<…>` return type | Return the response type directly — those modes no longer exist. |
+| `override suspend fun` (Kotlin) | Drop `suspend`. |
+| `Context` parameter | Removed from the framework; use `requestInDelegateParams` or a `Principal`. |
+| Non-null Kotlin parameter for an optional contract parameter | Generated contracts are `@NullMarked`; an `required: false` parameter is `T?` and the override must be `T?`. The Kotlin error text never mentions nullability. |
+| Boxed `Integer`/`Long` where the contract is `required: true` | Required primitive schemas generate unboxed `int`/`long`. |
+| Extra or missing leading parameter | `requestInDelegateParams` or a raw body added `_serverRequest` / `_headers`; see section 4. |
+| Delegate imported from a stale package | Old generated output still on the source set — `./gradlew clean build --no-build-cache`. |
 
-```groovy
-configOptions = [
-    mode: "java-server",
-    requestInDelegateParams: "true"
-]
-```
+The reliable procedure: open the generated `*ApiDelegate` in `build/generated`, copy the method
+signature verbatim, then adjust only the body. Never edit the generated file.
 
-```java
-UserApiResponses.GetUserApiResponse getUser(
-    String userId,
-    HttpServerRequest request  // ← Added
-);
-```
+## 10. Related
 
-**Use cases:**
-- Access raw headers not in OpenAPI spec
-- Read query parameters dynamically
-- Access request context/attributes
-
-### delegateMethodBodyMode
-
-Generate default method body (for prototyping):
-
-```groovy
-configOptions = [
-    mode: "java-server",
-    delegateMethodBodyMode: "throw-exception"
-]
-```
-
-```java
-default UserApiResponses.GetUserApiResponse getUser(String userId) {
-    throw new UnsupportedOperationException("Not implemented");
-}
-```
-
-**Values:**
-- `none` (default) — empty method body (abstract)
-- `throw-exception` — throws `UnsupportedOperationException`
-
----
-
-## 6. Generated Files Summary
-
-| File | Purpose | Edit? |
-|------|---------|-------|
-| `*ApiDelegate.java` | Interface to implement | **Implement** |
-| `*ApiController.java` | HTTP controller | **Never** |
-| `*ApiResponses.java` | Sealed response types | **Never** |
-
----
-
-## 7. Common Issues
-
-### Not Discovered by DI
-
-```java
-// Missing @Component
-public final class UserApiDelegateImpl implements UserApiDelegate { ... }
-
-// Fix: Add @Component
-@Component
-public final class UserApiDelegateImpl implements UserApiDelegate { ... }
-```
-
-### Wrong Return Type
-
-```java
-// Wrong: returning a raw DTO instead of the generated sealed response
-@Override
-public UserResponseTO getUser(String userId) { ... }
-
-// Correct: return the generated sealed response (Kora has no ResponseEntity)
-@Override
-public UserApiResponses.GetUserApiResponse getUser(String userId) { ... }
-```
-
-### Type Mismatch
-
-```java
-// OpenAPI has format: uuid
-// Delegate expects UUID, not String
-@Override
-public UserApiResponses.GetUserApiResponse getUser(UUID userId) { ... }
-```
-
----
-
-## 8. Related
-
-- [OpenAPI Controllers Reference](openapi-controllers-reference.md) — Generated controllers
-- [OpenAPI Response Reference](openapi-response-reference.md) — Response wrappers
-- [OpenAPI Validation Reference](openapi-validation-reference.md) — Kora validation annotations
-- [OpenAPI Codegen Reference](openapi-codegen-reference.md) — Full configuration
+- [Response Reference](openapi-response-reference.md) — what to return
+- [Controllers Reference](openapi-controllers-reference.md) — what calls you
+- [Models Reference](openapi-models-reference.md) — the parameter and body types
+- [Codegen Reference](openapi-codegen-reference.md) — the options used above

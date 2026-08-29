@@ -1,19 +1,49 @@
 ---
 name: kora-http-server
-description: "Kora HTTP server controllers on Undertow — @HttpController, @HttpRoute, @Path/@Query/@Header, @Json, HttpResponseEntity, HttpServerInterceptor. Use when building REST endpoints or wiring UndertowHttpServerModule."
+description: "Kora 2.0 HTTP server on Undertow — @HttpController + @HttpRoute handlers generated at compile time, parameter binding with @Path/@Query/@Header/@Cookie from io.koraframework.http.common.annotation, @Json bodies, HttpServerResponse / HttpResponseEntity / HttpServerResponseException, and HttpServerInterceptor (global via @Tag(HttpServer.class), scoped via @InterceptWith). Covers the UndertowPublicHttpServerModule / UndertowSystemHttpServerModule split and the httpServer + httpServer.system config sections. Use when building REST endpoints on Kora 2.0, wiring ports and probes, or porting a Kora 1.x controller. For authentication see kora-http-server-auth; for outbound calls see kora-http-client."
+license: Apache-2.0
+metadata:
+  kora-version: "2.x"
 ---
 
 # Kora HTTP Server
 
-> **Kora sub-skill — obey the [kora-v1 meta rules](../../SKILL.md) on every task:** **R0** ensure `.kora-agent/` docs+examples are cloned · **R1** read this sub-skill before writing code · **R2** Kora APIs only — no Spring/Micronaut/Quarkus, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
+> **Kora sub-skill — obey the [kora-v2 meta rules](../../SKILL.md) on every task:** **R0** ground the workspace on Kora 2.0 refs before starting (framework source at tag `2.0.0.RC1` + `kora-examples` at `migration/2.0`; `kora-docs` is 1.x only) · **R1** read this sub-skill before writing code · **R2** Kora 2.0 APIs only — no Spring/Micronaut/Quarkus, no Kora 1.x APIs, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
 
-Declarative HTTP request handlers compiled (not reflected) into a router. Annotate a `@Component` `@HttpController` with `@HttpRoute` methods; Kora generates the handler/router at build time via the annotation processor.
+| | |
+|---|---|
+| **Artifact** | `io.koraframework:http-server-undertow` (BOM `io.koraframework:kora-bom`, `2.0.0.RC1`) |
+| **Graph module** | `io.koraframework.http.server.undertow.UndertowPublicHttpServerModule` |
+| **Processor** | `io.koraframework:annotation-processors` (Java) · `io.koraframework:symbol-processors` (KSP) |
+| **Config sections** | `httpServer` (public) · `httpServer.system` (probes/metrics) · `httpServer.undertow` (transport) |
+| **Execution model** | Synchronous handlers on virtual threads. No `CompletionStage`, no `Mono`/`Flux`, no `suspend` |
 
-The base path lives on `@HttpRoute`, not on `@HttpController` — `@HttpController` takes no path argument.
+Handlers are generated at compile time. For each `@HttpController` the processor emits a
+`<Controller>Module` `@Module` interface with one `HttpServerRequestHandler` factory method per
+`@HttpRoute`, which the DI graph assembles into an `HttpServerRouter`. Nothing is reflective, and
+nothing is discovered at runtime — a route that does not compile does not exist.
 
 ---
 
-## Quick Start
+## Migrating from Kora 1.x — read this first
+
+Five changes cause silent or confusing failures. Each is covered in depth in the linked reference.
+
+| 1.x | 2.0 | If you skip it |
+|---|---|---|
+| `@Tag(HttpServerModule.class)` on a global interceptor | **`@Tag(HttpServer.class)`** | **Compiles clean, never runs.** `HttpServerModule` still exists so the annotation is legal, but nothing collects interceptors by that tag — the component is pruned from the graph without a warning. [Interceptors](references/interceptors-reference.md) |
+| `httpServer.publicApiHttpPort` / `privateApiHttpPort` | **`httpServer.port`** / **`httpServer.system.port`** | **Starts green on the wrong ports.** A stale key is just an unknown HOCON key: ignored silently, so each server falls back to its own default (8080 public, 8085 system) and probes hit nothing. [Configuration](references/configuration-reference.md) |
+| `intercept(Context, request, chain)` → `CompletionStage` | **`intercept(request, chain)` → `HttpServerResponse`** | Compile error. `Context` no longer exists anywhere in Kora. [Interceptors](references/interceptors-reference.md) |
+| `CompletionStage<T>` / `Mono<T>` / `suspend fun` handlers | plain synchronous return types | No reactive response mapper exists; KSP rejects `suspend` outright. [Response Types](references/response-types-reference.md) |
+| `writer.toByteArrayUnchecked(v)` in a `try/catch (IOException)` | **`writer.toByteArray(v)`**, no catch | `error: exception IOException is never thrown in body of corresponding try statement`. [Error Handling](references/error-handling-reference.md) |
+
+Every framework package moved from `ru.tinkoff.kora.*` to `io.koraframework.*`, and the HTTP
+packages were also **re-split** — a blind group rename leaves imports that do not resolve. See
+[Controller & Routing](references/controller-routing-reference.md#package-map).
+
+---
+
+## Quick start
 
 ### 1. Dependencies (Java)
 
@@ -21,22 +51,31 @@ The base path lives on `@HttpRoute`, not on `@HttpController` — `@HttpControll
 configurations {
     koraBom
     annotationProcessor.extendsFrom(koraBom)
+    compileOnly.extendsFrom(koraBom)
     implementation.extendsFrom(koraBom)
 }
 
 dependencies {
-    koraBom platform("ru.tinkoff.kora:kora-parent:1.2.19")
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"  // mandatory
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")   // koraVersion=2.0.0.RC1
+    annotationProcessor "io.koraframework:annotation-processors" // mandatory
 
-    implementation "ru.tinkoff.kora:http-server-undertow"
-    implementation "ru.tinkoff.kora:json-module"
-    implementation "ru.tinkoff.kora:config-hocon"
-    implementation "ru.tinkoff.kora:logging-logback"
+    implementation "io.koraframework:http-server-undertow"
+    implementation "io.koraframework:json-common"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
 }
 ```
 
-Kotlin uses KSP instead: `ksp "ru.tinkoff.kora:symbol-processors"`. All `ru.tinkoff.kora:*`
-artifacts inherit their version from the BOM — never pin them individually.
+Kotlin replaces the processor with KSP:
+
+```kotlin
+implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
+implementation("io.koraframework:http-server-undertow")
+```
+
+Java **25** is the floor — Kora 2.0 artifacts are class-file 69. Artifacts other than the BOM are
+never versioned individually.
 
 ### 2. Application graph
 
@@ -44,15 +83,20 @@ artifacts inherit their version from the BOM — never pin them individually.
 @KoraApp
 public interface Application extends
         HoconConfigModule,
-        JsonModule,
         LogbackModule,
-        UndertowHttpServerModule {
+        JsonModule,
+        UndertowPublicHttpServerModule {
 
     static void main(String[] args) {
         KoraApplication.run(ApplicationGraph::graph);
     }
 }
 ```
+
+`UndertowPublicHttpServerModule` extends `UndertowSystemHttpServerModule`, so plugging in the
+public module starts **both** servers: the application server on `httpServer.port` and the system
+server (readiness, liveness, metrics) on `httpServer.system.port`. `UndertowHttpServerModule` from
+1.x no longer exists.
 
 ### 3. Controller
 
@@ -68,13 +112,16 @@ public final class HelloController {
 }
 ```
 
+`@HttpController` optionally takes a **path prefix** (`String value() default ""`), prepended to
+every `@HttpRoute` path in the class. Leave it off and each route carries its full path.
+
 ### 4. Config (`application.conf`)
 
 ```hocon
 httpServer {
-  publicApiHttpPort = 8080   // application traffic
-  privateApiHttpPort = 8085  // metrics / probes
-  telemetry.logging.enabled = true
+  port = 8080
+  system.port = 8085
+  telemetry.logging.enabled = true   # off by default
 }
 ```
 
@@ -82,8 +129,8 @@ httpServer {
 
 ## CRUD controller
 
-Adapted from `kora-java-guide-http-server-app`. JSON requires `@Json` on the method **and** on the
-body parameter; optional inputs are marked `@Nullable` (Kotlin: a nullable type).
+JSON needs `@Json` on the method **and** on the body parameter. Optional inputs are `@Nullable`
+(Java, JSpecify) or a nullable type (Kotlin).
 
 ```java
 @Component
@@ -99,28 +146,27 @@ public final class UserController {
     @HttpRoute(method = HttpMethod.GET, path = "/users/{userId}")
     @Json
     public UserResponse getUser(@Path String userId) {
-        return userService.getUser(userId)
+        return userService.findById(userId)
                 .orElseThrow(() -> HttpServerResponseException.of(404, "User not found: " + userId));
     }
 
     @HttpRoute(method = HttpMethod.GET, path = "/users")
     @Json
-    public List<UserResponse> getUsers(@Nullable @Query("page") Integer page,
-                                       @Nullable @Query("size") Integer size) {
-        return userService.getUsers(page == null ? 0 : page, size == null ? 10 : size);
+    public List<UserResponse> listUsers(@Nullable @Query Integer page,
+                                        @Nullable @Query Integer size) {
+        return userService.findAll(page == null ? 0 : page, size == null ? 10 : size);
     }
 
     @HttpRoute(method = HttpMethod.POST, path = "/users")
     @Json
     public HttpResponseEntity<UserResponse> createUser(@Json UserRequest request) {
-        UserResponse user = userService.createUser(request);
-        return HttpResponseEntity.of(201, HttpHeaders.of("Location", "/users/" + user.id()), user);
+        var created = userService.create(request);
+        return HttpResponseEntity.of(201, HttpHeaders.of("Location", "/users/" + created.id()), created);
     }
 
     @HttpRoute(method = HttpMethod.DELETE, path = "/users/{userId}")
-    public HttpServerResponse deleteUser(@Path String userId) {
-        userService.deleteUser(userId);
-        return HttpServerResponse.of(204, HttpBody.empty());
+    public void deleteUser(@Path String userId) {
+        userService.delete(userId);   // void -> 200 with an empty body, no mapper needed
     }
 }
 ```
@@ -132,20 +178,22 @@ DTOs are plain records annotated `@Json`:
 
 ## Key annotations
 
-| Annotation | Level | Purpose |
-|---|---|---|
-| `@HttpController` | class | Marks an HTTP controller (no path argument) |
-| `@HttpRoute(method, path)` | method | Binds an `HttpMethod` + path to a handler |
-| `@Path` | parameter | Path segment `{name}`; name defaults to the argument name |
-| `@Query` | parameter | Query parameter; name defaults to the argument name |
-| `@Header` | parameter | Request header value |
-| `@Cookie` | parameter | Cookie value |
-| `@Json` | method / parameter | JSON serialization for the body |
-| `@Mapping(X.class)` | parameter / method | Custom request/response mapper |
-| `@InterceptWith(X.class)` | method / class | Apply an interceptor to a route or controller |
-| `@Nullable` | parameter | Marks a request parameter optional (Java) |
+| Annotation | Package | Level | Purpose |
+|---|---|---|---|
+| `@HttpController` | `io.koraframework.http.server.common.annotation` | class | Marks an HTTP controller (no path argument) |
+| `@HttpRoute(method, path)` | `io.koraframework.http.common.annotation` | method | Binds an HTTP method + path to a handler |
+| `@Path` | `io.koraframework.http.common.annotation` | parameter | Path segment `{name}` |
+| `@Query` | `io.koraframework.http.common.annotation` | parameter | Query parameter |
+| `@Header` | `io.koraframework.http.common.annotation` | parameter | Request header |
+| `@Cookie` | `io.koraframework.http.common.annotation` | parameter | Cookie |
+| `@InterceptWith(X.class)` | `io.koraframework.http.common.annotation` | class / method | Scoped interceptor (repeatable) |
+| `@Json` | `io.koraframework.json.common.annotation` | method / parameter | JSON body |
+| `@Mapping(X.class)` | `io.koraframework.common.annotation` | method / parameter | Custom request/response mapper |
+| `@Component`, `@Tag` | `io.koraframework.common.annotation` | class | Graph registration and tagging |
 
-`HttpMethod` values: `GET`, `POST`, `PUT`, `DELETE`, `PATCH`, `OPTIONS`, `HEAD`, `TRACE`.
+`HttpMethod` (`io.koraframework.http.common.HttpMethod`) is a holder of **`String` constants**, not
+an enum: `GET`, `HEAD`, `POST`, `PUT`, `DELETE`, `CONNECT`, `OPTIONS`, `TRACE`, `PATCH`, `QUERY`.
+`@HttpRoute(method = ...)` takes a `String`, so `method = "GET"` is equally valid.
 
 ---
 
@@ -153,40 +201,40 @@ DTOs are plain records annotated `@Json`:
 
 | Return type | Status | Notes |
 |---|---|---|
-| `String` / `byte[]` / `ByteBuffer` | 200 | Body written directly with the matching content type |
-| `T` + `@Json` on method | 200 | Body serialized to JSON |
-| `HttpResponseEntity<T>` + `@Json` | any | Body + custom status code + headers |
-| `HttpServerResponse` | any | Full control over status, headers and raw body |
+| `String` | 200 | `text/plain` |
+| `byte[]` / `ByteBuffer` | 200 | `application/octet-stream` |
+| `T` + `@Json` on the method | 200 | Serialized with the generated `JsonWriter<T>` |
+| `HttpResponseEntity<T>` (+ `@Json`) | any | Body plus status code and headers |
+| `HttpServerResponse` | any | Full control; returned as-is, no mapper involved |
+| `void` (Kotlin `Unit`) | 200 | Empty body; **no response mapper required** |
+| any other `T` | 200 | Needs an `HttpServerResponseMapper<T>` in the graph |
 
 ```java
-// JSON body with custom status and headers
 return HttpResponseEntity.of(201, HttpHeaders.of("Location", "/users/" + id), user);
-
-// Full manual control
 return HttpServerResponse.of(200, HttpHeaders.of("X-Trace", traceId), HttpBody.plaintext("OK"));
-return HttpServerResponse.of(204, HttpBody.empty());
+return HttpServerResponse.of(204);
 ```
 
-Async signatures are supported: Java `CompletionStage<T>` / `Mono<T>`, Kotlin `suspend fun`.
+**Reactive and suspending handlers are gone.** `http-server-common` ships no response mapper for
+`Mono`/`Flux`/`CompletionStage`, and the Kotlin processor rejects `suspend` with
+`Suspend methods are not supported by the HTTP server controller generator`. Run concurrent work
+inside a synchronous handler with `StructuredTaskScope`.
 
-See [Response Types](references/response-types-reference.md) for `HttpBody`, `HttpHeaders`,
-and custom `HttpServerResponseMapper`.
+See [Response Types](references/response-types-reference.md) for `HttpBody`, `HttpHeaders`
+and custom `HttpServerResponseMapper` (including the Kotlin nullability rule).
 
 ---
 
 ## Error handling
 
-Throw `HttpServerResponseException.of(code, message)` from a handler to short-circuit with a
-status code. Centralize cross-cutting error translation in a global interceptor (there is no
-dedicated "exception handler" type — error handling is an interceptor concern).
+Throw `HttpServerResponseException.of(code, message)` to short-circuit a handler.
+`HttpServerResponseException` **is itself an `HttpServerResponse`**, so an interceptor can simply
+return it. There is no `@ControllerAdvice` equivalent — centralized error translation is an
+interceptor concern.
 
 ```java
-@HttpRoute(method = HttpMethod.GET, path = "/users/{id}")
-@Json
-public UserResponse get(@Path String id) {
-    return userService.find(id)
-        .orElseThrow(() -> HttpServerResponseException.of(404, "Not found: " + id));
-}
+return userService.find(id)
+    .orElseThrow(() -> HttpServerResponseException.of(404, "Not found: " + id));
 ```
 
 See [Error Handling](references/error-handling-reference.md) for the global error interceptor.
@@ -195,61 +243,45 @@ See [Error Handling](references/error-handling-reference.md) for the global erro
 
 ## Interceptors
 
-`HttpServerInterceptor.intercept(Context, HttpServerRequest, InterceptChain)` returns
-`CompletionStage<HttpServerResponse>`. Call `chain.process(context, request)` to continue the
-chain; wrap it with `.whenComplete(...)` / `.exceptionally(...)` for after/error logic.
+```java
+public interface HttpServerInterceptor {
+    HttpServerResponse intercept(HttpServerRequest request, InterceptChain chain) throws Exception;
+
+    interface InterceptChain {
+        HttpServerResponse process(HttpServerRequest request) throws Exception;
+    }
+}
+```
+
+Synchronous, one request argument, `throws Exception` — so a plain `try/catch` around
+`chain.process(request)` is the way to handle downstream errors.
+
+| Scope | How | Applies to |
+|---|---|---|
+| **Server** | `@Tag(HttpServer.class)` + `@Component` | Every route on the **public** server. Any number of them |
+| **Controller** | `@InterceptWith(X.class)` on the controller class | Every route in that controller |
+| **Method** | `@InterceptWith(X.class)` on a `@HttpRoute` method | That route only |
 
 ```java
-@Tag(HttpServerModule.class)   // makes it global (only one global interceptor allowed)
+@Tag(HttpServer.class)   // io.koraframework.http.server.common.HttpServer
 @Component
 public final class LoggingInterceptor implements HttpServerInterceptor {
 
     private static final Logger log = LoggerFactory.getLogger(LoggingInterceptor.class);
 
     @Override
-    public CompletionStage<HttpServerResponse> intercept(Context context,
-                                                         HttpServerRequest request,
-                                                         InterceptChain chain) throws Exception {
+    public HttpServerResponse intercept(HttpServerRequest request, InterceptChain chain) throws Exception {
         long started = System.nanoTime();
-        return chain.process(context, request).whenComplete((response, error) -> {
-            long ms = (System.nanoTime() - started) / 1_000_000;
-            int code = response != null ? response.code() : 500;
-            log.info("{} {} -> {} ({} ms)", request.method(), request.path(), code, ms);
-        });
+        HttpServerResponse response = chain.process(request);
+        log.info("{} {} -> {} ({} ms)", request.method(), request.path(), response.code(),
+                (System.nanoTime() - started) / 1_000_000);
+        return response;
     }
 }
 ```
 
-Scopes:
-- **Global** — one interceptor tagged `@Tag(HttpServerModule.class)`, runs for every route.
-- **Controller** — `@InterceptWith(X.class)` on the controller class.
-- **Method** — `@InterceptWith(X.class)` on a single `@HttpRoute` method.
-
-Order: global -> controller -> method -> handler.
-
-See [Interceptors](references/interceptors-reference.md).
-
----
-
-## Authentication & Principal
-
-For custom authentication in Kora 1.2.x, use the interceptor pattern — **do NOT** use `Principal` as a controller parameter (not auto-wired in 1.2.x, causes 401→400 downgrade).
-
-**Pattern:** Global `@Tag(HttpServerModule)` interceptor → store principal in `Context` → read via `Principal.current()` in controller.
-
-See [Authentication & Principal](references/authentication-reference.md) for complete guide with examples.
-
----
-
-## Context Propagation
-
-Pass computed values from interceptor to controller (auth session, user profile, request metadata) via `ru.tinkoff.kora.common.Context`:
-
-1. Define `Context.Key<T>` static singleton
-2. Interceptor sets value **BEFORE** `chain.process()`
-3. Controller reads with null-check
-
-See [Context Propagation](references/context-propagation-reference.md) for complete guide.
+Server-scoped interceptors are **sorted by simple class name**, not by declaration order, and they
+never run on the system server. See [Interceptors](references/interceptors-reference.md).
 
 ---
 
@@ -257,23 +289,33 @@ See [Context Propagation](references/context-propagation-reference.md) for compl
 
 ```hocon
 httpServer {
-  publicApiHttpPort = 8080
-  privateApiHttpPort = 8085
-  privateApiHttpMetricsPath  = "/metrics"
-  privateApiHttpReadinessPath = "/system/readiness"
-  privateApiHttpLivenessPath  = "/system/liveness"
-  virtualThreadsEnabled = false   // true requires Java 24+
+  port = 8080
+  ignoreTrailingSlash = false
+  shutdownWait = "30s"
   maxRequestBodySize = "256MiB"
+
   telemetry {
-    logging { enabled = false }
-    metrics { enabled = true }
-    tracing { enabled = true }
+    logging.enabled = true    # default false
+    metrics.enabled = true    # default false
+    tracing.enabled = true    # default true (but false under httpServer.system)
+  }
+
+  system {
+    port = 8085
+    metricsPath   = "/metrics"
+    readinessPath = "/system/readiness"
+    livenessPath  = "/system/liveness"
+  }
+
+  undertow {
+    ioThreads = 4             # transport tuning lives in its own section
   }
 }
 ```
 
-Keep `publicApiHttpPort` (traffic) and `privateApiHttpPort` (metrics/probes) separate.
-See [Configuration](references/configuration-reference.md) for every key and env substitution.
+`telemetry.logging.enabled` and `telemetry.metrics.enabled` default to **`false`** everywhere — an
+example that claims to demonstrate them must switch them on. See
+[Configuration](references/configuration-reference.md) for every key that actually exists.
 
 ---
 
@@ -281,14 +323,14 @@ See [Configuration](references/configuration-reference.md) for every key and env
 
 | Reference | Covers |
 |---|---|
-| [Controller & Routing](references/controller-routing-reference.md) | `@HttpController`, `@HttpRoute`, path composition |
-| [Request Mapping](references/request-mapping-reference.md) | `@Path`, `@Query`, `@Header`, `@Cookie`, `@Json`, bodies, `@Mapping` |
-| [Response Types](references/response-types-reference.md) | `HttpServerResponse`, `HttpResponseEntity`, `HttpBody`, mappers |
-| [Interceptors](references/interceptors-reference.md) | `HttpServerInterceptor`, `@InterceptWith`, `@Tag`, order |
-| [Error Handling](references/error-handling-reference.md) | `HttpServerResponseException`, global error interceptor |
-| [Configuration](references/configuration-reference.md) | `httpServer` keys, ports, telemetry, env vars |
-| [Authentication & Principal](references/authentication-reference.md) | Custom auth via interceptor, `Principal` pattern (Kora 1.2.x) |
-| [Context Propagation](references/context-propagation-reference.md) | Passing values from interceptor to controller via `Context` |
+| [Controller & Routing](references/controller-routing-reference.md) | `@HttpController`, `@HttpRoute`, package map, generated code, routing/405/404 |
+| [Request Mapping](references/request-mapping-reference.md) | `@Path`/`@Query`/`@Header`/`@Cookie`, supported types, bodies, forms, `HttpServerRequestMapper` |
+| [Response Types](references/response-types-reference.md) | `HttpServerResponse`, `HttpResponseEntity`, `HttpBody`, response mappers, `@Component` rules |
+| [Interceptors](references/interceptors-reference.md) | `HttpServerInterceptor`, tag/scope, order, request enrichment |
+| [Error Handling](references/error-handling-reference.md) | `HttpServerResponseException`, global error interceptor, JSON error bodies |
+| [Configuration](references/configuration-reference.md) | `httpServer`, `httpServer.system`, `httpServer.undertow`, telemetry, port migration |
+| [Authentication](references/authentication-reference.md) | Where auth lives in 2.0 and how it plugs into this server |
+| [Request Enrichment](references/context-propagation-reference.md) | Passing values from an interceptor to a handler now that `Context` is gone |
 
 ## Assets
 
@@ -296,24 +338,31 @@ See [Configuration](references/configuration-reference.md) for every key and env
 |---|---|
 | [UserController.java](assets/templates/java/UserController.java.template) | CRUD controller (Java) |
 | [UserController.kt](assets/templates/kotlin/UserController.kt.template) | CRUD controller (Kotlin) |
-| [LoggingInterceptor.java](assets/templates/java/LoggingInterceptor.java.template) | Global logging interceptor (Java) |
-| [LoggingInterceptor.kt](assets/templates/kotlin/LoggingInterceptor.kt.template) | Global logging interceptor (Kotlin) |
-| [ErrorInterceptor.java](assets/templates/java/ErrorInterceptor.java.template) | Global error-to-JSON interceptor (Java) |
+| [LoggingInterceptor.java](assets/templates/java/LoggingInterceptor.java.template) | Server-scoped logging interceptor (Java) |
+| [LoggingInterceptor.kt](assets/templates/kotlin/LoggingInterceptor.kt.template) | Server-scoped logging interceptor (Kotlin) |
+| [ErrorInterceptor.java](assets/templates/java/ErrorInterceptor.java.template) | Server-scoped error-to-JSON interceptor (Java) |
+| [ErrorInterceptor.kt](assets/templates/kotlin/ErrorInterceptor.kt.template) | Server-scoped error-to-JSON interceptor (Kotlin) |
+
+`scripts/validate_controller.py` statically checks a controller or interceptor file for the
+regressions above (`--json` for machine output, `--help` for usage).
 
 ---
 
 ## Pitfalls
 
-| Symptom | Fix |
+| Symptom | Cause and fix |
 |---|---|
-| 404 on a valid URL | The `{var}` in `@HttpRoute path` must have a matching `@Path` argument; base path lives on `@HttpRoute`, not `@HttpController` |
-| Request body is null / not parsed | Add `@Json` on the method and on the body parameter, and depend on `json-module` |
-| `@HttpController("/api")` does not compile | `@HttpController` takes no value; put the prefix in each `@HttpRoute(path = "/api/...")` |
-| Required parameter throws when missing | Mark it `@Nullable` (Java) or use a nullable type (Kotlin) |
-| Global interceptor never runs | Add `@Tag(HttpServerModule.class)` and `@Component`; only one global interceptor is allowed |
-| Looking for `HttpServerResponse.ok()` builder | It does not exist — use `HttpServerResponse.of(...)` / `HttpResponseEntity.of(...)` |
-| Principal as controller parameter returns 400 | Kora 1.2.x doesn't auto-bridge `HttpServerPrincipalExtractor` — use interceptor + `Context` pattern (see [Authentication](references/authentication-reference.md)) |
-| Context.get() returns null in controller | Value must be set in interceptor BEFORE `chain.process()`; add null-check (see [Context Propagation](references/context-propagation-reference.md)) |
+| Global interceptor never runs, no error | Tagged `@Tag(HttpServerModule.class)` or left untagged. Both compile and are silently pruned. Use `@Tag(HttpServer.class)` |
+| Service starts fine but probes/LB hit nothing | Stale `publicApiHttpPort`/`privateApiHttpPort`. Unknown keys are ignored; rename to `port` / `system.port` |
+| `Address already in use` at startup | Stale keys collapsed both servers onto one port |
+| `No component found for dependency: X` on a mapper | `@Mapping(X.class)` injects the **concrete class** — `X` must be `@Component`, even with no constructor arguments |
+| `Multiple components match dependency: HttpServerResponseMapper<T>` | Two untagged `@Component` mappers for the same `T`. Keep one, or separate with `@Tag` |
+| `'apply' overrides nothing` (Kotlin) | Kora contracts are `@NullMarked`: `HttpServerResponseMapper<T>.apply` takes `result: T?` |
+| `Suspend methods are not supported…` | Remove `suspend`; use `StructuredTaskScope` for concurrency |
+| `exception IOException is never thrown…` | `JsonWriter.toByteArray` no longer declares a checked exception — delete the `catch` |
+| 404 on a valid URL | `{var}` has no matching `@Path` argument, or the `@HttpController` prefix is not what you think — in **Kotlin** the prefix is concatenated raw, so it must start with `/` and must not end with one |
+| `Cannot add path template …, matcher already contains an equivalent pattern` | Two routes on one method resolve to the same template (e.g. `/a/{x}` and `/a/{y}`) |
+| Metrics endpoint returns nothing useful | `telemetry.metrics.enabled` defaults to `false` — enable it explicitly |
 
 ---
 

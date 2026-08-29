@@ -1,38 +1,54 @@
 ---
 name: kora-database-jdbc
-description: "Kora JDBC repositories — @Repository extends JdbcRepository, @Query, @EntityJdbc, SQL macros, @Batch, transactions via inTx(), HikariCP under `db`. Use when adding a Postgres/MySQL/Oracle repository or debugging repository graph errors."
+description: "Kora 2.0 JDBC repositories — @Repository interfaces extending JdbcRepository, @Query with SQL macros (%{return#selects}, %{entity#inserts}, %{entity#where = @id}), @EntityJdbc from io.koraframework.database.jdbc.annotation, @Table/@Column/@Id/@Embedded/@Batch, UpdateCount, generated keys via @Id on the method, JdbcResultSetMapper/JdbcRowMapper/JdbcResultColumnMapper/JdbcParameterColumnMapper, and transactions through repository.executor().inTx(...) on JdbcExecutor. HikariCP pool configured under the jdbc config section. Use when adding a PostgreSQL/MySQL/Oracle repository to a Kora service, porting a 1.x repository, or debugging 'Config expected value, but got null at path ROOT.jdbc.username', suspend-repository rejections, or repository mapper graph errors."
+license: Apache-2.0
+metadata:
+  kora-version: "2.x"
 ---
 
 # Kora Database JDBC
 
-> **Kora sub-skill — obey the [kora-v1 meta rules](../../SKILL.md) on every task:** **R0** ensure `.kora-agent/` docs+examples are cloned · **R1** read this sub-skill before writing code · **R2** Kora APIs only — no Spring/Micronaut/Quarkus, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
+> **Kora sub-skill — obey the [kora-v2 meta rules](../../SKILL.md) on every task:** **R0** ground the workspace on Kora 2.0 refs before starting (framework source at tag `2.0.0.RC1` + `kora-examples` at `migration/2.0`; `kora-docs` is 1.x only) · **R1** read this sub-skill before writing code · **R2** Kora 2.0 APIs only — no Spring/Micronaut/Quarkus, no Kora 1.x APIs, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
 
-JDBC-based relational database access (PostgreSQL, MySQL, Oracle) with HikariCP. Repositories are `@Repository` interfaces whose implementations are generated at compile time by the annotation processor — no reflection, no runtime proxies.
+| | |
+|---|---|
+| **Artifact** | `io.koraframework:database-jdbc` (BOM `io.koraframework:kora-bom`) |
+| **Processor** | `annotationProcessor "io.koraframework:annotation-processors"` (Java) · `ksp("io.koraframework:symbol-processors")` (Kotlin) |
+| **Graph module** | `io.koraframework.database.jdbc.JdbcDatabaseModule` |
+| **Config section** | **`jdbc`** (was `db` in Kora 1.x) |
+| **Pool** | HikariCP `7.1.0`, pulled in transitively by `database-jdbc` |
 
-> **Prefer synchronous repository signatures** (`Entity`, `@Nullable Entity`, `List<Entity>`, `UpdateCount`). The blocking JDBC driver runs on the executor bound to `JdbcDatabase`; virtual threads or a fixed pool handle blocking efficiently. Reach for `CompletionStage`/`Mono` only when a downstream contract requires it.
+JDBC access to relational databases. A repository is a `@Repository` interface extending
+`JdbcRepository`; the annotation processor (Java) or KSP (Kotlin) generates
+`$<Name>_Impl` at compile time — no reflection, no runtime proxies.
+
+**Repository contracts are synchronous.** There is no reactive, `CompletionStage` or Kotlin
+`suspend` repository in Kora 2.0; blocking JDBC runs on virtual threads. A `suspend` repository
+method is rejected by KSP with *"Suspend methods are not supported by the repository generator."*
+R2DBC and Vert.x SQL do not exist in 2.0 at all.
 
 ---
 
-## Quick Start
+## Quick start
 
-### 1. Dependencies (`build.gradle`)
+### 1. Dependencies
 
 ```groovy
 dependencies {
-    koraBom platform("ru.tinkoff.kora:kora-parent:1.2.19")
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"  // mandatory: generates *RepositoryImpl
+    koraBom platform("io.koraframework:kora-bom:2.0.0.RC1")
+    annotationProcessor "io.koraframework:annotation-processors"   // mandatory: generates $<Name>_Impl
 
-    implementation "ru.tinkoff.kora:database-jdbc"
-    implementation "ru.tinkoff.kora:config-hocon"
-    implementation "ru.tinkoff.kora:logging-logback"
+    implementation "io.koraframework:database-jdbc"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
 
-    implementation "org.postgresql:postgresql:42.7.7"  // JDBC driver is required (not bundled)
+    implementation "org.postgresql:postgresql:42.7.7"              // the driver is NOT bundled
 }
 ```
 
-All `ru.tinkoff.kora:*` artifacts inherit their version from the `kora-parent` BOM — never pin them individually.
-
-Kotlin: use `ksp "ru.tinkoff.kora:symbol-processors"` instead of `annotationProcessor`, and `implementation("...")` syntax.
+Kotlin uses `ksp("io.koraframework:symbol-processors")` instead of `annotationProcessor`.
+Artifacts inherit their version from `kora-bom` — never pin `io.koraframework:*` individually.
+Java 25 is the floor: Kora 2.0 artifacts are compiled to class-file 69.
 
 ### 2. Plug the module into `@KoraApp`
 
@@ -41,24 +57,50 @@ Kotlin: use `ksp "ru.tinkoff.kora:symbol-processors"` instead of `annotationProc
 public interface Application extends
         HoconConfigModule,
         LogbackModule,
-        JdbcDatabaseModule { }
+        JdbcDatabaseModule {
+
+    static void main(String[] args) {
+        KoraApplication.run(ApplicationGraph::graph);
+    }
+}
 ```
 
-`JdbcDatabaseModule` provides `JdbcDatabase`, its `JdbcConnectionFactory`, and the `JdbcDatabaseConfig` reader bound to the `db` config section.
+`JdbcDatabaseModule` supplies the `JdbcDataSource` (which *is* the `JdbcExecutor`), the default
+column/row mappers from `JdbcMapperModule`, and the `JdbcDatabaseConfig` reader bound to the
+**`jdbc`** config section.
 
-### 3. Define an entity with `@EntityJdbc`
+### 3. Define an entity
 
 ```java
 @EntityJdbc
 @Table("entities")
 public record Entity(
-        @Id @Column("id") Long id,
+        @Id String id,
         @Column("value1") int field1,
-        @Column("value2") String value2,
-        @Nullable @Column("value3") String value3) {}
+        String value2,
+        @Nullable String value3) {}
 ```
 
-`@EntityJdbc` (from `ru.tinkoff.kora.database.jdbc`) makes the processor generate an optimized result converter. `@Table`/`@Column`/`@Id` come from `ru.tinkoff.kora.database.common.annotation`.
+- `@EntityJdbc` — `io.koraframework.database.jdbc.annotation.EntityJdbc` (**moved** in 2.0; it was
+  `…database.jdbc.EntityJdbc` in 1.x).
+- `@Table`, `@Column`, `@Id`, `@Embedded`, `@Batch`, `@Query`, `@Repository` — all in
+  `io.koraframework.database.common.annotation`, unchanged position.
+- `@Nullable` — JSpecify `org.jspecify.annotations.Nullable`. It is a **type-use** annotation, so on
+  a qualified nested type it goes before the simple name: `Entity.@Nullable FieldType`.
+- Without `@Column` a field maps to its `snake_lower_case` name.
+
+Kotlin uses use-site targets on data-class properties:
+
+```kotlin
+@EntityJdbc
+@Table("entities")
+data class Entity(
+    @field:Id val id: String,
+    @field:Column("value1") val field1: Int,
+    val value2: String,
+    val value3: String?
+)
+```
 
 ### 4. Repository with SQL macros
 
@@ -68,7 +110,7 @@ public interface EntityRepository extends JdbcRepository {
 
     @Query("SELECT %{return#selects} FROM %{return#table} WHERE id = :id")
     @Nullable
-    Entity findById(Long id);
+    Entity findById(String id);
 
     @Query("SELECT %{return#selects} FROM %{return#table}")
     List<Entity> findAll();
@@ -80,28 +122,36 @@ public interface EntityRepository extends JdbcRepository {
     UpdateCount update(Entity entity);
 
     @Query("DELETE FROM entities WHERE id = :id")
-    UpdateCount deleteById(Long id);
+    UpdateCount deleteById(String id);
 }
 ```
 
-### 5. Generated identifier (auto-increment / sequence)
+A macro target must be resolvable **in that method**: a parameter name, `return`, or a type
+parameter of the repository. `%{entity#table}` in a method that has no parameter called `entity`
+fails to compile with *"Query macro target `entity` cannot be resolved"* — write the table name
+literally there, or use `%{V#table}` in a generic base interface.
 
-When the database assigns the key, annotate the method with `@Id` and return the id type, or use `RETURNING`:
+### 5. Database-generated identifier
 
 ```java
-@Query("INSERT INTO %{entity#inserts-= @id}")
+@Query("INSERT INTO entities_sequence(name) VALUES (:entity.name)")
 @Id
-Long insert(Entity entity);          // returns DB-generated key (works for @Batch too)
+Long insertGenerated(Entity entity);              // via Statement.getGeneratedKeys()
 
-@Query("INSERT INTO entities(name) VALUES (:entity.name) RETURNING id")
-long insertReturning(Entity entity); // explicit RETURNING projection
+@Query("INSERT INTO entities_sequence(name) VALUES (:entity.name)")
+@Id
+List<Long> insertGenerated(@Batch List<Entity> entity);   // works for @Batch too
+
+@Query("INSERT INTO entities_sequence(name) VALUES (:entity.name) RETURNING id")
+long insert(Entity entity);                       // explicit RETURNING projection
 ```
 
-### 6. Transactions in a service
+### 6. Transactions
 
 ```java
 @Component
 public final class EntityService {
+
     private final EntityRepository repository;
 
     public EntityService(EntityRepository repository) {
@@ -109,7 +159,7 @@ public final class EntityService {
     }
 
     public List<Entity> saveAll(Entity one, Entity two) {
-        return repository.getJdbcConnectionFactory().inTx(() -> {
+        return repository.executor().inTx(() -> {
             repository.insert(one);
             repository.insert(two);
             return List.of(one, two);
@@ -118,77 +168,109 @@ public final class EntityService {
 }
 ```
 
-Every repository method called inside the `inTx()` lambda joins the same transaction; an exception rolls the whole block back. `JdbcConnectionFactory` is reachable via `repository.getJdbcConnectionFactory()` or by injecting `JdbcConnectionFactory` directly.
+`JdbcRepository.executor()` returns the `JdbcExecutor` (**replaces** 1.x
+`getJdbcConnectionFactory()`). Every repository call inside the lambda joins the same transaction;
+a thrown exception rolls the whole block back.
+
+**Kotlin needs an explicit SAM constructor** — the `inTx` overloads no longer infer from a bare
+lambda:
+
+```kotlin
+val saved = repository.executor().inTx(JdbcExecutor.SqlSupplier {
+    repository.insert(one)
+    listOf(one)
+})
+
+repository.executor().inTx(JdbcExecutor.SqlRunnable {
+    repository.deleteAll()
+})
+```
+
+Without it the compiler reports `Cannot infer type for type parameter T` or
+`Overload resolution ambiguity` — neither mentions transactions.
 
 ---
 
 ## Configuration (`application.conf`)
 
 ```hocon
-db {
-    jdbcUrl = ${POSTGRES_JDBC_URL}   // required, e.g. "jdbc:postgresql://localhost:5432/postgres"
+jdbc {
+    jdbcUrl = ${POSTGRES_JDBC_URL}   // required
     username = ${POSTGRES_USER}      // required
     password = ${POSTGRES_PASS}      // required
-    poolName = "kora"                // required: Hikari pool name
+    poolName = "kora"                // required
     maxPoolSize = 10
     minIdle = 0
     connectionTimeout = "10s"        // durations are strings, not millisecond numbers
     idleTimeout = "10m"
     maxLifetime = "15m"
-    telemetry.logging.enabled = false
-    telemetry.metrics.enabled = true
-    telemetry.tracing.enabled = true
+    initializationFailTimeout = "10s"  // omit to skip the startup connectivity check entirely
+    telemetry.logging.enabled = true    // default false
+    telemetry.metrics.enabled = true    // default false
 }
 ```
 
-Externalize every credential with `${VAR}` / `${?VAR}` / `${?VAR:default}`. Full key list and YAML form: [database-jdbc-config-reference.md](references/database-jdbc-config-reference.md).
+The section is **`jdbc`**, not `db`. A leftover `db { }` block compiles fine and dies at startup
+with `ConfigValueException: Config expected value, but got null at path: 'ROOT.jdbc.username'` —
+which names a section your config does not contain. The same rename applies to HOCON embedded in
+test sources through `KoraConfigModification.ofString("""…""")`.
+
+Full key list, telemetry sub-keys and the YAML form:
+[database-jdbc-config-reference.md](references/database-jdbc-config-reference.md).
 
 ---
 
 ## SQL macros
 
-Macros expand at compile time into SQL the developer could have written by hand. Target a method argument by name or the result via `return`; separate target and command with `#`.
+Macros expand at compile time into SQL you could have written by hand. `#` separates the target
+from the command; the target is a method parameter name, `return`, a nested path
+(`return.user`), or a repository/method type parameter.
 
-| Macro | Expands to | Example result |
-|-------|-----------|----------------|
-| `%{return#selects}` | column list of the return entity | `id, value1, value2, value3` |
-| `%{return#table}` / `%{entity#table}` | `@Table` name (or snake_case class name) | `entities` |
-| `%{entity#inserts}` | full `INSERT INTO table(cols) VALUES(:entity...)` | see below |
-| `%{entity#updates}` | `col = :entity.field, ...` for `SET` | `value1 = :entity.field1, ...` |
-| `%{entity#where = @id}` | `WHERE` by the `@Id` field(s) | `id = :entity.id` |
-| `%{id#where}` | `WHERE` for a composite-key argument named `id` | `a = :id.a AND b = :id.b` |
+| Macro | Expands to |
+|-------|-----------|
+| `%{entity#table}` | `@Table` value, else the `snake_case` class name |
+| `%{entity#table as e}` | the same, plus an SQL alias — other macros then qualify columns with it |
+| `%{return#selects}` | selected columns, adding `AS` aliases when a `table as` alias is in play |
+| `%{entity#columns}` | bare column names |
+| `%{entity#values}` | named bind parameters (`:entity.id, :entity.field1, …`) |
+| `%{entity#inserts}` | `table(columns) VALUES (:values)` |
+| `%{entity#updates}` | `column = :field` assignments, **`@Id` fields excluded automatically** |
+| `%{entity#where}` | `column = :field` predicates joined with `AND` |
 
-Field enumeration after a command: `=` keeps only the listed fields, `-=` excludes them; the `@id` keyword refers to the `@Id` field(s).
+Those eight are the whole set — `table`, `table as`, `selects`, `columns`, `values`, `inserts`,
+`updates`, `where`. There is no `deletes` command; write `DELETE FROM … WHERE …` yourself.
+
+Field enumeration follows the command: `=` keeps only the listed fields, `-=` excludes them, and
+`@id` refers to the `@Id` field(s).
 
 ```java
-@Query("INSERT INTO %{entity#inserts-= @id}")   // every column except the @Id
+@Query("INSERT INTO %{entity#inserts -= @id}")           // every column except the @Id
 @Id Long insert(Entity entity);
 
-@Query("INSERT INTO %{entity#inserts = value1,value2}")  // only these columns
-UpdateCount insertPartial(Entity entity);
-```
+@Query("INSERT INTO %{entity#table}(%{entity#columns -= @id}) VALUES (%{entity#values -= @id})")
+UpdateCount insertExplicit(Entity entity);
 
-The only macro commands are `table`, `selects`, `inserts`, `updates`, `where`. There is no `deletes` command — write `DELETE FROM ... WHERE ...` explicitly.
+@Query("INSERT INTO %{entity#inserts} ON CONFLICT (%{entity#selects = @id}) DO UPDATE SET %{entity#updates}")
+UpdateCount upsert(Entity entity);
+```
 
 ---
 
 ## Repository method signatures
 
-`T` is the return type, `List<T>`, `Void`, or `UpdateCount`.
-
 | Signature | Use |
 |-----------|-----|
-| `T find(...)` | row must exist (throws otherwise) |
-| `@Nullable T find(...)` | optional single row — **preferred** over `Optional` (no allocation) |
-| `Optional<T> find(...)` | optional single row, Optional flavor |
+| `T find(...)` | single row; when the row is absent the generated code throws `NullPointerException: Result mapping is expected non-null, but was null` |
+| `@Nullable T find(...)` | optional single row — **preferred** over `Optional` |
+| `Optional<T> find(...)` | optional single row, `Optional` flavour |
 | `List<T> find(...)` | zero-or-many (empty list, never null) |
-| `UpdateCount write(...)` | number of affected rows for INSERT/UPDATE/DELETE |
+| `UpdateCount write(...)` | affected-row count; `UpdateCount.value()` is a `long` |
 | `void write(...)` | result not needed |
-| `@Id Long insert(...)` | database-generated identifier |
-| `CompletionStage<T>` | async — requires an `Executor` bound to `JdbcDatabase` |
-| `Mono<T>` | reactive — add `io.projectreactor:reactor-core` and an `Executor` |
+| `@Id Long insert(...)` / `@Id List<Long> insert(@Batch …)` | database-generated identifiers |
+| `int[]` / `long[]` write(`@Batch` …) | raw per-statement batch counts |
 
-Kotlin adds `suspend fun ...(): T` and `T?` / `Unit` returns.
+Kotlin writes the same set with `T?` and `Unit`. **`suspend` is rejected**, and so are
+`Mono`/`Flux`/`CompletionStage` — those contracts no longer exist.
 
 ---
 
@@ -196,12 +278,13 @@ Kotlin adds `suspend fun ...(): T` and `T?` / `Unit` returns.
 
 | Topic | File |
 |-------|------|
-| `@Repository`, `@Query`, macros, batch, inheritance, multiple databases | [repository-pattern-reference.md](references/repository-pattern-reference.md) |
-| `@Table`/`@Column`/`@Id`/`@Embedded`, naming strategy, type mapping, generated ids | [entity-mapping-reference.md](references/entity-mapping-reference.md) |
-| `inTx()`, post-commit/rollback actions, isolation, locking | [transactions-reference.md](references/transactions-reference.md) |
-| `JdbcResultSetMapper`/`JdbcRowMapper`/`JdbcResultColumnMapper`/`JdbcParameterColumnMapper`, enum/array/JSONB | [custom-mappers-reference.md](references/custom-mappers-reference.md) |
-| HikariCP config, drivers, telemetry, YAML | [database-jdbc-config-reference.md](references/database-jdbc-config-reference.md) |
-| HikariCP pool tuning by workload, leak detection | [connection-pool-reference.md](references/connection-pool-reference.md) |
+| `@Repository`, `@Query`, macros, batch, generated ids, joins, generic base repos, second database | [repository-pattern-reference.md](references/repository-pattern-reference.md) |
+| `@Table`/`@Column`/`@Id`/`@Embedded`, naming strategy, supported types, JSONB, nullability | [entity-mapping-reference.md](references/entity-mapping-reference.md) |
+| `executor().inTx(...)`, isolation levels, post-commit/rollback actions, locking, Kotlin SAM | [transactions-reference.md](references/transactions-reference.md) |
+| The four mapper contracts, enum/array/JSONB mappers, `@Mapping`, Kotlin nullability | [custom-mappers-reference.md](references/custom-mappers-reference.md) |
+| When a mapper is constructed vs injected, `@Component` rules, generic mapper modules, batch limits | [custom-mappers-advanced-reference.md](references/custom-mappers-advanced-reference.md) |
+| Full `jdbc` config key list, telemetry defaults, drivers, YAML | [database-jdbc-config-reference.md](references/database-jdbc-config-reference.md) |
+| HikariCP pool tuning, leak detection, pool troubleshooting | [connection-pool-reference.md](references/connection-pool-reference.md) |
 | Flyway / Liquibase schema migrations | [migrations-reference.md](references/migrations-reference.md) |
 
 ---
@@ -214,16 +297,19 @@ Kotlin adds `suspend fun ...(): T` and `T?` / `Unit` returns.
 | `jdbc-entity-composite-id.{java,kt}.template` | entity with an `@Embedded` composite key |
 | `jdbc-crud-single-id-repository.{java,kt}.template` | full CRUD repository (single id) |
 | `jdbc-crud-composite-id-repository.{java,kt}.template` | full CRUD repository (composite id) |
-| `jdbc-crud-abstract-macros-repository.java.template` / `jdbc-crud-abstract-single-id-macros-repository.kt.template` | reusable generic CRUD base interface |
+| `jdbc-crud-abstract-macros-repository.java.template`, `jdbc-crud-abstract-single-id-macros-repository.kt.template` | reusable generic CRUD base interface |
 | `jdbc-repository-with-enum-mapper.{java,kt}.template` | entity + enum column/parameter mappers |
-| `jdbc-repository-with-array-mapper.java.template` | PostgreSQL array parameter mapper |
-| `jdbc-service-with-transactions.java.template` | `@Component` service using `inTx()` |
+| `jdbc-repository-with-array-mapper.java.template` | PostgreSQL array column mapper |
+| `jdbc-service-with-transactions.java.template` | `@Component` service using `executor().inTx()` |
 
 Generate a starter entity + repository:
 
 ```bash
-python scripts/generate_repository.py --entity User --table users --id-type Long --lang java --package com.example.model
+python3 scripts/generate_repository.py --entity User --table users --id-type Long --lang java \
+    --package com.example.repository --dry-run
 ```
+
+Drop `--dry-run` to write the files.
 
 ---
 
@@ -231,23 +317,21 @@ python scripts/generate_repository.py --entity User --table users --id-type Long
 
 | Symptom | Fix |
 |---------|-----|
-| Graph build: "required dependency JdbcRepository / Entity not found" | `@KoraApp` must `extend JdbcDatabaseModule`; entity needs `@EntityJdbc` |
-| `*RepositoryImpl` not generated | annotation processor missing (`annotation-processors` / KSP `symbol-processors`) |
-| Generated id is always null | use `@Id` on the method (and exclude it via `inserts-= @id`) or add `RETURNING id` |
-| Macro renders literally / fails | use `#` not `.` (`%{entity#inserts}`); only `table/selects/inserts/updates/where` exist |
-| `List<T>` parameter treated as one value | annotate with `@Batch` |
-| Driver `ClassNotFoundException` | add the JDBC driver dependency (it is not bundled) |
-| Operations outside `inTx()` not rolled back | wrap all related calls in one `inTx()` block |
+| `Config expected value, but got null at path: 'ROOT.jdbc.username'` | the config section is `jdbc`, not `db` — including inside `KoraConfigModification.ofString(...)` in tests |
+| `cannot find symbol: class EntityJdbc` after a 1.x port | `@EntityJdbc` moved to `io.koraframework.database.jdbc.annotation` |
+| KSP: *"Suspend methods are not supported by the repository generator"* | repositories are synchronous; removing `suspend` propagates up the call chain — see [transactions-reference.md](references/transactions-reference.md#kotlin-removing-suspend) |
+| `Cannot infer type for type parameter T` / `Overload resolution ambiguity` on `inTx` | Kotlin needs `JdbcExecutor.SqlSupplier { … }` or `JdbcExecutor.SqlRunnable { … }` |
+| `getJdbcConnectionFactory()` does not exist | it is `executor()`, returning `JdbcExecutor` |
+| Kotlin mapper: `'set' overrides nothing` / `'apply' overrides nothing` | the 2.0 contracts are JSpecify-marked; declare the parameter `T?` |
+| `No component found for dependency: JdbcResultColumnMapper<X>` | the mapper is injected, not constructed — add `@Component` (see [custom-mappers-advanced-reference.md](references/custom-mappers-advanced-reference.md)) |
+| `Multiple components match dependency` for a mapper | two graph components produce the same mapper type — drop the redundant `@Component`, or disambiguate with `@Mapping`/`@Tag` |
+| `Query macro target 'entity' cannot be resolved` | the macro target must be a parameter of *that* method; use a literal table name or `%{V#table}` |
+| `$<Name>_Impl` not generated | the processor is missing (`annotation-processors` / KSP `symbol-processors`) |
+| `SQL query placeholder has no matching method parameter: :id / Available parameters: - :arg0` | stale incremental build — the processor read the interface from a class file without parameter names; `./gradlew clean` or `--rerun-tasks` |
+| Metrics/logs for queries never appear | `telemetry.logging.enabled` and `telemetry.metrics.enabled` default to **false** in 2.0 |
 | `connectionTimeout = 30000` ignored | durations are strings: `"10s"`, `"10m"` |
-| @Column on every field looks mandatory | Column names default to `snake_lower_case` — `@Column` only for non-standard names (see [Custom Mappers Advanced](references/custom-mappers-advanced-reference.md)) |
-| @Mapping required for custom types | `@Component` mappers are auto-discovered by type (see [Custom Mappers Advanced](references/custom-mappers-advanced-reference.md)) |
-| @Batch with RETURNING doesn't return rows | Use `default` method with `inTx()` for multi-row INSERT…RETURNING (see [Custom Mappers Advanced](references/custom-mappers-advanced-reference.md)) |
-
----
-
-## Column Mappers
-
-For advanced mapper patterns (auto-discovery, generic enum mappers, @Batch limitations), see [Custom Mappers Advanced](references/custom-mappers-advanced-reference.md).
+| Driver `ClassNotFoundException` | add the JDBC driver dependency; it is not bundled |
+| Looking for an R2DBC or Vert.x SQL module | neither exists in 2.0; synchronous JDBC on virtual threads is the only option |
 
 ---
 
@@ -255,7 +339,9 @@ For advanced mapper patterns (auto-discovery, generic enum mappers, @Batch limit
 
 | Component | Version |
 |-----------|---------|
-| Kora BOM (`kora-parent`) | 1.2.19 |
-| Java | 21+ |
+| Kora BOM (`io.koraframework:kora-bom`) | `2.0.0.RC1` from `mavenCentral()` |
+| Java | 25 (hard floor — artifacts are class-file 69) |
+| Kotlin / KSP | 2.4.10 / 2.3.11 |
 | Gradle | 9+ |
-| PostgreSQL driver | 42.7.x |
+| HikariCP | 7.1.0 (transitive via `database-jdbc`) |
+| PostgreSQL driver | 42.7.x — the framework tests against `42.7.13`; the migrated examples pin `42.7.7` |

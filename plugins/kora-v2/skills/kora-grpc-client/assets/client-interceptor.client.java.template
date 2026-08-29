@@ -1,35 +1,66 @@
 package ${package};
 
-import io.grpc.*;
+import io.grpc.CallOptions;
+import io.grpc.Channel;
+import io.grpc.ClientCall;
+import io.grpc.ClientInterceptor;
+import io.grpc.ForwardingClientCall;
+import io.grpc.Metadata;
+import io.grpc.MethodDescriptor;
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Tag;
 import ${proto_package}.${service_name}Grpc;
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.common.Tag;
 
 /**
- * Client interceptor for ${service_name} gRPC service.
- * Use for logging, metrics, authentication, or other cross-cutting concerns.
+ * Client interceptor scoped to the ${service_name} channel (Kora 2.0).
+ *
+ * The tag MUST be the protoc-generated outer class ${service_name}Grpc — that is the tag
+ * ManagedChannelLifecycle uses to collect All&lt;ClientInterceptor&gt;. Tagging the stub class,
+ * a Kora module class, or leaving the tag off compiles and starts cleanly, and the interceptor
+ * simply never runs. Cover it with a test that asserts the header arrives.
+ *
+ * Kora appends its own GrpcClientTelemetryInterceptor and GrpcClientConfigInterceptor after the
+ * collected components; neither can be removed from the graph.
+ *
+ * ${service_name}AuthConfig below is an ordinary Kora config interface — create it next to this
+ * class and back it with the auth.apiKey section of application.conf:
+ *
+ * <pre>{@code
+ * @ConfigSource("auth.apiKey")   // io.koraframework.config.common.annotation.ConfigSource
+ * public interface ${service_name}AuthConfig {
+ *     String value();
+ * }
+ * }</pre>
  */
 @Tag(${service_name}Grpc.class)
 @Component
-public class ${service_name}ClientInterceptor implements ClientInterceptor {
+public final class ${service_name}ClientInterceptor implements ClientInterceptor {
+
+    private static final Metadata.Key<String> AUTHORIZATION =
+        Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
+
+    // gRPC metadata is the only auth mechanism for a Kora gRPC client — there is no
+    // @HttpClient-style auth annotation. Inject the credential source (e.g. a @ConfigSource
+    // interface) and read it per call; the interceptor outlives every individual token.
+    private final ${service_name}AuthConfig authConfig;
+
+    public ${service_name}ClientInterceptor(${service_name}AuthConfig authConfig) {
+        this.authConfig = authConfig;
+    }
 
     @Override
     public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
-        MethodDescriptor<ReqT, RespT> method,
-        CallOptions callOptions,
-        Channel next
-    ) {
-        // Add custom logic here (logging, metrics, tracing, etc.).
-        // To add metadata headers, wrap the call and put headers in start():
-        //
-        // return new ForwardingClientCall.SimpleForwardingClientCall<>(next.newCall(method, callOptions)) {
-        //     @Override
-        //     public void start(Listener<RespT> responseListener, Metadata headers) {
-        //         headers.put(Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER), "Bearer " + token);
-        //         super.start(responseListener, headers);
-        //     }
-        // };
-
-        return next.newCall(method, callOptions);
+            MethodDescriptor<ReqT, RespT> method,
+            CallOptions callOptions,
+            Channel next) {
+        // The call has not been sent yet here — headers must be written in start(), before
+        // super.start(), or they never reach the wire.
+        return new ForwardingClientCall.SimpleForwardingClientCall<>(next.newCall(method, callOptions)) {
+            @Override
+            public void start(Listener<RespT> responseListener, Metadata headers) {
+                headers.put(AUTHORIZATION, authConfig.value());
+                super.start(responseListener, headers);
+            }
+        };
     }
 }

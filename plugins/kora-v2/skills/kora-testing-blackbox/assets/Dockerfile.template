@@ -1,12 +1,24 @@
-# Base Dockerfile for a Kora Java application
-# Uses the pre-built distribution from build/distributions/
+# Runtime image for a Kora 2.0 application (Java or Kotlin).
 #
-# Before building the image, run:
-#   ./gradlew installDist
+# Packages the archive Gradle already produced - it does not build anything.
+# Before building the image:
 #
-# Or use the multi-stage Dockerfile.self-build.template to build inside Docker
+#   ./gradlew distTar
 #
-# JDK: 25 (Jammy — Ubuntu 22.04 for full compatibility)
+# distTar produces build/distributions/<archiveFileName>. installDist produces an
+# exploded build/install/ directory instead and does NOT satisfy the COPY below.
+#
+# Requires this in the application module's build.gradle:
+#
+#   application {
+#       applicationName = "application"
+#       mainClass = "com.example.Application"
+#   }
+#   distTar { archiveFileName = "application.tar" }
+#
+# JDK 25 is a hard floor for Kora 2.0: kora-bom declares java.version = 25 and the
+# published artifacts are class-file major 69. A 21-jre base fails with
+# UnsupportedClassVersionError before the application logs anything.
 
 ARG RUN_IMAGE=eclipse-temurin:25-jre-jammy
 FROM ${RUN_IMAGE}
@@ -14,19 +26,21 @@ FROM ${RUN_IMAGE}
 ARG TARGET_DIR=/opt/app
 ARG SOURCE_DIR=build/distributions
 
-COPY $SOURCE_DIR/*.tar application.tar
+COPY $SOURCE_DIR/application.tar /application.tar
 
-RUN mkdir $TARGET_DIR && \
-    tar -xf application.tar -C $TARGET_DIR && \
-    rm application.tar
+RUN mkdir -p $TARGET_DIR \
+ && tar -xf /application.tar -C $TARGET_DIR \
+ && rm /application.tar
 
-# Create a non-root user for security
+# Run as a non-root user
 ARG DOCKER_USER=app
 RUN groupadd -r $DOCKER_USER && useradd -rg $DOCKER_USER $DOCKER_USER
 USER $DOCKER_USER
 
-# Ports: 8080 (public API), 8085 (private API: /system/liveness, /system/readiness, /metrics)
+# 8080 - public API (httpServer.port)
+# 8085 - system API (httpServer.system.port): /system/readiness, /system/liveness, /metrics
 EXPOSE 8080/tcp
 EXPOSE 8085/tcp
 
-CMD [ "/opt/app/application/bin/application" ]
+# <TARGET_DIR>/<applicationName>/bin/<applicationName>
+CMD ["/opt/app/application/bin/application"]

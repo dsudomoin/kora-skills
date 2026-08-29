@@ -1,12 +1,21 @@
 package ${package}
 
-import ru.tinkoff.kora.common.KoraApp
-import ru.tinkoff.kora.application.graph.KoraApplication
-import ru.tinkoff.kora.config.hocon.HoconConfigModule
-import ru.tinkoff.kora.opentelemetry.tracing.exporter.grpc.OpentelemetryGrpcExporterModule
+import io.koraframework.application.graph.KoraApplication
+import io.koraframework.common.annotation.KoraApp
+import io.koraframework.config.hocon.HoconConfigModule
+import io.koraframework.opentelemetry.tracing.exporter.grpc.OpentelemetryGrpcExporterModule
 
 /**
- * Application graph with the OTLP gRPC tracing exporter connected.
+ * Application graph with the OTLP/gRPC tracing exporter connected.
+ *
+ * Extend exactly one exporter module. For OTLP/HTTP replace
+ * [OpentelemetryGrpcExporterModule] with
+ * `io.koraframework.opentelemetry.tracing.exporter.http.OpentelemetryHttpExporterModule`;
+ * the two are alternatives, not complements.
+ *
+ * Both extend `OpentelemetryTracingModule`, so `Tracer` and `KoraTracer` come with them.
+ * Tracing is on by default -- the endpoint in `application.conf` is what decides whether
+ * spans actually leave the process.
  */
 @KoraApp
 interface Application : HoconConfigModule, OpentelemetryGrpcExporterModule

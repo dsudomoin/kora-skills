@@ -1,127 +1,400 @@
 {
   "evals": [
     {
-      "id": "kora-kafka-consumer-basic-listener",
-      "skills": ["kora-kafka-consumer"],
-      "query": "In my Kora service, consume plain String messages from the topic configured at kafka.consumer.userEvents and log each value.",
-      "expected_behavior": [
-        "Annotates a method on a @Component class with @KafkaListener(\"kafka.consumer.userEvents\")",
-        "Uses the void process(String value) signature for simple value consumption",
-        "Adds KafkaModule to the @KoraApp interface via extends (not implements)",
-        "Provides application.conf with kafka.consumer.userEvents.topics and driverProperties bootstrap.servers",
-        "Does not use field injection or @Autowired-style wiring; relies on Kora constructor injection"
+      "id": "kora-kafka-consumer-basic-listener-java",
+      "skills": [
+        "kora-kafka-consumer"
       ],
-      "tags": ["consumer", "basic"]
+      "query": "I have a Kora 2.0 Java service. Consume plain String messages from the topic configured at kafka.consumer.userEvents and log each value.",
+      "expected_behavior": [
+        "Annotates a method on a @Component class with @KafkaListener(\"kafka.consumer.userEvents\") imported from io.koraframework.kafka.common.annotation",
+        "Imports @Component from io.koraframework.common.annotation",
+        "Uses the void process(String value) signature and does not declare a Consumer parameter",
+        "Adds io.koraframework:kafka through the io.koraframework:kora-bom platform, plus annotationProcessor \"io.koraframework:annotation-processors\"",
+        "Adds KafkaModule to the @KoraApp interface with extends, and does not add the generated <Class>Module to that extends clause",
+        "Creates application.conf with kafka.consumer.userEvents.topics and driverProperties bootstrap.servers",
+        "Does not use the ru.tinkoff.kora group, the kora-parent BOM or any ru.tinkoff.kora.* import",
+        "Uses constructor injection for any collaborator; no field injection"
+      ],
+      "tags": [
+        "consumer",
+        "basic",
+        "java"
+      ]
+    },
+    {
+      "id": "kora-kafka-consumer-basic-listener-kotlin",
+      "skills": [
+        "kora-kafka-consumer"
+      ],
+      "query": "Set up a Kafka listener in my Kora 2.0 Kotlin service that reads String values from kafka.consumer.userEvents.",
+      "expected_behavior": [
+        "Applies the com.google.devtools.ksp plugin and adds ksp(\"io.koraframework:symbol-processors\") — not annotationProcessor and not kapt",
+        "Adds implementation(\"io.koraframework:kafka\") with the io.koraframework:kora-bom platform",
+        "Declares a plain `fun process(value: String)` annotated @KafkaListener on a @Component class",
+        "Does not declare the listener as `suspend fun`, does not return a reactive type, and does not wrap the body in runBlocking or withContext(Dispatchers.IO)",
+        "Adds KafkaModule to the @KoraApp interface",
+        "Does not use ru.tinkoff.kora.* imports"
+      ],
+      "tags": [
+        "consumer",
+        "basic",
+        "kotlin"
+      ]
+    },
+    {
+      "id": "kora-kafka-consumer-no-suspend-contract",
+      "skills": [
+        "kora-kafka-consumer"
+      ],
+      "query": "Port this Kora 1.x Kotlin listener to Kora 2.0: `@KafkaListener(\"kafka.consumer.orders\") suspend fun process(record: ConsumerRecord<String, String>) = withContext(Dispatchers.IO) { repo.save(record.value()) }`",
+      "expected_behavior": [
+        "Removes `suspend` and produces a plain `fun process(record: ConsumerRecord<String, String>)`",
+        "Removes withContext(Dispatchers.IO) / runBlocking entirely rather than replacing it with another coroutine construct",
+        "Explains that the single-ConsumerRecord shape has no suspend handling in KSP at all, so this exact listener generates Kotlin that does not compile; and that listeners run on the poll thread, so dispatching to another pool adds overhead without benefit",
+        "Keeps the repository call as a direct synchronous call",
+        "Does not introduce kotlinx-coroutines as a dependency to make the listener compile",
+        "Does not suggest Mono, Flux or CompletionStage as a listener return type, and if it mentions them, says they are silently ignored rather than rejected — the container never awaits the result and commits the offset as soon as the method returns"
+      ],
+      "tags": [
+        "consumer",
+        "migration",
+        "kotlin",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-kafka-consumer-no-context-parameter",
+      "skills": [
+        "kora-kafka-consumer"
+      ],
+      "query": "My Kora 1.x listener took a Context parameter to read an MDC value: `void process(String value, Context context)`. How do I do that in Kora 2.0?",
+      "expected_behavior": [
+        "States that Context has been removed from Kora 2.0 entirely — there is no io.koraframework Context type to import",
+        "Removes the Context parameter rather than renaming or re-importing it",
+        "Explains that an unrecognised parameter makes the processor fail with \"Kafka record listener method has unsupported parameter\", or is misread as a payload parameter",
+        "Points at io.koraframework.logging.common.MDC, which the record handler already scopes around each record, for MDC access",
+        "Does not invent a Kora 2.0 Context, RequestContext or telemetry-context parameter"
+      ],
+      "tags": [
+        "consumer",
+        "migration",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-kafka-consumer-no-telemetry-context-parameter",
+      "skills": [
+        "kora-kafka-consumer"
+      ],
+      "query": "Port this listener to Kora 2.0: `void process(ConsumerRecord<String, String> record, KafkaConsumerTelemetry.KafkaConsumerRecordTelemetryContext<String, String> ctx)`.",
+      "expected_behavior": [
+        "States that KafkaConsumerTelemetry has no nested KafkaConsumerRecordTelemetryContext / KafkaConsumerRecordsTelemetryContext type in Kora 2.0",
+        "Removes the telemetry parameter, leaving an accepted signature",
+        "Notes that the 2.0 observation types are KafkaConsumerPollObservation and KafkaConsumerRecordObservation and that neither is injectable as a listener parameter",
+        "Points at telemetry configuration (telemetry.logging / telemetry.metrics / telemetry.tracing) or a DefaultKafkaConsumerLoggerFactory subclass for custom instrumentation",
+        "Does not keep the parameter with an adjusted import"
+      ],
+      "tags": [
+        "consumer",
+        "telemetry",
+        "migration",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-kafka-consumer-unsupported-signature",
+      "skills": [
+        "kora-kafka-consumer"
+      ],
+      "query": "This listener will not compile: `@KafkaListener(\"kafka.consumer.orders\") void process(OrderService service, String key, String value, Headers headers)`. The error is \"Kafka listener method has too many payload parameters\". Fix it.",
+      "expected_behavior": [
+        "Removes OrderService from the parameter list and injects it through the listener class constructor instead",
+        "Keeps a signature the processor accepts, such as process(String key, String value, Headers headers)",
+        "Explains that the processor classifies parameters by type and treats anything it does not recognise as a payload, allowing at most two payload parameters (key then value)",
+        "Does not add an annotation to the service parameter to make it injectable",
+        "Does not suggest field injection or a static holder"
+      ],
+      "tags": [
+        "consumer",
+        "signatures",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-kafka-consumer-batch-unsupported-parameter",
+      "skills": [
+        "kora-kafka-consumer"
+      ],
+      "query": "My batch listener `void process(ConsumerRecords<String, String> records, Headers headers, Exception exception)` fails with \"Kafka records listener method has unsupported parameter\". Why?",
+      "expected_behavior": [
+        "Explains that a batch (ConsumerRecords) listener accepts only ConsumerRecords and Consumer parameters",
+        "Removes the Headers and Exception parameters",
+        "Shows reading headers per record inside the loop with record.headers()",
+        "Shows catching RecordValueDeserializationException around record.value() inside the loop, because a batch listener has no exception parameter",
+        "Notes that KafkaSkipRecordException has no effect in a batch listener — the batch handler has no skip branch — so filtering must be explicit"
+      ],
+      "tags": [
+        "consumer",
+        "batch",
+        "signatures",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-kafka-consumer-kotlin-headers-rc1",
+      "skills": [
+        "kora-kafka-consumer"
+      ],
+      "query": "In my Kora 2.0.0.RC1 Kotlin service this listener produces generated code that will not compile: `@KafkaListener(\"kafka.consumer.orders\") fun process(key: String?, value: String?, headers: Headers, exception: Exception?)`. What is going on?",
+      "expected_behavior": [
+        "Identifies this as a KSP defect at 2.0.0.RC1: the generated handler emits `val headers = record.headers()` inside the generated try block and then reads it outside, so the generated Kotlin does not compile",
+        "States that the fix landed after RC1 on master (commit 8e1eec9a4, backport of #845) and is not available in a released version",
+        "Labels it as a post-RC1 fix rather than as current released behaviour",
+        "Gives a workaround that works at RC1: take a ConsumerRecord parameter and call record.headers() inside the method",
+        "Notes that Java is unaffected and that Kotlin Headers without an exception parameter works at RC1",
+        "Does not tell the user to upgrade to a released 2.0 version that contains the fix, because none exists"
+      ],
+      "tags": [
+        "consumer",
+        "signatures",
+        "kotlin",
+        "rc1",
+        "regression"
+      ]
     },
     {
       "id": "kora-kafka-consumer-json-deserialization",
-      "skills": ["kora-kafka-consumer"],
-      "query": "Deserialize incoming Kafka messages into a UserEvent record with userId and eventType fields using Kora JSON.",
-      "expected_behavior": [
-        "Declares the record annotated with @Json",
-        "Annotates the @KafkaListener method parameter with @Json (e.g. void process(@Json UserEvent event))",
-        "Adds the ru.tinkoff.kora:json-module dependency and JsonModule to the @KoraApp interface",
-        "Does not register a manual Jackson Deserializer class in driverProperties for the JSON value"
+      "skills": [
+        "kora-kafka-consumer"
       ],
-      "tags": ["serialization", "basic"]
+      "query": "Deserialize incoming Kafka messages into a UserEvent record with userId and eventType fields using Kora 2.0 JSON.",
+      "expected_behavior": [
+        "Annotates the record with @Json from io.koraframework.json.common.annotation",
+        "Annotates the listener parameter with @Json, e.g. void process(@Json UserEvent event)",
+        "Adds the io.koraframework:json-common dependency and JsonModule from io.koraframework.json.common to the @KoraApp interface",
+        "Does not reference the ru.tinkoff.kora:json-module artifact or ru.tinkoff.kora.json.module.JsonModule",
+        "Does not set key.deserializer / value.deserializer in driverProperties for the JSON value"
+      ],
+      "tags": [
+        "serialization",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-kafka-consumer-kotlin-jsonreader-nullable",
+      "skills": [
+        "kora-kafka-consumer"
+      ],
+      "query": "Write a custom Kafka Deserializer in Kotlin for my Kora 2.0 service that turns bytes into an OrderEvent using the generated JsonReader.",
+      "expected_behavior": [
+        "Implements org.apache.kafka.common.serialization.Deserializer<OrderEvent>, annotated @Component and @Tag(OrderEvent::class)",
+        "Wraps the read in requireNotNull, e.g. `requireNotNull(reader.read(data))`, because JsonReader<T>.read returns a nullable T",
+        "Does not assign reader.read(data) straight to a non-null return type",
+        "Declares `override fun deserialize(topic: String, data: ByteArray): OrderEvent` matching the @NullMarked contract, and mentions that a mismatch reports \"'deserialize' overrides nothing\" without naming nullability",
+        "References the same @Tag on the listener parameter so the deserializer is actually selected",
+        "Does not wrap the call in try/catch (IOException) — at 2.0.0.RC1 JsonReader.read declares no checked exception"
+      ],
+      "tags": [
+        "serialization",
+        "kotlin",
+        "regression"
+      ]
     },
     {
       "id": "kora-kafka-consumer-deser-error-handling",
-      "skills": ["kora-kafka-consumer"],
-      "query": "Make my JSON Kafka listener resilient: when a message fails to deserialize, log it and continue instead of crashing the consumer.",
+      "skills": [
+        "kora-kafka-consumer"
+      ],
+      "query": "Make my JSON Kafka listener resilient: when a message fails to deserialize, log it and continue instead of restarting the consumer.",
       "expected_behavior": [
         "Uses the nullable signature void process(@Nullable @Json Event event, @Nullable Exception exception)",
-        "Checks exception != null before processing the event",
-        "Explains that an uncaught exception causes Kora to restart the consumer",
-        "Optionally mentions RecordValueDeserializationException and getRecord() to retrieve the raw ConsumerRecord<byte[], byte[]>",
-        "Does not invent a @KoraTransaction annotation or a separate error-handler component"
+        "Imports @Nullable from org.jspecify.annotations, not from jakarta.annotation or javax.annotation",
+        "In Kotlin writes the nullability into the types (`event: Event?, exception: Exception?`) instead of using an annotation",
+        "Checks exception != null before touching the event, and also handles event == null",
+        "Explains that an uncaught exception ends the poll loop, waits backoffTimeout and rebuilds the consumer, so the record is redelivered",
+        "Optionally mentions RecordValueDeserializationException.getRecord() returning the raw ConsumerRecord<byte[], byte[]> for a DLQ"
       ],
-      "tags": ["error-handling", "advanced"]
+      "tags": [
+        "error-handling",
+        "advanced"
+      ]
     },
     {
       "id": "kora-kafka-consumer-skip-record",
-      "skills": ["kora-kafka-consumer"],
-      "query": "Skip messages whose userId is null or blank in my Kafka listener, while still counting them in metrics.",
-      "expected_behavior": [
-        "Throws KafkaSkipRecordException imported from ru.tinkoff.kora.kafka.common.exceptions",
-        "Passes the underlying cause to the KafkaSkipRecordException constructor",
-        "Notes that skipping commits the offset and continues to the next record",
-        "Does not throw a plain RuntimeException expecting the consumer to silently skip"
+      "skills": [
+        "kora-kafka-consumer"
       ],
-      "tags": ["error-handling", "advanced"]
+      "query": "Skip messages whose userId is blank in my Kora 2.0 Kafka listener, while still reporting them to telemetry.",
+      "expected_behavior": [
+        "Throws KafkaSkipRecordException imported from io.koraframework.kafka.common.exceptions",
+        "Passes a cause to the constructor, which takes a non-null Throwable and has no message-only form",
+        "States that the record is reported as an error to telemetry, the offset is committed and the loop continues to the next record",
+        "Mentions SkippableRecordException as the marker interface for a family of business exceptions",
+        "Notes that this only works in a single-record listener, not in a ConsumerRecords batch listener",
+        "Does not throw a plain RuntimeException expecting the container to skip it"
+      ],
+      "tags": [
+        "error-handling",
+        "advanced"
+      ]
     },
     {
-      "id": "kora-kafka-consumer-manual-commit",
-      "skills": ["kora-kafka-consumer"],
-      "query": "I need exactly-once-style processing: only commit the Kafka offset after the database write succeeds.",
-      "expected_behavior": [
-        "Adds a Consumer<K, V> parameter to the @KafkaListener method to switch to manual commit",
-        "Calls consumer.commitSync() only after the business logic succeeds",
-        "Does not commit on exception so the record is reprocessed",
-        "Does not rely on enable.auto.commit for the commit-after-write guarantee"
+      "id": "kora-kafka-consumer-commit-semantics",
+      "skills": [
+        "kora-kafka-consumer"
       ],
-      "tags": ["offset", "advanced"]
+      "query": "I need the Kafka offset committed only after the database write succeeds in my Kora 2.0 service. Right now my config has \"enable.auto.commit\" = true.",
+      "expected_behavior": [
+        "Adds a Consumer<K, V> parameter to the @KafkaListener method and calls consumer.commitSync() after the write",
+        "Removes \"enable.auto.commit\" = true, explaining that it hands committing to the driver's timer, which can commit ahead of the handler",
+        "Explains that declaring a Consumer parameter switches Kora's automatic commit off for that listener, so forgetting commitSync() means the group never advances",
+        "Mentions that with no Consumer parameter and enable.auto.commit unset, Kora already commits offset+1 after each record returns",
+        "Does not commit before the business logic and does not commit inside a catch block that swallows the failure"
+      ],
+      "tags": [
+        "offset",
+        "advanced"
+      ]
     },
     {
-      "id": "kora-kafka-consumer-batch",
-      "skills": ["kora-kafka-consumer"],
-      "query": "Process Kafka records in batches for higher throughput and log the batch size.",
-      "expected_behavior": [
-        "Uses the ConsumerRecords<K, V> parameter signature so the whole poll batch is delivered",
-        "Iterates over records and uses records.count() for the batch size",
-        "Notes that commitSync() is called automatically after the whole batch",
-        "May tune max.poll.records / fetch.min.bytes in driverProperties",
-        "Does not fall back to a single-record signature when batch throughput is requested"
+      "id": "kora-kafka-consumer-assign-single-topic-rc1",
+      "skills": [
+        "kora-kafka-consumer"
       ],
-      "tags": ["batch", "advanced"]
+      "query": "In my Kora 2.0.0.RC1 service I want every instance to receive every message from the topics `prices` and `rates`, so I removed group.id. Startup now fails.",
+      "expected_behavior": [
+        "Identifies the assign strategy (no group.id in driverProperties) as the broadcast mechanism",
+        "States that at 2.0.0.RC1 the generated assign container requires exactly one topic and reports \"@KafkaListener require to specify 1 topic to subscribe when groupId is null\" (a bare require(topics.size == 1) in Kotlin)",
+        "Recommends two separate kafka.consumer sections, one per topic, as the RC1 solution",
+        "Notes that multi-topic assign landed after RC1 on master (a0a2b8c1d, #844) and is not in a released version",
+        "Mentions that topicsPattern is not usable in assign mode and that the assign container never commits offsets, so `offset` decides where each start begins",
+        "Does not claim that adding both topics to the list works at RC1"
+      ],
+      "tags": [
+        "strategies",
+        "rc1",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-kafka-consumer-telemetry-defaults",
+      "skills": [
+        "kora-kafka-consumer"
+      ],
+      "query": "My Kora 2.0 Kafka consumer publishes no messaging metrics and writes no log lines at all, not even a startup message. The config has a telemetry block. What is wrong?",
+      "expected_behavior": [
+        "States that telemetry.logging.enabled and telemetry.metrics.enabled both default to false in Kora 2.0, while telemetry.tracing.enabled defaults to true",
+        "Enables them explicitly under the listener's own kafka.consumer.<name>.telemetry block",
+        "Explains that telemetry.logging.enabled also gates the container's own lifecycle logging, which is why the consumer is completely silent",
+        "Notes that a MeterRegistry (micrometer-module) and a Tracer (opentelemetry-tracing) must be in the graph or the enabled flags still produce nothing",
+        "Names the real meters — messaging.process.duration, messaging.process.batch.duration and messaging.kafka.consumer.lag — and notes that the lag gauge is reported only in assign mode",
+        "Does not claim telemetry is enabled by default"
+      ],
+      "tags": [
+        "telemetry",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-kafka-consumer-custom-telemetry-factory",
+      "skills": [
+        "kora-kafka-consumer"
+      ],
+      "query": "In Kora 1.x I registered a custom KafkaConsumerLoggerFactory component to change how consumed records are logged. Port it to Kora 2.0.",
+      "expected_behavior": [
+        "States that no KafkaConsumerLoggerFactory interface exists in Kora 2.0",
+        "Registers a @Component that extends the concrete class io.koraframework.kafka.common.consumer.telemetry.impl.DefaultKafkaConsumerLoggerFactory and overrides create(DefaultKafkaConsumerTelemetry.TelemetryContext)",
+        "Explains that KafkaModule declares defaultKafkaConsumerTelemetryFactory as a @DefaultComponent whose @Nullable DefaultKafkaConsumerLoggerFactory parameter picks the component up",
+        "Notes that the custom factory is consulted only when telemetry.logging.enabled = true, otherwise NoopKafkaConsumerLoggerFactory is substituted",
+        "Mentions the broader options — subclassing DefaultKafkaConsumerTelemetryFactory, or supplying a KafkaConsumerTelemetryFactory @Component that replaces the default for every listener — and that configuration (tags, attributes, slo, driverMetrics) covers many cases",
+        "Does not claim custom telemetry listeners are impossible in 2.0, and does not keep the 1.x interface with a renamed import"
+      ],
+      "tags": [
+        "telemetry",
+        "migration",
+        "regression"
+      ]
     },
     {
       "id": "kora-kafka-consumer-rebalance",
-      "skills": ["kora-kafka-consumer"],
-      "query": "Commit offsets and clear a local cache when partitions are revoked during a Kafka rebalance.",
-      "expected_behavior": [
-        "Implements ru.tinkoff.kora.kafka.common.consumer.ConsumerAwareRebalanceListener as a @Component",
-        "Annotates the rebalance listener with @Tag matching the listener's tag class",
-        "Commits in onPartitionsRevoked via consumer.commitSync() and avoids committing in onPartitionsLost",
-        "Does not use the raw Kafka ConsumerRebalanceListener or @Qualifier; uses Kora @Tag"
+      "skills": [
+        "kora-kafka-consumer"
       ],
-      "tags": ["rebalance", "advanced"]
+      "query": "Commit offsets and clear a local cache when partitions are revoked during a Kafka rebalance in my Kora 2.0 service.",
+      "expected_behavior": [
+        "Implements io.koraframework.kafka.common.consumer.ConsumerAwareRebalanceListener as a @Component",
+        "Annotates it with @Tag from io.koraframework.common.annotation matching the listener — either the generated <Class>Module.<Class><Method>Tag or an explicit class passed to @KafkaListener(tag = ...)",
+        "Commits in onPartitionsRevoked with consumer.commitSync() and explicitly overrides onPartitionsLost so it does not commit",
+        "Notes that the default onPartitionsLost delegates to onPartitionsRevoked, so a committing revoke path must be overridden",
+        "Warns that the rebalance listener parameter is @Nullable, so a tag mismatch fails silently with no warning",
+        "Notes that rebalance callbacks only exist in subscribe mode, not with the assign strategy",
+        "Does not use the raw org.apache.kafka ConsumerRebalanceListener or a Spring-style @Qualifier"
+      ],
+      "tags": [
+        "rebalance",
+        "advanced"
+      ]
     },
     {
-      "id": "kora-kafka-consumer-strategies",
-      "skills": ["kora-kafka-consumer"],
-      "query": "One consumer must load-balance work across instances, another must broadcast every message to all instances. How do I configure both in Kora?",
-      "expected_behavior": [
-        "Configures the load-balanced consumer with a group.id in driverProperties (subscribe strategy)",
-        "Configures the broadcast consumer without a group.id (assign strategy) and notes only one topic is allowed",
-        "Keeps both under kafka.consumer.<name> with topics and bootstrap.servers",
-        "Does not claim group.id is required for the broadcast/assign consumer"
+      "id": "kora-kafka-consumer-testing-testcontainers",
+      "skills": [
+        "kora-kafka-consumer"
       ],
-      "tags": ["strategies", "basic"]
+      "query": "Write an integration test for my Kora 2.0 Kafka listener that spins up a real broker with Testcontainers.",
+      "expected_behavior": [
+        "Uses @KoraAppTest(Application.class) with KoraAppTestConfigModifier and injects the listener with @TestComponent",
+        "Injects the generated container as a tagged Lifecycle — @Tag(<Class>Module.<Class><Method>Tag.class) @TestComponent Lifecycle — and explains that without it @KoraAppTest prunes the container and the listener never starts",
+        "Overrides bootstrap.servers via KoraConfigModification.ofSystemProperty (or ofString/withSystemProperty) rather than editing application.conf",
+        "Uses the Testcontainers 2.x coordinates: org.testcontainers:testcontainers-kafka with org.testcontainers.kafka.KafkaContainer, or the io.goodforgod:testcontainers-extensions-kafka extension the Kora 2.0 examples use",
+        "Does not reference org.testcontainers:kafka or org.testcontainers.containers.KafkaContainer",
+        "Sets auto.offset.reset = \"earliest\" so records produced before the consumer joins are still delivered",
+        "Asserts asynchronously with Awaitility against state the listener records, rather than asserting immediately after send",
+        "Does not mock the @KafkaListener method"
+      ],
+      "tags": [
+        "testing",
+        "advanced",
+        "regression"
+      ]
     },
     {
-      "id": "kora-kafka-consumer-testing",
-      "skills": ["kora-kafka-consumer"],
-      "query": "Write an integration test for my Kafka listener that spins up a real Kafka broker.",
-      "expected_behavior": [
-        "Uses @KoraAppTest(Application.class) and injects the listener with @TestComponent",
-        "Starts Kafka with Testcontainers and overrides bootstrap.servers via KoraConfigModification / KoraAppTestConfigModifier",
-        "Asserts asynchronously with Awaitility against state the listener records",
-        "Does not mock the @KafkaListener method; uses a real broker via Testcontainers"
+      "id": "kora-kafka-consumer-hocon-substitution",
+      "skills": [
+        "kora-kafka-consumer"
       ],
-      "tags": ["testing", "advanced"]
+      "query": "My Kora 2.0 Kafka config has `\"bootstrap.servers\" = ${KAFKA_BOOTSTRAP:\"localhost:9092\"}` and the app will not start. Fix the config.",
+      "expected_behavior": [
+        "States that HOCON has no ${VAR:default} placeholder — that form is not valid HOCON",
+        "Replaces it with the literal-then-override pattern: assign \"localhost:9092\" first, then reassign with ${?KAFKA_BOOTSTRAP} on the next line",
+        "Explains that ${VAR} is a required substitution that aborts startup when unset, while ${?VAR} is optional",
+        "Keeps the later assignment after the literal, since the last assignment wins",
+        "Does not read the variable with System.getenv in code as the fix"
+      ],
+      "tags": [
+        "config",
+        "regression"
+      ]
     },
     {
-      "id": "kora-kafka-consumer-transactional-publish",
-      "skills": ["kora-kafka-consumer"],
-      "query": "After consuming a record I want to publish two messages atomically so consumers only see them if both succeed.",
-      "expected_behavior": [
-        "Declares a @KafkaPublisher interface extending TransactionalPublisher<P> for the transactional producer",
-        "Sends both messages inside publisher.inTx(producer -> { ... }) so they commit or abort together",
-        "Configures idPrefix / maxPoolSize / maxWaitTime for the transactional publisher and read_committed isolation on the consumer",
-        "Does not use a non-existent @KoraTransaction annotation or KafkaTransactionContext consumer parameter"
+      "id": "kora-kafka-consumer-transactional-pipeline",
+      "skills": [
+        "kora-kafka-consumer"
       ],
-      "tags": ["transactions", "advanced"]
+      "query": "After consuming a record in my Kora 2.0 service I want to publish a derived message and commit the consumer offset atomically with it.",
+      "expected_behavior": [
+        "Declares a @KafkaPublisher interface extending TransactionalPublisher<P> from io.koraframework.kafka.common.producer, wrapping a nested @KafkaPublisher interface with the @Topic methods",
+        "Declares a Consumer<K, V> parameter on the listener, both for consumer.groupMetadata() and to stop Kora committing outside the transaction",
+        "Uses withTx(transaction -> ...) (or begin().use { } in Kotlin) and calls transaction.sendOffsetsToTransaction(offsets, consumer.groupMetadata()) with offset + 1",
+        "Sets \"isolation.level\" = \"read_committed\" on the downstream consumer",
+        "Configures idPrefix / maxPoolSize / maxWaitTime on the transactional publisher's own config section",
+        "Notes that Kotlin cannot resolve the inTx/withTx overloads from a bare lambda, so begin().use { } or an explicit SAM constructor is required",
+        "Does not invent a @KoraTransaction annotation or a transaction listener parameter"
+      ],
+      "tags": [
+        "transactions",
+        "advanced"
+      ]
     }
   ]
 }

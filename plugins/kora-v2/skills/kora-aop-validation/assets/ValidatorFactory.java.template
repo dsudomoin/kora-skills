@@ -1,21 +1,44 @@
-// ValidatorFactory template for custom validators.
-// Replace `com.example.app.validation` with your package.
+// Kora 2.0 ValidatorFactory for a custom constraint.
+// Pair it with CustomAnnotation.java.template and CustomValidator.java.template.
+// Replace `com.example.app.validation` with your package and $typeName$ with your type.
 
 package com.example.app.validation;
 
-import ru.tinkoff.kora.validation.common.ValidatorFactory;
+import io.koraframework.validation.common.Validator;
+import io.koraframework.validation.common.ValidatorFactory;
 
 /**
- * ValidatorFactory for {@code $typeName$Validator}.
- * ValidatorFactory<T> is a @FunctionalInterface with a single no-arg create().
+ * Factory for {@code $typeName$Validator}.
  *
- * Register in Application (ValidatorModule, or ValidationModule when using HTTP integration):
- * @KoraApp
+ * {@code ValidatorFactory<T>} is a {@code @FunctionalInterface} with a single
+ * {@code Validator<T> create()}, so a constructor reference satisfies it. Declare a NAMED
+ * sub-interface — that is what the generated validator asks the DI graph for.
+ *
+ * Register it on the application module (which must still extend {@code ValidatorModule} or
+ * {@code ValidationModule} so the built-in constraint factories stay available):
+ *
+ * <pre>
+ * &#64;KoraApp
  * public interface Application extends ValidatorModule {
  *     default $typeName$ValidatorFactory $typeName$ValidatorFactory() {
  *         return $typeName$Validator::new;   // satisfies create()
  *     }
  * }
+ * </pre>
+ *
+ * A generic factory ({@code interface F<T> extends ValidatorFactory<T>}) is parameterised by the
+ * annotated element's type, so one interface can serve several bindings with one module method each.
+ * A non-generic factory ({@code extends ValidatorFactory<$typeName$>}) is used as declared.
  */
 public interface $typeName$ValidatorFactory extends ValidatorFactory<$typeName$> {
+
+    // If the constraint annotation has attributes, add a create(...) with exactly one parameter per
+    // attribute, in the annotation's declaration order, and make the no-arg create() unreachable:
+    //
+    // @Override
+    // default Validator<$typeName$> create() {
+    //     throw new UnsupportedOperationException("Valid$typeName$ requires a prefix; call create(String, int)");
+    // }
+    //
+    // Validator<$typeName$> create(String prefix, int minLength);
 }

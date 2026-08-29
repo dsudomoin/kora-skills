@@ -1,110 +1,76 @@
 package ${package}
 
-import ru.tinkoff.kora.database.common.UpdateCount
-import ru.tinkoff.kora.database.common.annotation.Batch
-import ru.tinkoff.kora.database.common.annotation.Query
-import ru.tinkoff.kora.database.jdbc.JdbcRepository
+import io.koraframework.database.common.UpdateCount
+import io.koraframework.database.common.annotation.Batch
+import io.koraframework.database.common.annotation.Query
+import io.koraframework.database.jdbc.JdbcRepository
 
 /**
- * Abstract base repository for CRUD operations with single-field ID using SQL macros (Kotlin).
- * Provides type-safe CRUD operations for entities with a single-column primary key.
+ * Reusable CRUD base interface for Kora 2.0 JDBC repositories with a single-column key (Kotlin).
  *
- * When to use this pattern:
- * - You have many entities with single-field IDs (UUID, Long, String)
- * - You want to avoid duplicating standard CRUD operations
- * - You need consistent behavior across all repositories
+ * This interface is NOT annotated with @Repository — only the concrete interface that binds the
+ * type arguments is. KSP resolves each macro against the bound entity type.
+ *
+ * Macro targets inside a generic base:
+ * - a function parameter name (`entity`) — used by insert/update/upsert/delete below;
+ * - `return` — the function's return type;
+ * - a TYPE PARAMETER of this interface (`%{V#table}`) — the only option for a function that takes
+ *   neither an entity nor a matching return type, such as findById/deleteById/deleteAll.
+ *
+ * `%{entity#table}` in a function without an `entity` parameter does not compile:
+ * "Query macro target `entity` cannot be resolved".
+ *
+ * findById/deleteById below assume the key column is literally named `id`. That is the price of
+ * putting them on a generic base — the macros cannot render a key-column predicate against a
+ * loose value. If an entity names its key differently, override the two functions in the concrete
+ * repository with the real column name.
+ *
+ * Repository contracts are synchronous — `suspend fun` is rejected by the generator.
  *
  * Usage:
- * 1. Copy this interface to your project
- * 2. Create concrete repository extending it:
- *    ```kotlin
- *    @Repository
- *    interface UserRepository : AbstractCrudSingleIdMacrosRepository<UUID, User> {
- *        @Query("SELECT %{return#selects} FROM %{return#table} WHERE email = :email")
- *        fun findByEmail(email: String): User?
- *    }
- *    ```
+ *   @Repository
+ *   interface UserRepository : AbstractCrudSingleIdMacrosRepository<Long, User> {
  *
- * @param K ID type (e.g., String, Long, UUID)
- * @param V Entity value type (must be @EntityJdbc data class with @Id field of type K)
+ *       @Query("SELECT %{return#selects} FROM %{return#table} WHERE email = :email")
+ *       fun findByEmail(email: String): User?
+ *   }
+ *
+ * @param K id type (Long, UUID, String)
+ * @param V entity type — an @EntityJdbc data class with an @Id property of type K
  */
 interface AbstractCrudSingleIdMacrosRepository<K, V> : JdbcRepository {
 
-    /**
-     * Find entity by ID.
-     * @param id entity ID
-     * @return entity or null if not found
-     */
     @Query("SELECT %{return#selects} FROM %{return#table} WHERE id = :id")
     fun findById(id: K): V?
 
-    /**
-     * Find all entities.
-     * @return list of all entities
-     */
     @Query("SELECT %{return#selects} FROM %{return#table}")
     fun findAll(): List<V>
 
-    /**
-     * Insert single entity.
-     * @param entity entity to insert
-     * @return update count
-     */
     @Query("INSERT INTO %{entity#inserts}")
     fun insert(entity: V): UpdateCount
 
-    /**
-     * Insert multiple entities in batch.
-     * @param entities list of entities to insert
-     * @return update count
-     */
     @Query("INSERT INTO %{entity#inserts}")
-    fun insertBatch(@Batch entities: List<V>): UpdateCount
+    fun insertBatch(@Batch entity: List<V>): UpdateCount
 
-    /**
-     * Update single entity by ID.
-     * @param entity entity to update (ID must be set)
-     * @return update count
-     */
     @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
     fun update(entity: V): UpdateCount
 
-    /**
-     * Update multiple entities in batch.
-     * @param entities list of entities to update
-     * @return update count
-     */
     @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
-    fun updateBatch(@Batch entities: List<V>): UpdateCount
+    fun updateBatch(@Batch entity: List<V>): UpdateCount
 
-    /**
-     * Upsert single entity (insert or update on conflict).
-     * @param entity entity to upsert
-     * @return update count
-     */
-    @Query("INSERT INTO %{entity#inserts} ON CONFLICT (id) DO UPDATE SET %{entity#updates}")
+    @Query("INSERT INTO %{entity#inserts} ON CONFLICT (%{entity#selects = @id}) DO UPDATE SET %{entity#updates}")
     fun upsert(entity: V): UpdateCount
 
-    /**
-     * Upsert multiple entities in batch.
-     * @param entities list of entities to upsert
-     * @return update count
-     */
-    @Query("INSERT INTO %{entity#inserts} ON CONFLICT (id) DO UPDATE SET %{entity#updates}")
-    fun upsertBatch(@Batch entities: List<V>): UpdateCount
+    @Query("INSERT INTO %{entity#inserts} ON CONFLICT (%{entity#selects = @id}) DO UPDATE SET %{entity#updates}")
+    fun upsertBatch(@Batch entity: List<V>): UpdateCount
 
-    /**
-     * Delete entity by ID.
-     * @param id entity ID
-     * @return update count
-     */
-    @Query("DELETE FROM %{entity#table} WHERE id = :id")
+    @Query("DELETE FROM %{entity#table} WHERE %{entity#where = @id}")
+    fun delete(entity: V): UpdateCount
+
+    /** No entity parameter, so the macro targets the type parameter instead. */
+    @Query("DELETE FROM %{V#table} WHERE id = :id")
     fun deleteById(id: K): UpdateCount
 
-    /**
-     * Delete all entities.
-     * @return update count
-     */
-    @Query("DELETE FROM %{entity#table}")
+    @Query("DELETE FROM %{V#table}")
     fun deleteAll(): UpdateCount
 }

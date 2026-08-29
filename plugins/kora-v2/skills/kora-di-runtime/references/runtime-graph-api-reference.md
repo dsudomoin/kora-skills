@@ -1,335 +1,207 @@
-# Kora Runtime Graph API Reference
+# Runtime Graph API Reference
 
-**Source:** [Kora Container Documentation](../../../.kora-agent/kora-docs/mkdocs/docs/en/documentation/container.md)
+**Kora 2.0** · `io.koraframework.application.graph`
 
-Complete reference for dynamic graph creation and runtime component management in Kora applications.
+Public types in the package: `All`, `ApplicationGraphDraw`, `Graph`, `GraphCondition`,
+`GraphInterceptor`, `InitializedGraph`, `KoraApplication`, `Lifecycle`, `LifecycleWrapper`, `Node`,
+`NodeWithMapper`, `PromiseOf`, `RefreshListener`, `RefreshableGraph`, `TypeRef`, `ValueOf`,
+`Wrapped`, `WrappedRefreshListener`, plus `exception/`.
 
----
-
-## Table of Contents
-
-1. [KoraApplication Entry Point](#koraapplication-entry-point)
-2. [Dynamic Graph Creation](#dynamic-graph-creation)
-3. [Graph Refresh Mechanism](#graph-refresh-mechanism)
-4. [Runtime Component Updates](#runtime-component-updates)
-5. [Common Patterns](#common-patterns)
-6. [Troubleshooting](#troubleshooting)
+Most applications touch only `KoraApplication`, `Lifecycle`, `All`, `ValueOf` and `@Root`. The rest
+of this file is for the cases that do need the graph itself.
 
 ---
 
-## KoraApplication Entry Point
+## 1. Entry point
 
-### Basic Application Entry Point
-
-The application entry point calls `KoraApplication.run()` with the graph factory.
+```java
+public final class KoraApplication {
+    public static void run(Supplier<ApplicationGraphDraw> supplier);
+}
+```
 
 ```java
 @KoraApp
-public interface Application {
+public interface Application extends HoconConfigModule, LogbackModule {
 
     static void main(String[] args) {
         KoraApplication.run(ApplicationGraph::graph);
     }
 }
 ```
-
-### Kotlin Entry Point
 
 ```kotlin
 @KoraApp
-interface Application
+interface Application : HoconConfigModule, LogbackModule
 
 fun main() {
-    KoraApplication.run { ApplicationGraph.graph() }
+    KoraApplication.run(ApplicationGraph::graph)
 }
 ```
 
-### Generated Graph Class
+`ApplicationGraph` is generated next to the `@KoraApp` interface; its static `graph()` returns the
+`ApplicationGraphDraw`. `run` then:
 
-At compile time, Kora generates:
-- `ApplicationGraph` class in the same package as `Application`
-- `graph()` method returning the dependency graph
+1. builds and initialises the graph, logging
+   `Application initialized in {}ms (JVM running for {}s)`;
+2. on failure logs `Application initializing failed with error` and calls `System.exit(-1)`;
+3. registers a JVM shutdown hook named `kora-shutdown` which releases the graph
+   (`Application shutdown...` → `Application released in {}ms`) and only then unblocks the main
+   thread;
+4. blocks the calling thread until that hook has finished.
+
+There is nothing to await, close or join around `run` — it returns when the application is done.
 
 ---
 
-## Graph Construction
-
-The Graph is constructed at compile time from the `@KoraApp` interface; there is no runtime builder API. `KoraApplication.run` accepts a `Supplier` of the generated graph (`ApplicationGraph::graph`). Configuration is supplied through config sources (HOCON/YAML, environment variables, system properties) declared on the `@KoraApp` via modules such as `HoconConfigModule` — not by setting values programmatically.
-
-### Graph with Modules
+## 2. `Graph`, `RefreshableGraph`, `InitializedGraph`
 
 ```java
-@KoraApp
-public interface Application extends JsonModule, LogbackModule {
+public interface Graph {
+    ApplicationGraphDraw draw();
+    <T> T get(Node<? extends T> node);
+    <T> ValueOf<T> valueOf(Node<? extends T> node);
+    <T> PromiseOf<T> promiseOf(Node<? extends T> node);
+    default GraphCondition condition(Node<? extends GraphCondition> node);
 
-    static void main(String[] args) {
-        KoraApplication.run(ApplicationGraph::graph);
-    }
+    interface Factory<T> { T get(RefreshableGraph graph) throws Exception; }
+}
+
+public interface RefreshableGraph extends Graph {
+    void refresh(Node<?> fromNode);
+}
+
+public interface InitializedGraph extends RefreshableGraph {
+    void init() throws Exception;
+    void release() throws Exception;
 }
 ```
 
+`Graph` and `RefreshableGraph` are injectable: a constructor or module-method parameter of either
+type is recognised as a `GRAPH` claim and receives the live graph. `Graph.Factory<T>` is what
+generated code implements per node — you do not write it by hand.
+
+`ApplicationGraphDraw` is the *plan*: `addNode(...)`, `getNodes()`, `findNodeByType`,
+`findNodesByType`, `replaceNode`, `replaceNodeKeepDependencies`, `subgraph`, `copy`, and `init()`
+which materialises an `InitializedGraph`. Node replacement is the mechanism behind test graph
+modification — use the testing skills' API rather than calling it directly.
+
 ---
 
-## Graph Refresh Mechanism
-
-### ValueOf Refresh
-
-Components using `ValueOf<T>` can be refreshed at runtime:
+## 3. `Node<T>` and `TypeRef<T>`
 
 ```java
-public interface ValueOf<T> {
-    T get();           // Get current instance
-    void refresh();    // Force refresh (if refreshable)
+public sealed interface Node<T> {
+    Type type();
+    @Nullable Class<?> tag();
+    @Nullable Function<Graph, GraphCondition.ConditionResult> condition();
 }
 ```
 
-### Config-Driven Refresh
+A `Node<T>` parameter (claim type `NODE_OF`) gives a **handle** to another component's node rather
+than its value — enough to call `graph.get(node)`, `graph.valueOf(node)` or `graph.refresh(node)`.
+In Kotlin, `Node<T>` may not be parameterised with a nullable `T`; the processor rejects it with
+*"Node&lt;T&gt; cannot use a nullable T"*.
 
-```java
-@Component
-public final class ConfigReloader implements Lifecycle {
-    private final ValueOf<AppConfig> config;
-    private final ScheduledExecutorService scheduler;
-
-    public ConfigReloader(ValueOf<AppConfig> config) {
-        this.config = config;
-        this.scheduler = Executors.newSingleThreadScheduledExecutor();
-    }
-
-    @Override
-    public void init() {
-        // Check for config changes every minute
-        scheduler.scheduleAtFixedRate(
-            this::checkAndRefresh,
-            1, 1, TimeUnit.MINUTES
-        );
-    }
-
-    @Override
-    public void release() {
-        scheduler.shutdown();
-    }
-
-    private void checkAndRefresh() {
-        if (configFileChanged()) {
-            config.refresh();  // Trigger refresh chain
-        }
-    }
-
-    private boolean configFileChanged() {
-        // Check file modification time
-        return true;
-    }
-}
-```
+`TypeRef<T>` is a `ParameterizedType` carrier (`TypeRef.of(rawType, args…)`). A `TypeRef<T>`
+parameter is filled in by generated code with the reified type — used by mappers and factories that
+must inspect the type they are producing.
 
 ---
 
-## Runtime Component Updates
+## 4. Refresh
 
-### Atomic Graph Updates
+`refresh(Node<?> fromNode)` rebuilds that node and everything reachable from it:
 
-Kora updates components atomically:
+- affected nodes are recreated and `Lifecycle.init()` runs on the new instances;
+- old instances are released afterwards;
+- if a factory returns a value `equals` to the previous one, the new value is released immediately
+  and the old node value is kept — a no-op refresh costs nothing;
+- consumers that depend through `ValueOf<T>` are **not** rebuilt; they simply observe the new value;
+- when the refresh fails, the partially created objects are released and the previous graph is left
+  intact.
 
-1. Transaction begins
-2. All affected components are refreshed
-3. If all succeed, transaction commits
-4. If any fail, transaction rolls back
+Refresh runs under the graph's init lock, so refreshes and the initial init do not overlap.
 
-### Update Propagation
+### The canonical caller: `ConfigWatcher`
 
-```
-Config Changed
-      ↓
-ValueOf<Config>.refresh()
-      ↓
-Components depending on Config (via direct dependency)
-      ↓
-Components depending on those components
-      ↓
-...propagates through dependency graph
-```
-
-**Note:** Components using `ValueOf<T>` do NOT cascade refreshes.
-
----
-
-## Common Patterns
-
-### Pattern 1: File Watcher for Hot Reload
+Kora's own config module ships the one production refresh source, and it is a compact tour of this
+whole API:
 
 ```java
 @Root
-@Component
-public final class FileWatcher implements Lifecycle {
-    private final WatchService watchService;
-    private final ValueOf<AppConfig> config;
-    private final ExecutorService executor;
-
-    public FileWatcher(ValueOf<AppConfig> config) throws IOException {
-        this.config = config;
-        this.watchService = FileSystems.getDefault().newWatchService();
-        this.executor = Executors.newSingleThreadExecutor();
-
-        Path path = Paths.get(config.get().path()).getParent();
-        path.register(watchService, StandardWatchEventKinds.ENTRY_MODIFY);
-    }
-
-    @Override
-    public void init() {
-        executor.submit(this::watchForChanges);
-    }
-
-    @Override
-    public void release() throws Exception {
-        executor.shutdown();
-        watchService.close();
-    }
-
-    private void watchForChanges() {
-        while (!executor.isShutdown()) {
-            try {
-                WatchKey key = watchService.take();
-                for (WatchEvent<?> event : key.pollEvents()) {
-                    if (event.context().toString().equals("app.conf")) {
-                        config.refresh();  // Refresh config
-                    }
-                }
-                key.reset();
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            }
-        }
-    }
+@DefaultComponent
+default ConfigWatcher applicationConfigWatcher(RefreshableGraph graph,
+                                               @Nullable @ApplicationConfig Node<? extends ConfigOrigin> applicationConfigNode,
+                                               @Nullable @ApplicationConfig ValueOf<ConfigOrigin> applicationConfig) {
+    return new ConfigWatcher(graph, applicationConfigNode, applicationConfig, Duration.ofSeconds(1));
 }
 ```
 
-### Pattern 2: Admin Endpoint for Refresh
+`ConfigWatcher implements Lifecycle`: `init()` starts a virtual thread named `config-reload` that
+polls the config file's modification time and calls `graph.refresh(applicationConfigNode)` when it
+changes; `release()` interrupts it. It does nothing when there is no application config node, and
+watches nothing when the config has no file origin. It is on by default and can be turned off with
+the `KORA_CONFIG_WATCHER_ENABLED` environment variable or the `kora.config.watcher.enabled` system
+property.
 
-```java
-@Component
-public final class AdminHandler {
-    private final Map<String, Runnable> refreshActions = new ConcurrentHashMap<>();
-
-    public AdminHandler(All<Refreshable> refreshables) {
-        for (Refreshable r : refreshables) {
-            refreshActions.put(r.getName(), r::refresh);
-        }
-    }
-
-    public Response refresh(String component) {
-        Runnable action = refreshActions.get(component);
-        if (action == null) {
-            return Response.notFound("Component not found: " + component);
-        }
-        action.run();
-        return Response.ok("Refreshed: " + component);
-    }
-}
-
-public interface Refreshable {
-    String getName();
-    void refresh();
-}
-```
-
-### Pattern 3: Feature Toggle Refresh
-
-```java
-@Component
-public final class FeatureToggleService implements Refreshable {
-    private volatile Map<String, Boolean> toggles = new HashMap<>();
-
-    public FeatureToggleService() {
-        loadToggles();
-    }
-
-    @Override
-    public String getName() {
-        return "feature-toggles";
-    }
-
-    @Override
-    public void refresh() {
-        loadToggles();
-    }
-
-    public boolean isEnabled(String feature) {
-        return toggles.getOrDefault(feature, false);
-    }
-
-    private void loadToggles() {
-        // Load from config file, database, or remote service
-        toggles = loadFromRemote();
-    }
-}
-```
+Note the shape worth copying: `@Root` (nothing depends on a watcher), `RefreshableGraph` +
+`Node<T>` + `ValueOf<T>` injected side by side, everything `@Nullable` so the component degrades to a
+no-op instead of failing the graph.
 
 ---
 
-## Troubleshooting
-
-### Refresh Not Propagating
-
-**Problem:** Component not updating after refresh
-
-**Check:**
-1. Is dependency injected via `ValueOf<T>`? (won't cascade)
-2. Is direct dependency used? (will cascade)
-3. Is refresh being called?
-
-### Refresh Causing Downtime
-
-**Problem:** Service interruption during refresh
-
-**Solution:** Use graceful refresh pattern:
+## 5. `RefreshListener` and `WrappedRefreshListener`
 
 ```java
-@Component
-public final class GracefulHandler implements Refreshable {
-    private volatile Handler current;
-    private volatile Handler next;
+public interface RefreshListener {
+    void graphRefreshed() throws Exception;
+}
 
-    @Override
-    public void refresh() {
-        // Create new handler
-        next = createNewHandler();
-
-        // Switch atomically
-        Handler old = current;
-        current = next;
-
-        // Cleanup old handler after drain period
-        scheduleCleanup(old);
-    }
+public interface WrappedRefreshListener<T> extends Wrapped<T>, RefreshListener {
 }
 ```
 
-### Circular Refresh
+Any component that implements `RefreshListener` is registered when it is created, and
+`graphRefreshed()` is called on every registered listener after a refresh completes. Exceptions are
+logged (`Exception caught when calling listener.graphRefreshed(), object={}`) and **do not** fail the
+refresh — do not put anything load-bearing behind them.
 
-**Problem:** Infinite refresh loop
-
-**Solution:** Break cycle with `ValueOf`:
-
-```java
-// WRONG: Circular refresh
-@Component
-public class A { ValueOf<B> b; }  // B refreshes A
-@Component
-public class B { ValueOf<A> a; }  // A refreshes B
-
-// CORRECT: One direction only
-@Component
-public class A { ValueOf<B> b; }  // B refreshes A
-@Component
-public class B { /* no ValueOf<A> */ }
-```
+`WrappedRefreshListener<T>` is the combination used by wrappers that must both expose an unwrapped
+value and react to refreshes; the generated `PromisedProxy` for a dependency cycle is exactly this
+shape.
 
 ---
 
-## See Also
+## 6. Diagnostics
 
-- [SKILL.md](../SKILL.md) — Runtime DI overview
-- [Optional Dependency Reference](optional-dependency-reference.md) — @Nullable and ValueOf lazy dependencies
-- [Container Documentation](../../../.kora-agent/kora-docs/mkdocs/docs/en/documentation/container.md) — Official docs
+| Message | Meaning |
+|---|---|
+| `Graph node value was not initialized: <node>` | the node was read before it was created |
+| `Graph node value was not initialized because condition failed: <reason>` | a `@Conditional` node was skipped and something still asked for it |
+| `Application graph failed to initialize with N errors; see suppressed exceptions` | several nodes failed during init |
+| `Lifecycle init failed with checked exception for node <type> at index <n>` | `init()` threw a checked exception |
+| `Graph interceptor failed with checked exception for node <t> and interceptor <i>` | `afterInit`/`beforeRelease` threw a checked exception |
+| `Graph dependency belongs to another application graph` | a `Node` from a different `ApplicationGraphDraw` was passed in |
+
+Turn on `DEBUG`/`TRACE` for the `@KoraApp` root class to get per-node creation logging.
+`kora.graph.slowNodeInitThresholdMillis` (default `100`) controls the threshold above which a node's
+initialisation is reported at `DEBUG`.
+
+---
+
+## 7. What is not here
+
+- **`Context` does not exist in Kora 2.0.** It is gone from the whole framework, not just from the
+  HTTP APIs. Any parameter, field or thread-local threading a Kora `Context` is dead code.
+- No reactive graph API: `init`, `release` and `refresh` are synchronous calls, executed internally
+  on virtual threads.
+
+---
+
+## See also
+
+- [`lifecycle-reference.md`](lifecycle-reference.md) — `Lifecycle`, `LifecycleWrapper`, release order
+- [`optional-dependency-reference.md`](optional-dependency-reference.md) — `ValueOf`, `PromiseOf`
+- [`conditional-graph-evaluation-reference.md`](conditional-graph-evaluation-reference.md) — `GraphCondition` and node conditions
+- [`kora-config-hocon`](../../kora-config-hocon/SKILL.md) — the config components refreshed above

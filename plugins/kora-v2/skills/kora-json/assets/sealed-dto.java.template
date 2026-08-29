@@ -1,14 +1,20 @@
 package ${package};
 
-import ru.tinkoff.kora.json.common.annotation.Json;
-import ru.tinkoff.kora.json.common.annotation.JsonDiscriminatorField;
-import ru.tinkoff.kora.json.common.annotation.JsonDiscriminatorValue;
+import io.koraframework.json.common.annotation.Json;
+import io.koraframework.json.common.annotation.JsonDiscriminatorField;
 ${imports}
 
 /**
- * Sealed interface for ${entity_name} with polymorphic JSON serialization.
+ * Sealed hierarchy for ${entity_name} with polymorphic JSON.
  *
- * <p>Uses discriminator field "${discriminator_field}" to determine the type during deserialization.</p>
+ * <p>The "${discriminator_field}" property selects the concrete subtype on read and is
+ * written automatically by the generated mapper — subtypes do <b>not</b> need a component
+ * for it. The reader buffers the object, so the discriminator may appear anywhere in the
+ * document.</p>
+ *
+ * <p>Every permitted subtype needs its own {@code @Json} (or {@code @JsonReader} /
+ * {@code @JsonWriter}); the sealed mapper is composed from the per-subtype mappers. See
+ * {@code sealed-dto-impl.java.template}.</p>
  *
  * <p>JSON example:</p>
  * <pre>
@@ -19,3 +25,18 @@ ${imports}
 @JsonDiscriminatorField("${discriminator_field}")
 public sealed interface ${sealed_interface_name}
     permits ${implementations} {}
+
+/*
+ * Options:
+ *
+ *   @JsonDiscriminatorField(value = "${discriminator_field}", defaultValue = "…")
+ *       subtype used when the document carries no discriminator at all; without it such a
+ *       document fails to read.
+ *
+ *   @JsonReader / @JsonWriter in place of @Json
+ *       generate only one direction for the whole hierarchy.
+ *
+ * A sealed abstract class works the same way. A non-sealed interface does not: the
+ * discriminator is only honoured on a type carrying the `sealed` modifier, and generation
+ * then fails with "JsonReader can't be generated for type".
+ */

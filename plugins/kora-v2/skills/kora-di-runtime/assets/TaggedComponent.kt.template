@@ -1,105 +1,53 @@
 package ${packagePath}
 
-import ru.tinkoff.kora.common.Component
-import ru.tinkoff.kora.common.Tag
+import io.koraframework.common.annotation.Component
+import io.koraframework.common.annotation.Tag
 
 /**
- * Component with tag for disambiguation.
+ * One of several implementations of `${InterfaceName}`, selected by tag.
  *
- * Usage:
- * - Multiple implementations of the same interface
- * - Strategy pattern with runtime selection
- * - Multi-tenant components (different databases, caches)
- * - Environment-specific implementations (prod vs dev)
- *
- * Tag classes should be simple marker classes, NOT custom annotations.
- *
- * Good:
- *   class RedisTag
- *   class PrimaryTag
- *
- * Bad (unnecessary complexity):
- *   @Target(...)
- *   @Retention(AnnotationRetention.RUNTIME)
- *   @Tag(RedisTag::class)
- *   annotation class RedisCache
+ * Import `Tag` from **io.koraframework.common.annotation** — `io.koraframework.common` holds
+ * `Configurer`, `Either`, `Principal` and `PromisedProxy`, not the DI annotations.
  */
 @Tag(${TagClass}::class)
 @Component
 class ${ComponentName}(
-    // TODO: Add implementation-specific dependencies
+    private val ${dependencyName}: ${DependencyType}
 ) : ${InterfaceName} {
 
-    init {
-        // TODO: Initialize implementation-specific resources
-    }
-
-    override fun doSomething() {
-        // TODO: Implementation-specific logic
-        println("${ComponentName} doing something (tagged with ${TagClass})")
+    override fun ${methodName}() {
+        // implementation
     }
 }
 
-// ============================================================================
-// EXAMPLE USAGE
-// ============================================================================
+// ---------------------------------------------------------------------------
+// Consuming tagged components
+// ---------------------------------------------------------------------------
 //
-// // Tag classes (simple marker classes)
-// class RedisTag
-// class CaffeineTag
+// Pick specific implementations:
 //
-// // Tagged implementations
-// @Tag(RedisTag::class)
-// @Component
-// class RedisCache(
-//     private val redisClient: RedisClient
-// ) : Cache {
-//     override fun get(key: String): String? {
-//         return redisClient.get(key)
-//     }
-// }
-//
-// @Tag(CaffeineTag::class)
-// @Component
-// class CaffeineCache : Cache {
-//     private val cache = Caffeine.newBuilder().build<Any, Any>()
-//
-//     override fun get(key: String): String? {
-//         return cache.getIfPresent(key)?.toString()
-//     }
-// }
-//
-// // Tagged injection
 // @Component
 // class UserService(
-//     @Tag(RedisTag::class) private val redisCache: Cache,
-//     @Tag(CaffeineTag::class) private val localCache: Cache
-// ) {
-//     fun getUser(id: String): User? {
-//         return localCache.get(id) ?: redisCache.get(id)
-//     }
-// }
+//     @Tag(RedisTag::class) private val remote: Cache,
+//     @Tag(LocalTag::class) private val local: Cache
+// )
 //
-// // Collect ALL caches (including tagged)
+// Collect every implementation, tagged or not — All<T> is an Iterable, not a List:
+//
 // @Component
-// class CacheManager(
-//     @Tag(Tag.Any::class) allCaches: List<Cache>
+// class CacheAdmin(
+//     @Tag(Tag.Any::class) private val caches: All<Cache>
 // ) {
-//     private val allCaches: List<Cache> = allCaches.toList()
-//
 //     fun invalidateAll() {
-//         allCaches.forEach { it.invalidate() }
+//         for (cache in caches) {
+//             cache.invalidate()
+//         }
 //     }
 // }
 //
-// // Collect only Redis caches
-// @Component
-// class RedisCacheManager(
-//     @Tag(RedisTag::class) redisCaches: All<Cache>
-// ) {
-//     private val redisCaches: List<Cache> = redisCaches.toList()
+// Collect only one tag's implementations:
 //
-//     fun warmupAll() {
-//         redisCaches.forEach { it.warmup() }
-//     }
-// }
+//     class RedisCacheAdmin(@Tag(RedisTag::class) private val redisCaches: All<Cache>)
+//
+// Overriding a module function inside @KoraApp: repeat the @Tag, or the override registers an
+// untagged component and every tagged consumer stops seeing it.

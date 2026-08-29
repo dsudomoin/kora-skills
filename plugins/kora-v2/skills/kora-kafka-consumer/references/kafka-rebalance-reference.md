@@ -1,484 +1,211 @@
-# Kafka Rebalance Listener Reference
+# Kafka Rebalance Reference (Kora 2.0)
 
-**Source:** [.kora-agent/kora-docs/mkdocs/docs/en/documentation/kafka.md](../../../.kora-agent/kora-docs/mkdocs/docs/en/documentation/kafka.md)
-
-Partition rebalance handling for Kafka consumers in Kora.
+Reacting to partition assignment changes with `ConsumerAwareRebalanceListener`.
 
 ## Contents
 
-- [Overview](#overview)
-- [ConsumerAwareRebalanceListener Interface](#consumerawarerebalancelistener-interface)
+- [The contract](#the-contract)
+- [How Kora finds your listener](#how-kora-finds-your-listener)
+- [Subscribe only](#subscribe-only)
 - [Implementation](#implementation)
-- [Method Details](#method-details)
-- [Common Patterns](#common-patterns)
-- [Configuration](#configuration)
-- [Best Practices](#best-practices)
-- [Troubleshooting](#troubleshooting)
+- [What to do in each callback](#what-to-do-in-each-callback)
+- [Tuning rebalance behaviour](#tuning-rebalance-behaviour)
+- [Pitfalls](#pitfalls)
 
 ---
 
-## Overview
-
-Partition rebalancing occurs when:
-- Consumer group members join or leave
-- Topics are added or removed
-- Partitions are added to topics
-- Consumer session times out
-
-Kora provides `ConsumerAwareRebalanceListener` interface to react to rebalance events.
-
----
-
-## ConsumerAwareRebalanceListener Interface
+## The contract
 
 ```java
+package io.koraframework.kafka.common.consumer;
+
 public interface ConsumerAwareRebalanceListener {
-    
+
     void onPartitionsRevoked(Consumer<?, ?> consumer, Collection<TopicPartition> partitions);
-    
+
     void onPartitionsAssigned(Consumer<?, ?> consumer, Collection<TopicPartition> partitions);
-    
-    void onPartitionsLost(Consumer<?, ?> consumer, Collection<TopicPartition> partitions);
+
+    default void onPartitionsLost(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
+        onPartitionsRevoked(consumer, partitions);
+    }
 }
 ```
+
+It is Kora's own interface, not `org.apache.kafka.clients.consumer.ConsumerRebalanceListener` — the
+container adapts one to the other so that you also receive the `Consumer`. Only `onPartitionsLost`
+has a default, and **its default delegates to `onPartitionsRevoked`**. If your revoke path commits,
+override `onPartitionsLost` explicitly — otherwise a lost assignment attempts a commit it no longer
+owns.
+
+The `Consumer` handed to the callbacks is the same `ConsumerWrapper` the listener sees.
+
+---
+
+## How Kora finds your listener
+
+The generated container method declares:
+
+```java
+@Tag(OrderListenerModule.OrderListenerProcessTag.class)
+@Nullable ConsumerAwareRebalanceListener rebalanceListener
+```
+
+So the binding is **by tag**, and the parameter is `@Nullable` — a missing listener is not an error,
+it simply never fires. Two ways to match the tag:
+
+**Generated tag** — `<Class>Module.<Class><Method>Tag`:
+
+```java
+@Tag(OrderListenerModule.OrderListenerProcessTag.class)
+@Component
+public final class OrderRebalanceListener implements ConsumerAwareRebalanceListener { ... }
+```
+
+**Explicit tag** — clearer, and independent of the class and method names:
+
+```java
+public final class OrdersTag {}
+
+@Component
+public final class OrderListener {
+    @KafkaListener(value = "kafka.consumer.orders", tag = OrdersTag.class)
+    void process(String value) { }
+}
+
+@Tag(OrdersTag.class)
+@Component
+public final class OrderRebalanceListener implements ConsumerAwareRebalanceListener { ... }
+```
+
+One listener per tag. A `ConsumerAwareRebalanceListener` with no tag, or with the wrong tag, is
+silently unused — there is no warning.
+
+---
+
+## Subscribe only
+
+Only `KafkaSubscribeConsumerContainer` uses it, and only there because `subscribe(topics, callback)`
+takes a callback. In assign mode (no `group.id`) there is no group, no rebalance and no callback;
+`KafkaAssignConsumerContainer` does not even accept the parameter.
 
 ---
 
 ## Implementation
 
-### Basic Rebalance Listener
-
 ```java
-@Tag(UserEventsTag.class)  // Same tag class the listener is annotated with
+@Tag(OrdersTag.class)
 @Component
-public final class UserEventsRebalanceListener implements ConsumerAwareRebalanceListener {
-    
-    private static final Logger log = LoggerFactory.getLogger(UserEventsRebalanceListener.class);
-    
+public final class OrderRebalanceListener implements ConsumerAwareRebalanceListener {
+
+    private static final Logger log = LoggerFactory.getLogger(OrderRebalanceListener.class);
+
+    private final PartitionCache cache;
+
+    public OrderRebalanceListener(PartitionCache cache) {
+        this.cache = cache;
+    }
+
     @Override
     public void onPartitionsRevoked(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
         log.info("Partitions revoked: {}", partitions);
-        
-        // Commit current offsets before rebalance
-        consumer.commitSync();
-        
-        // Clear caches for these partitions
-        // Save processing state
+        consumer.commitSync();          // only if you own commits
+        partitions.forEach(cache::evict);
     }
-    
+
     @Override
     public void onPartitionsAssigned(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
         log.info("Partitions assigned: {}", partitions);
-        
-        // Initialize state for new partitions
-        // Log assignment for monitoring
+        partitions.forEach(cache::prepare);
     }
-    
+
     @Override
     public void onPartitionsLost(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-        log.warn("Partitions lost (consumer evicted): {}", partitions);
-        
-        // Clean up resources without committing
-        // The consumer no longer owns these partitions
+        log.warn("Partitions lost: {}", partitions);
+        partitions.forEach(cache::evict);   // no commit — the partitions are already gone
     }
 }
 ```
 
-### Tag Matching
-
-Kora binds the rebalance listener to a consumer by **tag**. Each `@KafkaListener`
-gets an auto-generated tag (`<Listener>Module.<Listener>ProcessTag`, visible in the
-generated module), but the clearest approach is to declare your own tag class and put
-it on both the listener and the rebalance listener:
-
-```java
-// A shared tag class
-public final class UserEventsTag { }
-
-// Listener uses the explicit tag
+```kotlin
+@Tag(OrdersTag::class)
 @Component
-public final class UserEventsListener {
-    @KafkaListener(value = "kafka.consumer.userEvents", tag = UserEventsTag.class)
-    void process(String value) { }
-}
+class OrderRebalanceListener(private val cache: PartitionCache) : ConsumerAwareRebalanceListener {
 
-// Rebalance listener carries the same tag
-@Tag(UserEventsTag.class)
-@Component
-public final class UserEventsRebalanceListener implements ConsumerAwareRebalanceListener {
-    // ...
+    override fun onPartitionsRevoked(consumer: Consumer<*, *>, partitions: Collection<TopicPartition>) {
+        consumer.commitSync()
+        partitions.forEach(cache::evict)
+    }
+
+    override fun onPartitionsAssigned(consumer: Consumer<*, *>, partitions: Collection<TopicPartition>) {
+        partitions.forEach(cache::prepare)
+    }
+
+    override fun onPartitionsLost(consumer: Consumer<*, *>, partitions: Collection<TopicPartition>) {
+        partitions.forEach(cache::evict)
+    }
 }
 ```
+
+The callbacks run **on the poll thread**, between polls. Time spent here counts against
+`max.poll.interval.ms` and delays the whole group's rebalance — keep them short.
 
 ---
 
-## Method Details
+## What to do in each callback
 
-### onPartitionsRevoked
+| Callback | Do | Do not |
+|---|---|---|
+| `onPartitionsRevoked` | commit if you own commits, flush buffers, drop partition-scoped state | long I/O, blocking network calls |
+| `onPartitionsAssigned` | warm caches, log the assignment, reset counters | assume the set is a delta — it is the full new assignment |
+| `onPartitionsLost` | drop state only | **commit** — the partitions are already reassigned |
 
-**Called when:** Partitions are about to be revoked from this consumer.
-
-**Use cases:**
-- Commit current offsets (if not using auto-commit)
-- Flush pending writes
-- Clear partition-specific caches
-- Save processing state
-- Close partition-specific resources
-
-```java
-@Override
-public void onPartitionsRevoked(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-    log.info("Partitions revoked: {}", partitions);
-    
-    // Commit offsets synchronously
-    consumer.commitSync();
-    
-    // Clear caches
-    partitionCaches.keySet().removeAll(partitions);
-    
-    // Save state
-    stateManager.saveState();
-}
-```
-
-### onPartitionsAssigned
-
-**Called when:** Partitions are assigned to this consumer.
-
-**Use cases:**
-- Initialize partition state
-- Load cached data for partitions
-- Log assignment for monitoring
-- Set up partition-specific resources
-
-```java
-@Override
-public void onPartitionsAssigned(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-    log.info("Partitions assigned: {}", partitions);
-    
-    // Initialize state for new partitions
-    for (TopicPartition partition : partitions) {
-        partitionCaches.put(partition, new PartitionCache());
-        log.info("Initialized cache for partition: {}", partition);
-    }
-}
-```
-
-### onPartitionsLost
-
-**Called when:** Partitions are lost without a clean revocation (consumer evicted).
-
-**Key difference:** Do NOT commit offsets - the consumer no longer owns these partitions.
-
-**Use cases:**
-- Clean up resources
-- Log the event for debugging
-- Alert on unexpected loss
-
-```java
-@Override
-public void onPartitionsLost(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-    log.warn("Partitions lost (consumer evicted from group): {}", partitions);
-    
-    // Clean up without committing
-    partitionCaches.keySet().removeAll(partitions);
-    
-    // Optionally alert
-    monitoringService.alertPartitionLoss(partitions);
-}
-```
+With Kora-managed commits (no `Consumer` parameter, `enable.auto.commit` unset) every completed
+record is already committed, so `onPartitionsRevoked` does not need to commit at all. The callback
+then exists purely for state cleanup.
 
 ---
 
-## Common Patterns
+## Tuning rebalance behaviour
 
-### State Management
+All `driverProperties`, all standard Kafka:
 
-```java
-@Tag(MyListener.class)
-@Component
-public final class StatefulRebalanceListener implements ConsumerAwareRebalanceListener {
-    
-    private final Map<TopicPartition, ProcessingState> stateMap = new ConcurrentHashMap<>();
-    private final ProcessingStateManager stateManager;
-    
-    public StatefulRebalanceListener(ProcessingStateManager stateManager) {
-        this.stateManager = stateManager;
-    }
-    
-    @Override
-    public void onPartitionsRevoked(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-        // Save state for revoked partitions
-        for (TopicPartition partition : partitions) {
-            ProcessingState state = stateMap.remove(partition);
-            if (state != null) {
-                stateManager.saveState(partition, state);
-            }
-        }
-    }
-    
-    @Override
-    public void onPartitionsAssigned(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-        // Load state for assigned partitions
-        for (TopicPartition partition : partitions) {
-            ProcessingState state = stateManager.loadState(partition);
-            if (state != null) {
-                stateMap.put(partition, state);
-            }
-        }
-    }
-    
-    @Override
-    public void onPartitionsLost(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-        // Partitions lost - state may be processed by another consumer
-        partitions.forEach(stateMap::remove);
-    }
-}
-```
+| Property | Meaning |
+|---|---|
+| `max.poll.interval.ms` | deadline for processing one poll before eviction (default 5 min) |
+| `session.timeout.ms` | heartbeat deadline (default 45 s in the 4.x line) |
+| `heartbeat.interval.ms` | heartbeat period, roughly a third of the session timeout |
+| `partition.assignment.strategy` | e.g. `CooperativeStickyAssignor` for incremental rebalances |
+| `group.instance.id` | static membership — a restart within the session timeout does not rebalance |
 
-### Cache Management
-
-```java
-@Tag(CachedListener.class)
-@Component
-public final class CacheRebalanceListener implements ConsumerAwareRebalanceListener {
-    
-    private final LocalCache cache;
-    
-    public CacheRebalanceListener(LocalCache cache) {
-        this.cache = cache;
-    }
-    
-    @Override
-    public void onPartitionsRevoked(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-        // Clear cache entries for revoked partitions
-        for (TopicPartition partition : partitions) {
-            cache.invalidateForPartition(partition);
-        }
-    }
-    
-    @Override
-    public void onPartitionsAssigned(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-        // Pre-load cache for new partitions (optional)
-        for (TopicPartition partition : partitions) {
-            cache.preloadForPartition(partition);
-        }
-    }
-    
-    @Override
-    public void onPartitionsLost(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-        // Invalidate cache for lost partitions
-        partitions.forEach(cache::invalidateForPartition);
-    }
-}
-```
-
-### Metrics Tracking
-
-```java
-@Tag(MetricsListener.class)
-@Component
-public final class MetricsRebalanceListener implements ConsumerAwareRebalanceListener {
-    
-    private final MeterRegistry meterRegistry;
-    private final AtomicInteger assignedCount = new AtomicInteger();
-    private final AtomicInteger revokedCount = new AtomicInteger();
-    
-    public MetricsRebalanceListener(MeterRegistry meterRegistry) {
-        this.meterRegistry = meterRegistry;
-    }
-    
-    @Override
-    public void onPartitionsRevoked(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-        revokedCount.addAndGet(partitions.size());
-        meterRegistry.counter("kafka.rebalance.partitions.revoked")
-            .increment(partitions.size());
-        log.info("Partitions revoked: {} (total: {})", partitions.size(), revokedCount.get());
-    }
-    
-    @Override
-    public void onPartitionsAssigned(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-        assignedCount.addAndGet(partitions.size());
-        meterRegistry.counter("kafka.rebalance.partitions.assigned")
-            .increment(partitions.size());
-        log.info("Partitions assigned: {} (total: {})", partitions.size(), assignedCount.get());
-    }
-    
-    @Override
-    public void onPartitionsLost(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-        meterRegistry.counter("kafka.rebalance.partitions.lost")
-            .increment(partitions.size());
-        log.warn("Partitions lost: {}", partitions.size());
-    }
-}
-```
+Reducing rebalance impact is mostly about **not being slow**: shrink `max.poll.records`, cap retry
+time inside handlers, and keep the rebalance callbacks trivial. Note that a consumer that dies on a
+poison record restarts and rejoins, rebalancing the group each time — see the
+[error handling reference](kafka-error-handling-reference.md).
 
 ---
 
-## Configuration
+## Pitfalls
 
-### Enable Rebalance Listener
-
-No special configuration needed - the listener is auto-detected by the `@Tag` annotation.
-
-```hocon
-kafka {
-  consumer {
-    myListener {
-      topics = ["my-topic"]
-      driverProperties {
-        "bootstrap.servers" = "localhost:9092"
-        "group.id" = "my-group"
-      }
-      # Rebalance listener auto-detected by @Tag
-    }
-  }
-}
-```
-
-### Tune Rebalance Behavior
-
-```hocon
-kafka {
-  consumer {
-    myListener {
-      topics = ["my-topic"]
-      driverProperties {
-        "bootstrap.servers" = "localhost:9092"
-        "group.id" = "my-group"
-        
-        # Rebalance tuning
-        "session.timeout.ms" = 30000           # Time before considered dead
-        "heartbeat.interval.ms" = 10000        # Heartbeat frequency
-        "max.poll.interval.ms" = 300000        # Max time between polls
-        "rebalance.timeout.ms" = 60000         # Max time for rebalance
-      }
-    }
-  }
-}
-```
+| Symptom | Cause | Fix |
+|---|---|---|
+| Callback never fires | tag mismatch — the parameter is `@Nullable`, so nothing complains | tag both listener and rebalance listener with the same class |
+| Callback never fires | assign mode (no `group.id`) | rebalance exists only for consumer groups |
+| Callback never fires | the class is not a `@Component` | register it |
+| `Multiple components match ConsumerAwareRebalanceListener` | two components share one tag | one per tag |
+| Commit fails inside `onPartitionsLost` | the default delegates to `onPartitionsRevoked`, which commits | override `onPartitionsLost` |
+| Rebalances take minutes | slow callbacks or a slow handler | shorten both; consider `CooperativeStickyAssignor` |
+| Duplicates after every rebalance | manual commits that never ran before revocation | commit in `onPartitionsRevoked`, or let Kora commit |
+| Rolling restarts churn the group | no static membership | set `group.instance.id` per replica |
 
 ---
 
-## Best Practices
+## Related references
 
-### 1. Keep Handlers Fast
+- [Listener signatures](kafka-listener-reference.md) — how the tag is generated
+- [Strategies](kafka-strategies-reference.md) — subscribe vs assign
+- [Offsets](kafka-offset-reference.md)
+- [Error handling](kafka-error-handling-reference.md)
 
-Rebalance handlers should be quick - avoid long-running operations:
-
-```java
-// BAD: Long operation blocks rebalance
-@Override
-public void onPartitionsRevoked(...) {
-    processAllPendingMessages();  // Takes too long!
-}
-
-// GOOD: Quick cleanup
-@Override
-public void onPartitionsRevoked(...) {
-    commitSync();
-    clearCaches();
-}
-```
-
-### 2. Commit Offsets on Revoke
-
-Always commit offsets when partitions are revoked:
-
-```java
-@Override
-public void onPartitionsRevoked(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-    consumer.commitSync();  // Ensure offsets are saved
-}
-```
-
-### 3. Don't Commit on Lost
-
-Never commit offsets in `onPartitionsLost`:
-
-```java
-// WRONG: Consumer no longer owns partitions
-@Override
-public void onPartitionsLost(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-    consumer.commitSync();  // Will fail or commit wrong offsets!
-}
-
-// RIGHT: Clean up only
-@Override
-public void onPartitionsLost(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-    cleanupResources(partitions);
-}
-```
-
-### 4. Log Rebalance Events
-
-Rebalance logging is crucial for debugging:
-
-```java
-private static final Logger log = LoggerFactory.getLogger(MyRebalanceListener.class);
-
-@Override
-public void onPartitionsAssigned(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-    log.info("Partitions assigned: {}", partitions);
-}
-```
-
-### 5. Handle Rebalance Storms
-
-If rebalances happen frequently, investigate the root cause:
-- Check `session.timeout.ms` and `heartbeat.interval.ms`
-- Ensure processing completes within `max.poll.interval.ms`
-- Consider increasing timeouts
-- Check network stability
-
----
-
-## Troubleshooting
-
-### Frequent Rebalances
-
-**Symptoms:** Constant rebalancing, messages processed multiple times.
-
-**Causes:**
-- Processing takes longer than `max.poll.interval.ms`
-- Consumer can't send heartbeats in time
-- Network issues
-
-**Solutions:**
-```hocon
-driverProperties {
-  "max.poll.interval.ms" = 600000  # Increase max poll interval
-  "session.timeout.ms" = 60000     # Increase session timeout
-  "heartbeat.interval.ms" = 15000  # Adjust heartbeat
-}
-```
-
-### Message Duplication
-
-**Symptoms:** Same message processed multiple times.
-
-**Cause:** Offsets not committed before rebalance.
-
-**Solution:** Commit in `onPartitionsRevoked`:
-```java
-@Override
-public void onPartitionsRevoked(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-    consumer.commitSync();
-}
-```
-
-### Partition Starvation
-
-**Symptoms:** Some partitions not being consumed.
-
-**Cause:** Uneven partition distribution.
-
-**Solution:** Check partition assignment and consumer group size.
-
----
-
-## Related References
-
-- [Kafka Consumer Reference](kafka-consumer-reference.md)
-- [Kafka Error Handling Reference](kafka-error-handling-reference.md)
-- [Kafka Telemetry Reference](kafka-telemetry-reference.md)
+**Source:** framework tag `2.0.0.RC1` —
+[ConsumerAwareRebalanceListener](https://github.com/kora-projects/kora/blob/2.0.0.RC1/kafka/kafka/src/main/java/io/koraframework/kafka/common/consumer/ConsumerAwareRebalanceListener.java) ·
+[KafkaSubscribeConsumerContainer](https://github.com/kora-projects/kora/blob/2.0.0.RC1/kafka/kafka/src/main/java/io/koraframework/kafka/common/consumer/containers/KafkaSubscribeConsumerContainer.java)

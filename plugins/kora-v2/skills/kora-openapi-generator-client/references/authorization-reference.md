@@ -1,42 +1,93 @@
-# OpenAPI Client Authorization Reference
+# OpenAPI Client Authorization Reference — Kora 2.x
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/openapi-codegen.md`,
-`.kora-agent/kora-docs/mkdocs/docs/en/documentation/http-client.md` (Authorization section)
-**Example:** `.kora-agent/kora-examples/examples/java/kora-java-openapi-generator-http-client`
+How a generated Kora 2.0 HTTP client authenticates outbound requests. Verified against
+`ClientSecuritySchemaGenerator` and `ClientApiGenerator` in `io.koraframework:openapi-generator` at
+tag `2.0.0.RC1`, the `io.koraframework.http.client.common.auth` / `.interceptor` packages, and the
+migrated Java/Kotlin OpenAPI HTTP-client examples.
+
+Everything here is **client-side** (outbound). `Principal` and `HttpServerPrincipalExtractor`
+belong to the server generator — see `kora-openapi-generator-server`.
 
 ## Contents
 
-- [Two ways to authorize a generated client](#two-ways)
-- [Generator-driven auth (securitySchemes)](#generator-driven)
-- [Manual interceptors](#manual-interceptors)
-  - [ApiKey](#apikey)
-  - [Basic](#basic)
-  - [Bearer / OAuth](#bearer)
-- [Attaching an interceptor](#attaching)
+- [How generated auth works](#how)
+- [Names: tag vs config key](#names)
+- [Schemes the generator wires for you](#generated-providers)
+- [Schemes you must wire yourself: bearer and oauth2](#bearer-oauth)
+- [Credential config paths](#config-paths)
+- [Multiple schemes on one operation](#multiple)
+- [`authAsMethodArgument`](#auth-arg)
+- [Overriding a generated provider](#overriding)
+- [Hand-wiring interceptors without securitySchemes](#manual)
+- [Migrating from Kora 1.x](#migration)
 - [Troubleshooting](#troubleshooting)
 
 ---
 
-## Two ways to authorize a generated client { #two-ways }
+## How generated auth works { #how }
 
-A generated client is a standard Kora `@HttpClient`. Authorization is applied
-through HTTP **client interceptors** (`HttpClientInterceptor`). There are two
-ways to wire them:
+When the contract declares `components.securitySchemes`, the generator emits an `ApiSecurity`
+`@Module` interface next to the `*Api` in `apiPackage`. It contains:
 
-1. **Generator-driven** — when the OpenAPI spec declares `securitySchemes`, the
-   generator emits the interceptor wiring. You select the scheme with
-   `primaryAuth` and point credentials at config via `securityConfigPrefix`.
-2. **Manual** — you declare the interceptor as a `@Module` component and attach
-   it to the generated `*Api` (or specific methods) with `@InterceptWith`.
+- a **marker class per security scheme** (`ApiSecurity.ApiKeyAuth`, `ApiSecurity.BearerAuth`, …)
+  used as a Kora `@Tag`;
+- a `SecurityConfig` record plus a `@DefaultComponent` factory that reads credentials from config;
+- a `@DefaultComponent` `HttpClientTokenProvider` per scheme the generator can resolve on its own;
+- a marker class and a `@DefaultComponent` `HttpClientInterceptor` per distinct **security
+  requirement** appearing in the contract.
 
-> All auth here is **client-side** (outbound requests). `HttpServerPrincipalExtractor`
-> and `Principal` belong to the **server** generator — see `kora-openapi-generator-server`.
+Each generated method then carries `@InterceptWith(value = HttpClientInterceptor.class, tag =
+ApiSecurity.<Requirement>.class)`, so Kora looks the interceptor up by tag at graph build time.
 
----
+`ApiSecurity` carries `@Module`, and the `@KoraApp` processor collects every `@Module`-annotated
+interface in the compilation into the graph on its own. There is nothing to extend from `@KoraApp`
+and nothing to register — the generated module is live as soon as it compiles.
 
-## Generator-driven auth (securitySchemes) { #generator-driven }
+The credential contract is one synchronous method:
 
-OpenAPI spec:
+```java
+package io.koraframework.http.client.common.auth;
+
+public interface HttpClientTokenProvider {
+    @Nullable String getToken(HttpClientRequest request);
+}
+```
+
+Returning `null` means "this scheme has nothing to contribute" — the interceptor moves on. In
+Kora 1.x this returned a `CompletionStage<String>`; in 2.0 it is a plain nullable `String`.
+
+## Names: tag vs config key { #names }
+
+Two different transformations of the same scheme name, and mixing them up is a common failure:
+
+| From `components.securitySchemes` | Generated `@Tag` marker | Credential config key |
+|---|---|---|
+| `apiKeyAuth` | `ApiSecurity.ApiKeyAuth` | `<prefix>.apiKeyAuth` |
+| `bearerAuth` | `ApiSecurity.BearerAuth` | *(bearer reads no config)* |
+| `basicAuth` | `ApiSecurity.BasicAuth` | `<prefix>.basicAuth.username` / `.password` |
+| `ApiKeyAuth` | `ApiSecurity.ApiKeyAuth` | `<prefix>.ApiKeyAuth` |
+
+The **tag** capitalises the first letter of the scheme name. The **config key** uses the scheme
+name exactly as written in the contract. Rename a scheme in the spec and both move.
+
+Ordinal `ApiSecurity.SecurityRequirementTag1` names from Kora 1.x do not exist. A provider tagged
+that way is simply never found, and the graph fails to build with a missing-dependency error that
+names `HttpClientTokenProvider`, not the tag you expected.
+
+## Schemes the generator wires for you { #generated-providers }
+
+| Scheme | Generated | Sends |
+|---|---|---|
+| `type: apiKey` (header / query / cookie) | `@DefaultComponent @Tag(<Scheme>) HttpClientTokenProvider` reading the config value | the configured parameter |
+| `type: http, scheme: basic` | `@Tag(<Scheme>) BasicAuthHttpClientTokenProvider` built from `username` + `password` | `Authorization: Basic <base64>` |
+| `type: http, scheme: bearer` | tag class only — **no provider** | `Authorization: <token>` from your provider |
+| `type: oauth2` | tag class only — **no provider** | `Authorization: <token>` from your provider |
+
+Any other `type` (for example `openIdConnect` without a supported mapping) aborts generation with
+an explicit "unsupported security scheme" message rather than emitting something that silently
+does nothing.
+
+Spec and generator config:
 
 ```yaml
 components:
@@ -44,43 +95,196 @@ components:
     apiKeyAuth:
       type: apiKey
       in: header
-      name: X-API-Key
+      name: X-API-KEY
+security:
+  - apiKeyAuth: []
 ```
-
-Generator config:
 
 ```groovy
 configOptions = [
-    mode                : "java-client",
-    clientConfigPrefix  : "httpClient.pet",
-    primaryAuth         : "apiKeyAuth",   // scheme name; required only if multiple schemes exist
-    securityConfigPrefix: "openapiAuth",  // config root for credentials
+        mode                : "java-client",
+        clientConfigPrefix  : "httpClient.pet",
+        securityConfigPrefix: "openapiAuth",   // credential root
+        primaryAuth         : "apiKeyAuth",    // only needed when several schemes apply
 ]
 ```
 
-Credentials resolve from `<securityConfigPrefix>.<schemeName>`:
-
 ```hocon
-openapiAuth.apiKeyAuth = ${API_KEY}
+openapiAuth {
+  apiKeyAuth = ${API_KEY}
+  basicAuth { username = ${BASIC_USER}, password = ${BASIC_PASSWORD} }
+}
 ```
 
-Relevant `configOptions`:
+## Schemes you must wire yourself: bearer and oauth2 { #bearer-oauth }
 
-| Option | Meaning |
-|--------|---------|
-| `primaryAuth` | Which `securitySchemes` entry is the primary one when several are defined |
-| `securityConfigPrefix` | Config prefix for Basic/ApiKey credentials; final path is `prefix + schemeName` (or just `schemeName` if omitted) |
-| `authAsMethodArgument` | Pass authorization as a method argument instead of via interceptor (`true`/`false`) |
-| `authAllowMultiple` | Generate interceptors for multi-authentication (`true`/`false`) |
+The generator has no way to obtain a bearer or OAuth token, so it emits the tag and stops. The
+application must supply a `HttpClientTokenProvider` under that tag or the graph will not build:
 
----
+```java
+@KoraApp
+public interface Application extends
+        HoconConfigModule, LogbackModule, JsonModule, OkHttpClientModule {
 
-## Manual interceptors { #manual-interceptors }
+    @Tag(ApiSecurity.BearerAuth.class)
+    default HttpClientTokenProvider bearerAuthTokenProvider(TokenService tokens) {
+        return request -> tokens.currentAccessToken();   // may return null
+    }
 
-Kora ships ready-made client interceptors. Declare them in a `@Module` and attach
-with `@InterceptWith`.
+    static void main(String[] args) {
+        KoraApplication.run(ApplicationGraph::graph);
+    }
+}
+```
 
-### ApiKey { #apikey }
+```kotlin
+@KoraApp
+interface Application : HoconConfigModule, LogbackModule, JsonModule, OkHttpClientModule {
+
+    @Tag(ApiSecurity.BearerAuth::class)
+    fun bearerAuthTokenProvider(tokens: TokenService): HttpClientTokenProvider =
+        HttpClientTokenProvider { tokens.currentAccessToken() }
+}
+```
+
+The provider returns the **full header value**, so include the scheme prefix if the server expects
+one (`"Bearer " + token`); the generated interceptor writes it into `Authorization` unchanged.
+
+**A scheme you do not use still needs a provider, and it must return `null`.** When several
+schemes share an operation, the generated interceptor walks them in order and uses the first
+non-null token. A stub that returns a placeholder string will win the race and send the wrong
+credential:
+
+```java
+// Required by ApiSecurity even though this service never uses OAuth.
+// Must return null, or it pre-empts apiKeyAuth and the request goes out with the wrong header.
+@Tag(ApiSecurity.OAuth.class)
+default HttpClientTokenProvider oAuthTokenProvider() {
+    return request -> null;
+}
+```
+
+## Credential config paths { #config-paths }
+
+`securityConfigPathPrefix()` resolves in this order:
+
+| Condition | Prefix |
+|---|---|
+| `securityConfigPrefix` set | its value |
+| else `clientConfigPrefix` set | `<clientConfigPrefix>.security` |
+| else `clientConfig` set | `<clientConfig>.security` |
+| else | `security` |
+
+The scheme name is then appended verbatim. With `clientConfigPrefix = "httpClient.pet"` and no
+`securityConfigPrefix`, the generated module reads:
+
+```hocon
+httpClient.pet.security {
+  apiKeyAuth = ${API_KEY}
+  basicAuth { username = ${BASIC_USER}, password = ${BASIC_PASSWORD} }
+}
+```
+
+Note that the credential prefix is derived from the **prefix**, not from the per-client
+lower-camel path — credentials are shared across every API generated from the spec, while
+`url` and timeouts are per API class. Setting `securityConfigPrefix` explicitly avoids having to
+reason about the fallback at all.
+
+Every generated credential field is `@Nullable`. A missing value does not fail at startup; it
+produces a provider that returns `null`, and the request goes out unauthenticated.
+
+## Multiple schemes on one operation { #multiple }
+
+The generator groups each distinct **security requirement** into its own tag and interceptor. For
+an operation allowing `apiKeyAuth` OR `anotherApiKeyAuth`, it emits a combined marker
+`ApiSecurity.ApiKeyAuth_AnotherApiKeyAuth` and an interceptor that injects both providers by tag
+and tries them in turn. Requirements listing several schemes together (AND) produce names joined
+with `And`, e.g. `ApiSecurity.Sec1AndSec2`; an operation that also permits anonymous access gets an
+`_Anonymous` suffix.
+
+`primaryAuth` names the scheme to prefer when several apply. `useSecurityDeclarationOrder = true`
+makes the generator derive tags and try providers in the contract's declaration order instead of a
+normalised order — use it when the order in the spec is meaningful.
+
+## `authAsMethodArgument` { #auth-arg }
+
+With `authAsMethodArgument: true`, the credential becomes a generated method parameter instead of
+being applied by an interceptor:
+
+```java
+// authAsMethodArgument = false (default) — interceptor supplies the header
+PetsApiResponses.ListPetsApiResponse listPets(@Query("limit") @Nullable Integer limit);
+
+// authAsMethodArgument = true — caller supplies it per call
+PetsApiResponses.ListPetsApiResponse listPets(
+        @Header("X-API-KEY") @Nullable String ApiKeyAuth,
+        @Query("limit") @Nullable Integer limit);
+```
+
+The parameter name is the security scheme name and its location follows the scheme (query, header,
+cookie, or the `Authorization` header for `http` / `oauth2` / `openIdConnect`). Use it when the
+credential varies per call — a per-user token, for instance — rather than per client instance. A
+scheme whose location cannot be mapped to a parameter fails generation with a message naming the
+operation and the scheme.
+
+If the contract also declares an explicit `Authorization` header parameter, generation fails with a
+name clash; rename the parameter or turn the option off.
+
+## Overriding a generated provider { #overriding }
+
+Every generated provider and interceptor is a `@DefaultComponent`, so declaring your own component
+with the same type and tag replaces it — no generator option needed:
+
+```java
+@Component
+@Tag(ApiSecurity.ApiKeyAuth.class)
+public final class RotatingApiKeyProvider implements HttpClientTokenProvider {
+
+    private final KeyVault vault;
+
+    public RotatingApiKeyProvider(KeyVault vault) {
+        this.vault = vault;
+    }
+
+    @Override
+    public String getToken(HttpClientRequest request) {
+        return vault.current();
+    }
+}
+```
+
+This is the right hook for tokens that rotate, are fetched over the network, or depend on the
+outgoing request.
+
+## Hand-wiring interceptors without securitySchemes { #manual }
+
+If the contract declares no `securitySchemes` — or you want auth the contract does not describe —
+attach a stock interceptor through the generator's `extensions` option, keyed by OpenAPI tag:
+
+```groovy
+configOptions = [
+        mode              : "java-client",
+        clientConfigPrefix: "httpClient.pet",
+        extensions        : """
+        {
+          "tags": {
+            "pet": { "interceptorType": "com.example.PetAuthInterceptor" }
+          }
+        }
+        """,
+]
+```
+
+Kora ships three ready-made client interceptors in
+`io.koraframework.http.client.common.interceptor`:
+
+| Interceptor | Constructor | Effect |
+|---|---|---|
+| `ApiKeyHttpClientInterceptor` | `(ApiKeyLocation location, String parameterName, String secret)` | header, query param or cookie; `ApiKeyLocation` is a nested enum with `HEADER`, `QUERY`, `COOKIE` |
+| `BasicAuthHttpClientInterceptor` | `(String username, String password)` or `(HttpClientTokenProvider)` | `Authorization: Basic <base64>` |
+| `BearerAuthHttpClientInterceptor` | `(String token)` or `(HttpClientTokenProvider)` | `Authorization: Bearer <token>` |
+
+Both `BasicAuth…` and `BearerAuth…` skip the header entirely when the provider returns `null`.
 
 ```java
 @Module
@@ -91,85 +295,41 @@ public interface ApiKeyAuthModule {
         String apiKey();
     }
 
-    default ApiKeyHttpClientInterceptor apiKeyAuther(ApiKeyAuthConfig config) {
-        return new ApiKeyHttpClientInterceptor(ApiKeyLocation.HEADER, "X-API-KEY", config.apiKey());
+    default ApiKeyHttpClientInterceptor apiKeyInterceptor(ApiKeyAuthConfig config) {
+        return new ApiKeyHttpClientInterceptor(
+                ApiKeyHttpClientInterceptor.ApiKeyLocation.HEADER, "X-API-KEY", config.apiKey());
     }
 }
 ```
 
-`ApiKeyLocation` selects where the key goes (e.g. `HEADER`).
+You cannot put `@InterceptWith` on a generated interface by hand — it is regenerated on every
+build. Go through `extensions`, or hand-write the client (`kora-http-client`).
 
-### Basic { #basic }
+## Migrating from Kora 1.x { #migration }
 
-```java
-@Module
-public interface BasicAuthModule {
-
-    @ConfigSource("openapiAuth.basicAuth")
-    interface BasicAuthConfig {
-        String username();
-        String password();
-    }
-
-    default BasicAuthHttpClientInterceptor basicAuther(BasicAuthConfig config) {
-        return new BasicAuthHttpClientInterceptor(config.username(), config.password());
-    }
-}
-```
-
-### Bearer / OAuth { #bearer }
-
-Bearer needs an `HttpClientTokenProvider` (or a constructor that takes a static token).
-OAuth is wired the same way — supply your own `HttpClientTokenProvider`.
-
-```java
-public interface HttpClientTokenProvider {
-    CompletionStage<String> getToken(HttpClientRequest request);
-}
-
-@Module
-public interface BearerAuthModule {
-
-    default BearerAuthHttpClientInterceptor bearerAuther(HttpClientTokenProvider tokenProvider) {
-        return new BearerAuthHttpClientInterceptor(tokenProvider);
-    }
-}
-```
-
----
-
-## Attaching an interceptor { #attaching }
-
-`@InterceptWith` goes on the generated `*Api` interface or individual methods.
-Since the `*Api` is generated, the common path is to attach interceptors through
-the generator `interceptors` config option (see
-[openapi-codegen-reference.md](openapi-codegen-reference.md#interceptors)) keyed by
-the OpenAPI tag. For a hand-written `@HttpClient`, attach directly:
-
-```java
-@HttpClient
-public interface SomeClient {
-
-    @InterceptWith(ApiKeyHttpClientInterceptor.class)
-    @HttpRoute(method = HttpMethod.GET, path = "/hello/world")
-    void hello();
-}
-```
-
----
+| Kora 1.x | Kora 2.x |
+|---|---|
+| `ru.tinkoff.kora.http.client.common.auth.HttpClientTokenProvider` | `io.koraframework.http.client.common.auth.HttpClientTokenProvider` |
+| `CompletionStage<String> getToken(request)` | `@Nullable String getToken(request)` — synchronous |
+| `@Tag(ApiSecurity.SecurityRequirementTag1.class)` | `@Tag(ApiSecurity.<SchemeName>.class)` |
+| `ApiKeyLocation` as a top-level enum | nested: `ApiKeyHttpClientInterceptor.ApiKeyLocation` |
+| `configOptions.authAllowMultiple` | removed — multi-scheme interceptors are generated unconditionally |
+| `configOptions.interceptors` | `configOptions.extensions` (`interceptorType` / `interceptorTag`) |
 
 ## Troubleshooting { #troubleshooting }
 
-| Problem | Solution |
-|---------|----------|
-| Interceptor not applied to generated client | Wire it via generator `interceptors` config option keyed by the OpenAPI tag, or set `primaryAuth`/`securityConfigPrefix` |
-| Credentials not resolved | `securityConfigPrefix` + scheme name must match the config path; externalize via `${ENV_VAR}` |
-| Multiple `securitySchemes`, wrong one used | Set `primaryAuth` to the scheme name; use `authAllowMultiple` for multi-auth |
-| `BearerAuthHttpClientInterceptor` needs a token | Provide an `HttpClientTokenProvider` component or use the static-token constructor |
-| Confusing with server `Principal` | `Principal`/`HttpServerPrincipalExtractor` are server-side; this skill is client-only |
+| Symptom | Cause / fix |
+|---|---|
+| `No component found for dependency: HttpClientTokenProvider` with a scheme tag | A `bearer` or `oauth2` scheme has no application-supplied provider — add one under `@Tag(ApiSecurity.<Scheme>.class)` |
+| Request goes out with the wrong credential | Several schemes apply and an unused one returns a non-null token; make it return `null`, or set `primaryAuth` |
+| Requests unauthenticated, no error anywhere | Credential config path wrong or unset — every generated credential is `@Nullable`, so a missing value yields a `null` token |
+| `Multiple components match` on a provider | Your `@Component` and the generated one collide — the generated one is `@DefaultComponent`, so match its type *and* tag exactly rather than adding a second binding |
+| Provider never called | The interceptor is bound by tag; a hand-written provider tagged `SecurityRequirementTagN` (1.x) is never resolved |
+| Generation fails naming an operation and a scheme | `authAsMethodArgument` cannot map that scheme's location to a parameter, or an explicit `Authorization` header parameter clashes |
 
 ---
 
 ## Related references
 
-- [openapi-codegen-reference.md](openapi-codegen-reference.md) — generator configuration, interceptors, tags
+- [openapi-codegen-reference.md](openapi-codegen-reference.md) — `configOptions`, config-path
+  derivation, `extensions`, generated artifacts

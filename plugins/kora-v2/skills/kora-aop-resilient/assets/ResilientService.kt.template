@@ -1,74 +1,61 @@
-// Kotlin outbound call wrapped with @Timeout + @Retry + @CircuitBreaker + @Fallback.
-// Aspect order (top to bottom) matters — see resilience-config-reference.md.
-// Replace `com.example.app.service` with your package.
-// Class must be `open` for aspects to work.
+// Outbound call wrapped with @Fallback + @CircuitBreakable + @Retryable + @Timeout (Kora 2.0).
+// Requires the spec interfaces from ResilientSpecs.kt.template.
+// The class AND every annotated method must be `open` — otherwise KSP fails the build with
+// "AOP aspect cannot be applied to class ... because the class is not open".
+// Replace `com.example.app.resilience` with your package.
 
-package com.example.app.service
+package com.example.app.resilience
 
-import ru.tinkoff.kora.common.Component
-import ru.tinkoff.kora.resilient.circuitbreaker.annotation.CircuitBreaker
-import ru.tinkoff.kora.resilient.fallback.annotation.Fallback
-import ru.tinkoff.kora.resilient.retry.annotation.Retry
-import ru.tinkoff.kora.resilient.timeout.annotation.Timeout
+import io.koraframework.common.annotation.Component
+import io.koraframework.resilient.circuitbreaker.annotation.CircuitBreakable
+import io.koraframework.resilient.fallback.annotation.Fallback
+import io.koraframework.resilient.retry.annotation.Retryable
+import io.koraframework.resilient.timeout.annotation.Timeout
 
 @Component
-open class InventoryService(                                              // open, not final
-    private val client: InventoryClient
-) {
+open class PaymentService(private val gateway: PaymentGateway) {
 
-    // Declaration order = application order. The LAST annotation listed is the
-    // innermost (applied first). With the order below:
-    //   1. @Timeout (innermost) bounds the underlying call/attempt.
-    //   2. @Retry retries that call until success or attempts are exhausted (each attempt is bounded by @Timeout).
-    //   3. @CircuitBreaker opens after enough failures and then short-circuits before @Retry runs.
-    //   4. @Fallback (outermost) supplies a degraded value when the chain still fails.
-    @Fallback(value = "inventory.check", method = "checkFallback(sku)")
-    @CircuitBreaker("inventory.check")
-    @Retry("inventory.check")
-    @Timeout("inventory.check")
-    open fun checkStock(sku: String): Int {
-        return client.call(sku)
-    }
+    // Declaration order IS nesting order: the FIRST annotation listed is the OUTERMOST wrapper,
+    // the LAST is innermost and calls the real body.
+    //   1. @Timeout (innermost) bounds ONE attempt.
+    //   2. @Retryable repeats that timed attempt.
+    //   3. @CircuitBreakable short-circuits before any retry runs once it is OPEN.
+    //   4. @Fallback (outermost) catches CallNotPermittedException, RetryExhaustedException,
+    //      TimeoutExhaustedException and the business exception alike.
+    //
+    // Moving @Fallback to the bottom makes it innermost: it would swallow the failure before the
+    // circuit breaker records it, and the breaker would never open.
+    @Fallback(method = "chargeFallback(request)")
+    @CircuitBreakable(PaymentCircuitBreaker::class)
+    @Retryable(PaymentRetry::class)
+    @Timeout(PaymentTimeouter::class)
+    open fun charge(request: PaymentRequest): PaymentResult = gateway.charge(request)
 
-    // Fallback method — same class, signature-compatible return type.
-    protected open fun checkFallback(sku: String): Int = 0
+    // Overall budget instead of a per-attempt bound: @Timeout above @Retryable.
+    // Make the budget larger than the whole retry schedule or later attempts never run.
+    @Timeout(PaymentTimeouter::class)
+    @Retryable(PaymentRetry::class)
+    open fun chargeWithOverallBudget(request: PaymentRequest): PaymentResult = gateway.charge(request)
 
-    // Per-attempt timeout instead: swap order — @Retry outside @Timeout.
-    @Retry("inventory.check")
-    @Timeout("inventory.check.perAttempt")
-    open fun checkWithPerAttemptTimeout(sku: String): Int {
-        return client.call(sku)
+    // Fallback method: same class, non-private, parameters exactly as referenced above,
+    // plus at most one @Fallback.Reason parameter. It does not have to be `open` itself.
+    protected open fun chargeFallback(request: PaymentRequest): PaymentResult =
+        PaymentResult.pendingManualReview(request.id)
+}
+
+// ---------------------------------------------------------------- placeholders
+
+data class PaymentRequest(val id: String, val amountMinor: Long)
+
+data class PaymentResult(val id: String, val status: String) {
+    companion object {
+        fun pendingManualReview(id: String) = PaymentResult(id, "PENDING_MANUAL_REVIEW")
     }
 }
 
-// Placeholder dependency — replace with your actual client
-open class InventoryClient {
-    open fun call(sku: String): Int = 42
+@Component
+open class PaymentGateway {
+    open fun charge(request: PaymentRequest): PaymentResult = PaymentResult(request.id, "CHARGED")
 }
 
-// Config snippet (HOCON) — add to your application.conf:
-//
-// resilient {
-//   timeout {
-//     "inventory.check" { duration = "2s" }
-//   }
-//   retry {
-//     "inventory.check" {
-//       attempts = 3
-//       delay = "100ms"
-//       delayStep = "100ms"
-//     }
-//   }
-//   circuitbreaker {
-//     "inventory.check" {
-//       slidingWindowSize = 100
-//       minimumRequiredCalls = 10
-//       failureRateThreshold = 50
-//       waitDurationInOpenState = "30s"
-//       permittedCallsInHalfOpenState = 5
-//     }
-//   }
-//   fallback {
-//     "inventory.check" { enabled = true }
-//   }
-// }
+// See ResilientSpecs.kt.template for the spec interfaces and the matching HOCON.

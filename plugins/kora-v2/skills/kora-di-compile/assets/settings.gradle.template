@@ -1,15 +1,15 @@
-rootProject.name = '${projectName}'
+rootProject.name = "${projectName}"
 
-// Include submodules for multi-module projects
-// Uncomment and modify as needed for projects with 500+ classes
-
-// include ':common'
-// include ':domain-a'
-// include ':domain-b'
-// include ':app'
-
-// Example structure:
-// - common/     — shared types, utilities, common module interface
-// - domain-a/   — domain A module (entities, services, controllers)
-// - domain-b/   — domain B module (entities, services, controllers)
-// - app/        — application assembly (main Application interface)
+// Multi-module layout — see references/kora-submodule-reference.md
+//
+// Each subproject that declares Kora annotations needs the annotation processor (Java) or the
+// KSP processor (Kotlin) on its own compile classpath, or its @KoraSubmodule companion is never
+// generated and the @KoraApp build fails with:
+//   Kora submodule was not generated yet: expected type: <...>SubmoduleImpl
+//
+// include ":common"     — shared types; @KoraSubmodule handle
+// include ":pet-api"    — domain subproject; @KoraSubmodule extends CommonModule
+// include ":vet-api"    — domain subproject; @KoraSubmodule extends CommonModule
+// include ":app"        — assembly only: the @KoraApp interface and main()
+//
+// Domain subprojects depend on :common, never on each other.

@@ -1,112 +1,332 @@
 {
   "evals": [
     {
-      "id": "kora-aop-logging-basic-log",
-      "skills": ["kora-aop-logging"],
-      "query": "Add entry/exit logging to the getUser(String id) method of my Kora UserService so I can see arguments and the returned value.",
-      "expected_behavior": [
-        "Annotates getUser with @Log from ru.tinkoff.kora.logging.common.annotation",
-        "Notes the enclosing class must be non-final (Java) or open (Kotlin) for the aspect to weave",
-        "Mentions arguments and result appear only when the class logger is at DEBUG/TRACE, while INFO shows boundary markers > and <",
-        "Does not add a manual SLF4J logger field or use field injection"
+      "id": "kora-aop-logging-setup-java",
+      "skills": [
+        "kora-aop-logging"
       ],
-      "tags": ["logging", "basic"]
+      "query": "I have a Kora 2.0 Java service. Enable declarative method logging from scratch — what dependencies, processor and module do I need?",
+      "expected_behavior": [
+        "Adds implementation \"io.koraframework:logging-logback\" versioned through the io.koraframework:kora-bom platform (koraVersion=2.0.0.RC1), without pinning a version on the individual artifact",
+        "Adds the mandatory annotationProcessor \"io.koraframework:annotation-processors\", which contains logging-annotation-processor",
+        "Extends io.koraframework.logging.logback.LogbackModule on the @KoraApp interface (it extends LoggingModule, which supplies the ILoggerFactory and the LoggingLevelApplier)",
+        "Uses io.koraframework.logging.common.annotation.Log on a non-final class and method",
+        "Does NOT add declarative-logging-annotation-processor — that is a Kora 1.x artifact and is not in the 2.0 BOM",
+        "Does not use the ru.tinkoff.kora group, the kora-parent BOM, or ru.tinkoff.kora.* imports"
+      ],
+      "tags": [
+        "setup",
+        "java",
+        "basic"
+      ]
     },
     {
-      "id": "kora-aop-logging-setup",
-      "skills": ["kora-aop-logging"],
-      "query": "How do I enable Kora method logging from scratch in a new service? What dependency and module do I need?",
-      "expected_behavior": [
-        "Adds ru.tinkoff.kora:logging-logback (or logging-common) via the kora-parent BOM without pinning an individual version",
-        "Includes the mandatory annotation processor: annotationProcessor \"ru.tinkoff.kora:annotation-processors\" for Java or ksp \"ru.tinkoff.kora:symbol-processors\" for Kotlin",
-        "Extends LoggingModule on the @KoraApp interface",
-        "Does not pin individual ru.tinkoff.kora artifact versions or omit the annotation processor"
+      "id": "kora-aop-logging-setup-kotlin",
+      "skills": [
+        "kora-aop-logging"
       ],
-      "tags": ["setup", "basic"]
+      "query": "Same thing for my Kotlin Kora 2.0 service — how do I wire up @Log with KSP?",
+      "expected_behavior": [
+        "Adds ksp(\"io.koraframework:symbol-processors:${property(\"koraVersion\")}\") — the ksp configuration does not inherit the BOM platform, so it carries the version",
+        "Adds implementation(\"io.koraframework:logging-logback\") and the kora-bom platform",
+        "Extends LogbackModule on the @KoraApp interface",
+        "Marks the class and the annotated function open, because the aspect is a generated subclass",
+        "Does NOT add declarative-logging-symbol-processor — a Kora 1.x artifact absent from the 2.0 BOM",
+        "Does not reference ru.tinkoff.kora or kora-parent"
+      ],
+      "tags": [
+        "setup",
+        "kotlin",
+        "basic"
+      ]
     },
     {
-      "id": "kora-aop-logging-mdc-parameter",
-      "skills": ["kora-aop-logging"],
-      "query": "I want every log line in processOrder to include the orderId from the method parameter.",
-      "expected_behavior": [
-        "Adds @Mdc(key = \"orderId\") to the orderId parameter (or bare @Mdc to use the parameter name as the key)",
-        "Imports ru.tinkoff.kora.logging.common.annotation.Mdc, not org.slf4j.MDC",
-        "Keeps @Log on the method so the records are emitted",
-        "Does not call SLF4J MDC.put manually or use field injection"
+      "id": "kora-aop-logging-kotlin-not-open",
+      "skills": [
+        "kora-aop-logging"
       ],
-      "tags": ["mdc", "basic"]
+      "query": "My Kotlin build fails with \"AOP aspect cannot be applied to class 'com.example.OrderService' because the class is not open\" after I added @Log. What is going on?",
+      "expected_behavior": [
+        "Explains that the Kora aspect is woven into a generated $OrderService__AopProxy subclass, so the target must be extensible",
+        "Marks both the class and the annotated function open",
+        "Notes the class must not be abstract, and that top-level functions cannot be woven at all",
+        "States that Kora 2.0 reports this as an explicit compile error rather than skipping the aspect silently",
+        "Does not suggest disabling the processor, adding all-open plugins as the primary fix, or switching to a hand-written SLF4J logger"
+      ],
+      "tags": [
+        "kotlin",
+        "aop",
+        "troubleshooting"
+      ]
+    },
+    {
+      "id": "kora-aop-logging-java-final",
+      "skills": [
+        "kora-aop-logging"
+      ],
+      "query": "In Java I put @Log on a method of a final service class and the build now fails. Why can't Kora just log it?",
+      "expected_behavior": [
+        "Explains the subclass proxy requirement: neither the class nor the annotated method may be final, and the class needs a public, protected or package-private constructor",
+        "Quotes or paraphrases the compile error \"AOP aspect cannot be applied to class ... because the class is final\"",
+        "Removes final from the class (and the method if it is final)",
+        "Adds that self-invocation via this.method() and objects built with new bypass the aspect for the same reason",
+        "Does not claim the aspect is silently skipped"
+      ],
+      "tags": [
+        "java",
+        "aop",
+        "troubleshooting"
+      ]
+    },
+    {
+      "id": "kora-aop-logging-levels-config-key",
+      "skills": [
+        "kora-aop-logging"
+      ],
+      "query": "I added this to application.conf but nothing changed:\n\nlogging.level {\n  com.example.OrderService = DEBUG\n}\n\nWhy don't I see the arguments of my @Log method?",
+      "expected_behavior": [
+        "Corrects the key to logging.levels (plural) — LoggingConfig exposes Map<String, String> levels(); logging.level is an unknown key that is ignored without a warning",
+        "Quotes the dotted logger name, e.g. \"com.example.OrderService\": \"DEBUG\", because an unquoted dotted key nests into HOCON objects and matches no logger",
+        "Explains that the argument payload is gated on the more verbose of DEBUG and the entry level, so at INFO only the bare > and < markers appear",
+        "Mentions that the logger is named <fully-qualified class>.<method>, so a level on the class covers all its method loggers",
+        "Does not tell the user to edit per-logger levels in logback.xml as the fix"
+      ],
+      "tags": [
+        "config",
+        "levels",
+        "troubleshooting"
+      ]
+    },
+    {
+      "id": "kora-aop-logging-logback-levels-cleared",
+      "skills": [
+        "kora-aop-logging"
+      ],
+      "query": "My logback.xml has <logger name=\"com.example\" level=\"DEBUG\"/> and <root level=\"WARN\"/>, but at runtime everything logs at INFO and my @Log data never appears. What resets it?",
+      "expected_behavior": [
+        "Identifies LoggingLevelRefresher: it is a @Root Lifecycle whose init() calls LoggingLevelApplier.reset(), setting ROOT to INFO and clearing every other logger's level, and only then applies logging.levels",
+        "Concludes that per-logger levels in logback.xml do not survive graph initialisation",
+        "Moves both the ROOT level and the per-package level into the logging.levels map in application.conf, with quoted keys",
+        "Keeps logback.xml for appenders and encoders only",
+        "Does not suggest removing LogbackModule or LoggingModule to keep logback.xml levels"
+      ],
+      "tags": [
+        "config",
+        "levels",
+        "troubleshooting"
+      ]
+    },
+    {
+      "id": "kora-aop-logging-telemetry-vs-aspect",
+      "skills": [
+        "kora-aop-logging"
+      ],
+      "query": "I set httpServer.telemetry.logging.enabled = true in application.conf but my service method annotated with @Log still logs nothing useful. Are these the same setting?",
+      "expected_behavior": [
+        "States clearly that they are different switches: <component>.telemetry.logging.enabled controls Kora's built-in component telemetry (httpServer, httpClient, jdbc, kafka) and defaults to false in TelemetryConfig.LoggingConfig",
+        "States that the @Log aspect is independent of it and is governed by the annotation plus the SLF4J logger level from logging.levels",
+        "Directs the user to raise the <class> or <class>.<method> logger to DEBUG in logging.levels to see argument and result payloads",
+        "Does not claim that telemetry.logging.enabled turns @Log on or off"
+      ],
+      "tags": [
+        "config",
+        "telemetry",
+        "troubleshooting"
+      ]
+    },
+    {
+      "id": "kora-aop-logging-mdc-context-removed",
+      "skills": [
+        "kora-aop-logging"
+      ],
+      "query": "Porting a Kora 1.x service: we used to stash a correlationId in the Kora Context and read it back in an interceptor for logging. How do I do that in Kora 2.0?",
+      "expected_behavior": [
+        "States that the Kora Context type has been removed from the entire framework in 2.0 and has no drop-in replacement, so the 1.x code must be rewritten rather than repackaged",
+        "Points to io.koraframework.logging.common.MDC, held in a ScopedValue<MDC> (MDC.VALUE), as the 2.0 store for per-call logging context",
+        "Uses @Mdc on the method or parameter, or MDC.put/MDC.remove imperatively, instead of Context",
+        "Notes that a ScopedValue binding is not inherited by threads you start yourself, and that Kora binds the scope at its entry points (Undertow handler, Kafka record handlers, gRPC transport filter, JMS listener, JDK/Quartz jobs)",
+        "Does not import ru.tinkoff.kora.common.Context or invent an io.koraframework Context type"
+      ],
+      "tags": [
+        "mdc",
+        "migration",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-aop-logging-mdc-unbound-scope",
+      "skills": [
+        "kora-aop-logging"
+      ],
+      "query": "A plain JUnit test that calls my @Mdc-annotated service method throws java.util.NoSuchElementException from MDC.get(). The same method works fine when called through the HTTP endpoint.",
+      "expected_behavior": [
+        "Explains that Kora's MDC lives in a ScopedValue (MDC.VALUE) and that reading an unbound ScopedValue throws NoSuchElementException",
+        "Notes the @Mdc aspect's first generated statement is MDC.get().values(), so it needs a binding, while Kora entry points establish one per request/record/job",
+        "Wraps the call in ScopedValue.where(MDC.VALUE, new MDC()).run(...) / .call(...) for the test",
+        "Does not suggest switching to org.slf4j.MDC or removing @Mdc to make the test pass"
+      ],
+      "tags": [
+        "mdc",
+        "testing",
+        "troubleshooting"
+      ]
+    },
+    {
+      "id": "kora-aop-logging-log-off-and-result-modifiers",
+      "skills": [
+        "kora-aop-logging"
+      ],
+      "query": "I put @Log.off on internalCleanup() to silence it and @Log.result on computeTotal() to log its return value, but internalCleanup still logs and computeTotal logs nothing at all.",
+      "expected_behavior": [
+        "Explains that only @Log, @Log.in and @Log.out weave the aspect (they are @AopAnnotation); @Log.result and @Log.off are @AopPropagate modifiers",
+        "States @Log.result alone logs nothing — it needs @Log or @Log.out on the same method, where it only sets the level of the out payload",
+        "States @Log.off on a method does not silence it — with @Log.out it still emits the < record and only drops the out payload; to silence a method remove its @Log* annotations",
+        "Keeps @Log.off on parameters as the way to omit a single argument",
+        "Does not invent a Level.OFF or a @Log(enabled = false) attribute"
+      ],
+      "tags": [
+        "levels",
+        "selective",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-aop-logging-level-value-attribute",
+      "skills": [
+        "kora-aop-logging"
+      ],
+      "query": "Set the @Log level on debugOperation to DEBUG in my Kora 2.0 Java service.",
+      "expected_behavior": [
+        "Writes @Log(Level.DEBUG) — the level is the annotation's value attribute, typed org.slf4j.event.Level; @Log(level = ...) does not compile",
+        "Imports org.slf4j.event.Level",
+        "Notes org.slf4j.event.Level has only TRACE, DEBUG, INFO, WARN, ERROR — there is no Level.OFF",
+        "Mentions that arguments are emitted at max(their own level, the entry level) with a DEBUG floor",
+        "Does not put @Log on the class — @Log targets METHOD and PARAMETER only"
+      ],
+      "tags": [
+        "levels",
+        "java",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-aop-logging-kotlin-log-in-backticks",
+      "skills": [
+        "kora-aop-logging"
+      ],
+      "query": "In Kotlin, @Log.in doesn't compile on my service function. How do I log only the method entry?",
+      "expected_behavior": [
+        "Writes the annotation with backticks: @Log.`in` — in is a Kotlin keyword",
+        "Keeps the class and the function open",
+        "Notes @Log.out, @Log.result and @Log.off need no backticks",
+        "Warns not to also put a level on @Log: when both @Log(A) and @Log.`in`(B) are present Kotlin uses A while Java uses B",
+        "Does not suggest importing an aliased annotation or falling back to a manual logger"
+      ],
+      "tags": [
+        "kotlin",
+        "syntax",
+        "basic"
+      ]
     },
     {
       "id": "kora-aop-logging-suppress-secrets",
-      "skills": ["kora-aop-logging"],
-      "query": "authenticate(username, password, refreshToken) should log the username but never the password or refresh token.",
-      "expected_behavior": [
-        "Annotates the method with @Log",
-        "Adds @Log.off to the password and refreshToken parameters so they are excluded from the log line",
-        "Optionally adds @Mdc to username for context",
-        "Does not log secrets via toString or a manual logger statement"
+      "skills": [
+        "kora-aop-logging"
       ],
-      "tags": ["security", "selective"]
+      "query": "authenticate(username, password, refreshToken) should log the username but never the password or the refresh token.",
+      "expected_behavior": [
+        "Annotates the method with @Log from io.koraframework.logging.common.annotation",
+        "Adds @Log.off to the password and refreshToken parameters, which removes them before any mapper is consulted so they are never rendered at any level",
+        "Optionally adds @Mdc(key = \"user\") to username for context",
+        "Mentions @Mask as the alternative when the object must still be logged with only some fields redacted",
+        "Does not log secrets through toString(), a manual logger call, or by relying on the logger level alone"
+      ],
+      "tags": [
+        "security",
+        "selective",
+        "basic"
+      ]
     },
     {
-      "id": "kora-aop-logging-level-value",
-      "skills": ["kora-aop-logging"],
-      "query": "Set the @Log level on debugOperation to DEBUG and completely turn off logging for internalCleanup.",
-      "expected_behavior": [
-        "Uses @Log(Level.DEBUG) passing the level as the annotation value attribute (not level =) with Level from org.slf4j.event.Level",
-        "Uses @Log.off on internalCleanup to disable logging",
-        "States there is no Level.OFF in org.slf4j.event.Level",
-        "Does not invent a @Log(level = Level.OFF) attribute"
+      "id": "kora-aop-logging-mask-kotlin",
+      "skills": [
+        "kora-aop-logging"
       ],
-      "tags": ["levels", "advanced"]
+      "query": "In my Kotlin Kora 2.0 service I log a User object with @Log. Its Credentials.token must appear redacted rather than disappear. How?",
+      "expected_behavior": [
+        "Annotates the logged types with @Json and @Mask, and the sensitive property with @Mask (optionally @Mask(MaskingKeepLast::class))",
+        "Annotates the logged parameter with both @Mask and @Json so the payload is a nested JSON object rather than one escaped string",
+        "Explains that KSP generates a $User_MaskingRulesModule @Module supplying MaskingRules<User>, and that generated @Module interfaces must NOT be added to the @KoraApp extends clause",
+        "Requires io.koraframework.json.common.JsonModule in the @KoraApp so a JsonWriter<User> exists",
+        "Mentions the built-in strategies MaskingFull, MaskingKeepFirst and MaskingKeepLast bound as @DefaultComponent by LoggingModule",
+        "Does not use @Log.off, which would remove the value entirely instead of redacting it"
+      ],
+      "tags": [
+        "masking",
+        "kotlin",
+        "security",
+        "advanced"
+      ]
     },
     {
-      "id": "kora-aop-logging-selective-in-out",
-      "skills": ["kora-aop-logging"],
-      "query": "I need one method to log only its entry with arguments, and another to log only its exit with the return value.",
-      "expected_behavior": [
-        "Uses @Log.in for the entry-only method",
-        "Uses @Log.out for the exit-only method",
-        "Notes both default to INFO level and emit only the > or < record respectively",
-        "Does not write a manual logger statement or a hand-rolled around-advice wrapper"
+      "id": "kora-aop-logging-mask-java-rc1",
+      "skills": [
+        "kora-aop-logging"
       ],
-      "tags": ["selective", "advanced"]
+      "query": "I did the same @Mask setup in Java on Kora 2.0.0.RC1 and the build now fails resolving io.koraframework.logging.common.masking.MaskingRules<User>. What's missing?",
+      "expected_behavior": [
+        "Identifies that logging-annotation-processor-2.0.0.RC1.jar registers only its KoraAspectFactory service and has no META-INF/services/javax.annotation.processing.Processor entry, so javac never runs the processor that would generate $User_MaskingRulesModule",
+        "Notes this is Java-only: the KSP artifact does register MaskingRulesSymbolProcessorProvider",
+        "Declares the MaskingRules<User> component by hand in a @Module, using the public MaskingRules.builder(User.class).mask(path, strategy).build() API",
+        "Explains that field-level @Mask then documents intent only, so the hand-written rules must be kept in step",
+        "Keeps @Mask (+ @Json) on the logged parameter so the aspect still selects MaskedStructuredArgumentMapper",
+        "Does not suggest adding declarative-logging-annotation-processor or forcing -processor on javac"
+      ],
+      "tags": [
+        "masking",
+        "java",
+        "troubleshooting",
+        "advanced"
+      ]
     },
     {
-      "id": "kora-aop-logging-mdc-interpolation",
-      "skills": ["kora-aop-logging"],
-      "query": "On createOrder add MDC keys for the tenant taken from the tenantId parameter and a generated requestId UUID.",
-      "expected_behavior": [
-        "Adds method-level @Mdc(key = \"tenant\", value = \"${tenantId}\") referencing the parameter by name",
-        "Adds @Mdc(key = \"requestId\", value = \"${java.util.UUID.randomUUID().toString()}\") using expression interpolation",
-        "Relies on @Mdc being repeatable so both annotations apply",
-        "Does not manually call SLF4J MDC.put in the method body"
+      "id": "kora-aop-logging-mdc-parameter-and-interpolation",
+      "skills": [
+        "kora-aop-logging"
       ],
-      "tags": ["mdc", "advanced"]
+      "query": "On createOrder in my Kotlin service, add MDC keys for the tenant taken from the tenantId parameter and a generated requestId UUID.",
+      "expected_behavior": [
+        "Adds a parameter-level @Mdc(key = \"tenant\") to tenantId, where the argument itself is the value",
+        "Adds a method-level @Mdc(key = \"requestId\", value = \"\\${java.util.UUID.randomUUID().toString()}\") — the ${...} body is inlined into the generated code, and in Kotlin the $ must be escaped so the string template does not consume it",
+        "States that a method-level @Mdc requires both key and value, otherwise the processor fails with \"@Mdc annotation must have 'key'/'value' attribute\"",
+        "Relies on @Mdc being @Repeatable rather than inventing a container attribute",
+        "Notes non-global keys are captured and restored in a finally block, so they cannot leak to the caller",
+        "Does not call org.slf4j.MDC.put in the function body"
+      ],
+      "tags": [
+        "mdc",
+        "kotlin",
+        "advanced"
+      ]
     },
     {
-      "id": "kora-aop-logging-global-mdc",
-      "skills": ["kora-aop-logging"],
-      "query": "Set a tenant value in MDC at the start of request handling so it persists across the rest of the call on this thread, and explain cleanup.",
-      "expected_behavior": [
-        "Uses @Mdc(key = \"tenant\", value = \"${tenantId}\", global = true) so the key persists after the method returns",
-        "Warns that global keys leak on pooled threads and must be removed with the static MDC.remove(\"tenant\")",
-        "States Kora's MDC has no clear() method, so keys are removed individually",
-        "Does not claim MDC.wrap or MDC.clear exist in Kora"
+      "id": "kora-aop-logging-no-async-contracts",
+      "skills": [
+        "kora-aop-logging"
       ],
-      "tags": ["mdc", "advanced"]
-    },
-    {
-      "id": "kora-aop-logging-large-payload",
-      "skills": ["kora-aop-logging"],
-      "query": "My upload(fileName, byte[] data, fileSize) method logs the whole file bytes and floods the logs. How do I fix it while keeping useful context?",
+      "query": "Porting a Kora 1.x service: can I keep @Mdc and @Log on my methods that return CompletionStage or Mono?",
       "expected_behavior": [
-        "Adds @Log.off to the byte[] data parameter so the payload is never rendered or logged",
-        "Keeps fileName and fileSize visible, e.g. via @Mdc keys",
-        "Recommends running the class logger at INFO in production and KoraAsyncAppender for async output",
-        "Does not suggest Logback's stock AsyncAppender, which drops Kora MDC and structured args"
+        "States that @Mdc fails the build for Publisher (Mono/Flux), Future and CompletionStage return types, e.g. \"@Mdc can't be applied for type java.util.concurrent.CompletionStage\"",
+        "States that the Java @Log aspect rejects Publisher and Future returns at compile time",
+        "Explains that Kora 2.0 contracts are synchronous on virtual threads, so the method should be rewritten to return the value directly",
+        "Ties the @Mdc restriction to the ScopedValue model: the MDC binding ends with its scope, so a value completed elsewhere would escape it",
+        "Does not suggest adding reactor-core or restoring async signatures to keep the annotations"
       ],
-      "tags": ["performance", "advanced"]
+      "tags": [
+        "migration",
+        "mdc",
+        "advanced"
+      ]
     }
   ]
 }

@@ -1,209 +1,170 @@
-# Kora Kafka Consumer Configuration Template
+# Kora 2.0 Kafka consumer configuration
 #
-# QUICK START:
-# 1. Copy this template to your resources/application.conf
-# 2. Replace placeholders: ${listenerNameLower}, ${topics}, ${consumerGroupId}, ${serviceName}
-# 3. Set KAFKA_BOOTSTRAP_SERVERS environment variable or update default
+# Placeholders to replace: ${listenerName}, ${listenerNameLower}, ${topics}, ${topicName},
+#                          ${topicsPattern}, ${consumerGroupId}, ${serviceName}, ${packagePath}
 #
-# PROGRESSIVE DISCLOSURE:
-# Level 1: Basic - topics, driverProperties (bootstrap.servers, group.id)
-# Level 2: Offset & Timeout - offset, pollTimeout, backoffTimeout
-# Level 3: Production - threads, shutdownWait, telemetry
-# Level 4: Advanced - driverProperties tuning (max.poll.records, fetch.min.bytes)
+# HOCON has no ${VAR:default} placeholder. Write the literal first and override it with an optional
+# substitution ${?VAR} on the next line — the later assignment wins when the variable is set.
+# ${VAR} on its own is a REQUIRED substitution and aborts startup when unset.
 #
-# REFERENCES:
-# - Kafka Consumer Reference: references/kafka-consumer-reference.md
-# - Error Handling: references/kafka-error-handling-reference.md
-# - Rebalance Handling: references/kafka-rebalance-reference.md
+# References: references/kafka-consumer-reference.md (every key)
+#             references/kafka-strategies-reference.md (subscribe vs assign)
+#             references/kafka-telemetry-reference.md (logging/metrics are OFF by default)
 
 kafka {
-  # ============================================================================
-  # Consumer Configuration
-  # ============================================================================
+
   consumer {
 
-    # ------------------------------------------------------------------------
-    # Listener: ${listenerName}
-    # Configuration path: kafka.consumer.${listenerNameLower}
-    # ------------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # ${listenerName} — subscribe strategy (group.id present)
+    # Config path used by @KafkaListener("kafka.consumer.${listenerNameLower}")
+    # ------------------------------------------------------------------
     ${listenerNameLower} {
 
-      # TOPICS (required: either topics or topicsPattern)
+      # Either topics or topicsPattern. A bare string is accepted for a single topic.
       topics = [${topics}]
-      # Alternative: Subscribe to topics by pattern
-      # topicsPattern = "${topicsPattern}"
+      # topicsPattern = "${topicsPattern}"   # subscribe mode only
 
-      # OFFSET CONFIGURATION
-      # Controls where consumption starts for new consumer groups
-      offset = "earliest"          # Options: "earliest" | "latest" | Duration ("5m", "1h", "24h")
+      # How long each poll() waits for records
+      pollTimeout = 5s
 
-      # TIMEOUTS & RETRIES
-      pollTimeout = "5s"           # Max time waiting for messages in poll()
-      backoffTimeout = "15s"       # Pause after unexpected exception before retry
-      shutdownWait = "30s"         # Graceful shutdown timeout (finish processing)
+      # First pause after an unhandled exception; doubles per consecutive failure, capped at 60s
+      backoffTimeout = 15s
 
-      # THREADING
-      threads = 1                  # Parallel processing threads (increase for throughput)
+      # Budget for in-flight records during graceful shutdown
+      shutdownWait = 30s
 
-      # PARTITION REFRESH (assign mode only)
-      partitionRefreshInterval = "1m"
+      # Independent consumers for this listener; 0 disables it entirely
+      threads = 1
 
-      # ALLOW EMPTY RECORDS
-      allowEmptyRecords = false    # Process empty ConsumerRecords
+      # Deliver an empty ConsumerRecords to a BATCH listener on every poll
+      allowEmptyRecords = false
 
-      # KAFKA DRIVER PROPERTIES (required)
-      # These are passed directly to the Kafka consumer
+      # Fail startup if the first poll has not happened in time (unset = never fail)
+      # initializationFailTimeout = 30s
+
+      # offset only applies to the ASSIGN strategy — with a group.id it is ignored
+      # offset = "earliest"
+
       driverProperties {
-        "bootstrap.servers" = ${KAFKA_BOOTSTRAP_SERVERS:"localhost:9092"}
+        "bootstrap.servers" = "localhost:9092"
+        "bootstrap.servers" = ${?KAFKA_BOOTSTRAP}
 
-        # CONSUMER GROUP (subscribe mode)
-        # Remove this line for assign mode (broadcast to all instances)
+        # group.id present => subscribe container (partitions split across instances)
         "group.id" = "${consumerGroupId}"
 
-        # OFFSET RESET POLICY (for new consumer groups)
-        "auto.offset.reset" = "earliest"  # earliest | latest
+        # Where a brand-new consumer group starts. This, not the Kora `offset` key.
+        "auto.offset.reset" = "earliest"
 
-        # AUTO COMMIT (disable for manual commit)
-        "enable.auto.commit" = true
+        # Leave enable.auto.commit unset so Kora commits after your handler returns.
+        # Setting it true hands committing to the driver's timer and can lose records.
+        # "enable.auto.commit" = false
 
-        # BATCH SIZE TUNING
-        "max.poll.records" = 500         # Max messages per poll (increase for batch processing)
-        "fetch.min.bytes" = 1            # Min bytes to fetch (increase for batching)
-        "fetch.max.wait.ms" = 500        # Max wait time for fetch.min.bytes
+        "max.poll.records" = 500
+        "max.poll.interval.ms" = 300000
+        "session.timeout.ms" = 45000
+        "heartbeat.interval.ms" = 3000
 
-        # SESSION & HEARTBEAT (tune for rebalance stability)
-        "session.timeout.ms" = 30000     # Time before consumer is considered dead
-        "heartbeat.interval.ms" = 10000  # Frequency of heartbeats (should be 1/3 of session.timeout)
+        # Only committed records (needed downstream of a transactional publisher)
+        # "isolation.level" = "read_committed"
 
-        # DESERIALIZERS (auto-configured by Kora for String and @Json)
-        # For custom deserializers, specify the class:
-        # "key.deserializer" = "org.apache.kafka.common.serialization.StringDeserializer"
-        # "value.deserializer" = "org.apache.kafka.common.serialization.StringDeserializer"
-        # "value.deserializer" = "com.example.MyCustomDeserializer"
+        # Do NOT set key.deserializer / value.deserializer — the container always uses
+        # ByteArrayDeserializer and applies the Kora Deserializer chosen by your method signature.
       }
 
-      # TELEMETRY (metrics, tracing, logging)
       telemetry {
-        # Logging
-        logging {
-          enabled = true
-        }
+        # Both default to false in Kora 2.0. logging.enabled also gates the container's own
+        # lifecycle log lines, so a listener with it off is completely silent.
+        logging.enabled = true
 
-        # Metrics (Prometheus, etc.)
         metrics {
           enabled = true
-          # SLO buckets for latency histogram (in milliseconds)
-          # Adjust based on your latency requirements
+          # Bind the Kafka client's own Micrometer meters — high cardinality, opt in deliberately
+          driverMetrics = false
           slo = [1, 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
-          # Additional metric tags for filtering
-          tags = {
+          tags {
             "consumer-type" = "${listenerNameLower}"
-            "environment" = ${ENVIRONMENT:"development"}
           }
         }
 
-        # Distributed tracing (Jaeger, Zipkin, OpenTelemetry)
         tracing {
           enabled = true
-          # Additional trace attributes
-          attributes = {
+          attributes {
             "service.name" = "${serviceName}"
-            "consumer.group" = "${consumerGroupId}"
           }
         }
       }
     }
 
-    # ------------------------------------------------------------------------
-    # Example: Batch Processing Consumer
-    # Optimized for high throughput with batch processing
-    # ------------------------------------------------------------------------
-    # batchProcessor {
-    #   topics = ["high-volume-topic"]
-    #
-    #   # Increase batch size and parallelism
-    #   threads = 4
-    #   pollTimeout = "10s"
-    #   backoffTimeout = "30s"
-    #
+    # ------------------------------------------------------------------
+    # Assign strategy — no group.id, every instance reads every partition.
+    # At 2.0.0.RC1 this accepts EXACTLY ONE topic and no topicsPattern.
+    # Nothing is ever committed; `offset` decides where each start begins.
+    # ------------------------------------------------------------------
+    # ${listenerNameLower}Broadcast {
+    #   topics = ["${topicName}"]
+    #   offset = "earliest"                 # earliest | latest | a Duration such as 5m
+    #   partitionRefreshInterval = 1m
     #   driverProperties {
-    #     "bootstrap.servers" = ${KAFKA_BOOTSTRAP_SERVERS:"localhost:9092"}
-    #     "group.id" = "batch-processor-group"
-    #     "max.poll.records" = 1000       # Larger batches
-    #     "fetch.min.bytes" = 1048576     # 1MB min batch size
-    #     "fetch.max.wait.ms" = 500
-    #   }
-    #
-    #   telemetry {
-    #     metrics {
-    #       enabled = true
-    #       slo = [10, 50, 100, 500, 1000, 5000, 10000]
-    #     }
+    #     "bootstrap.servers" = "localhost:9092"
+    #     "bootstrap.servers" = ${?KAFKA_BOOTSTRAP}
     #   }
     # }
 
-    # ------------------------------------------------------------------------
-    # Example: Exactly-Once Consumer (Manual Commit)
-    # For critical events requiring synchronization with DB transactions
-    # ------------------------------------------------------------------------
-    # exactlyOnceConsumer {
-    #   topics = ["critical-events"]
-    #
-    #   # Disable auto-commit for manual control
+    # ------------------------------------------------------------------
+    # Batch listener — ConsumerRecords<K, V> signature, one commit per poll
+    # ------------------------------------------------------------------
+    # ${listenerNameLower}Batch {
+    #   topics = ["${topicName}"]
+    #   pollTimeout = 10s
+    #   threads = 2
     #   driverProperties {
-    #     "bootstrap.servers" = ${KAFKA_BOOTSTRAP_SERVERS:"localhost:9092"}
-    #     "group.id" = "exactly-once-group"
-    #     "enable.auto.commit" = false    # Manual commit in listener
+    #     "bootstrap.servers" = ${?KAFKA_BOOTSTRAP}
+    #     "group.id" = "${consumerGroupId}-batch"
+    #     "max.poll.records" = 1000
+    #     "fetch.min.bytes" = 1048576
+    #     "fetch.max.wait.ms" = 500
     #   }
     # }
   }
 
-  # ============================================================================
-  # Producer Configuration (for DLQ, responses, etc.)
-  # ============================================================================
   producer {
 
-    # DLQ (Dead Letter Queue) Publisher
-    dlqPublisher {
+    # Dead letter queue for records this consumer cannot process
+    dlq {
       driverProperties {
-        "bootstrap.servers" = ${KAFKA_BOOTSTRAP_SERVERS:"localhost:9092"}
-        "acks" = "all"              # Wait for all replicas to acknowledge
-        "retries" = 3               # Retry on transient failures
-        "linger.ms" = 5             # Small delay for batching
+        "bootstrap.servers" = "localhost:9092"
+        "bootstrap.servers" = ${?KAFKA_BOOTSTRAP}
+        "acks" = "all"
+        "retries" = 3
+        "linger.ms" = 5
       }
 
-      dlq {
-        topic = "dlq-topic"
-        # partition = 0  # Optional: specify partition
+      # @KafkaPublisher.Topic("kafka.producer.dlq.topic")
+      topic {
+        topic = "${topicName}-dlq"
+        # partition = 0
       }
 
       telemetry {
-        logging { enabled = true }
-        metrics {
-          enabled = true
-          slo = [1, 10, 50, 100, 200, 500, 1000]
-        }
-        tracing { enabled = true }
+        logging.enabled = true
+        metrics.enabled = true
+        tracing.enabled = true
       }
     }
   }
 }
 
-# ============================================================================
-# Application Configuration
-# ============================================================================
-app {
-  name = "${serviceName}"
-  environment = ${ENVIRONMENT:"development"}
-}
+# Retry on a listener method: @Retryable(MySpec.class) with @RetrySpec("resilient.retry.${listenerNameLower}")
+# Keep attempts x delay well under max.poll.interval.ms.
+# resilient.retry.${listenerNameLower} {
+#   delay = 100ms
+#   attempts = 3
+# }
 
-# ============================================================================
-# Logging Configuration (optional)
-# ============================================================================
-logging {
-  level {
-    root = "INFO"
-    "ru.tinkoff.kora.kafka" = "DEBUG"    # Kafka consumer/producer logs
-    "${packagePath}" = "DEBUG"           # Your application logs
-  }
+# The section is logging.levels — the consumer logs under the listener's canonical class name.
+logging.levels {
+  "ROOT" = "INFO"
+  "io.koraframework" = "INFO"
+  "${packagePath}" = "DEBUG"
 }

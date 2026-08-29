@@ -1,24 +1,47 @@
 openapi {
   management {
-    # OpenAPI spec files (relative to src/main/resources/)
-    file = ["openapi/api.yaml"]
+    # Mandatory: classpath resource paths, no default. Omitting this key fails graph build with
+    # "Config expected value, but got null after parsing at path: 'ROOT.openapi.management.files'",
+    # even when everything below is disabled. A plain comma-separated string is also accepted.
+    # The Kora 1.x key was "file" (singular) and is not read in 2.0.
+    files = ["openapi/api.yaml"]
 
-    # Enable the raw-spec endpoints (default: false, so set it explicitly)
+    # Registers the raw-spec route. Default false. Both viewers fetch this route, so leaving it
+    # false renders them empty.
     enabled = true
 
-    # Base path for raw spec access (default: /openapi)
-    endpoint = "/openapi"
+    # Base route. One file => GET /openapi; several files => GET /openapi/{basename}.
+    # The Kora 1.x key was "endpoint" and is not read in 2.0.
+    path = "/openapi"
 
-    # Swagger UI configuration (recommended)
+    # Response caching: NONE | GZIP | FULL. Default GZIP.
+    cache = GZIP
+
+    # Key is exactly "swaggerui" - "swaggerUi" and "swagger-ui" are different keys and are ignored.
     swaggerui {
       enabled = true
-      endpoint = "/swagger-ui"
+      path = "/swagger-ui"        # also registers /swagger-ui/oauth2-redirect
+      withCredentials = true      # sends cookies on try-it-out calls
+      cache = GZIP
+
+      # Uncomment to override the Swagger UI init options. Setting this key REPLACES the whole
+      # default map, so every entry you want to keep must be repeated here.
+      # options {
+      #   layout = "StandaloneLayout"
+      #   validatorUrl = "null"
+      #   defaultModelsExpandDepth = "0"
+      #   deepLinking = "true"
+      #   persistAuthorization = "true"
+      #   displayOperationId = "true"
+      #   filter = "true"
+      # }
     }
 
-    # RapiDoc configuration (not recommended for complex specs)
-    rapidoc {
-      enabled = false
-      endpoint = "/rapidoc"
+    # Scalar replaced RapiDoc in Kora 2.0; a "rapidoc" block is an unknown key and is ignored.
+    scalar {
+      enabled = true
+      path = "/scalar"
+      cache = GZIP
     }
   }
 }

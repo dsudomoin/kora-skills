@@ -1,449 +1,245 @@
-# Docker Compose Multi-Container Testing Reference
+# Docker Compose for Kora 2.0
 
-**Purpose:** Testing with multiple containers using Docker Compose.
+**Purpose:** running a Kora 2.0 service together with its dependencies as a local or CI
+environment.
+
+> **Compose is not the black-box test harness.** In the migrated Kora 2.0 examples the black-box
+> tests are driven by Testcontainers, which builds the image and manages the lifecycle from inside
+> the JVM. Compose files sit alongside them for a different job: bringing up Postgres/Kafka/Redis
+> so the service can be run with `./gradlew run`, or standing a whole stack up in CI. Use the right
+> one for the job — see [testcontainers-reference.md](testcontainers-reference.md) for the test path.
 
 ## Contents
 
-1. [Overview](#overview)
-2. [When to use Docker Compose](#when-to-use-docker-compose)
-3. [Basic setup (App + PostgreSQL)](#basic-docker-compose-setup)
-4. [App + PostgreSQL + Kafka](#app--postgresql--kafka)
-5. [App + Cassandra](#app--cassandra)
-6. [Multiple microservices](#multiple-microservices)
-7. [Test scripts](#test-scripts)
-8. [Test implementation](#test-implementation)
-9. [Health checks](#health-checks)
-10. [Best practices](#best-practices)
-11. [Troubleshooting](#troubleshooting)
+1. [When Compose earns its place](#when-compose-earns-its-place)
+2. [App + PostgreSQL + Flyway](#app--postgresql--flyway)
+3. [App + Kafka](#app--kafka)
+4. [App + Cassandra + Redis](#app--cassandra--redis)
+5. [Health checks](#health-checks)
+6. [Driving tests against a Compose stack](#driving-tests-against-a-compose-stack)
+7. [Best practices](#best-practices)
+8. [Troubleshooting](#troubleshooting)
 
 ---
 
-## Overview
+## When Compose earns its place
 
-Docker Compose enables orchestrating multiple containers for complex integration scenarios:
-- Application + PostgreSQL + Kafka
-- Application + Redis + Cassandra
-- Multiple microservices testing
+**Compose is the better tool when:**
+- you want the dependencies up so you can run the service from the IDE or `./gradlew run`
+- the stack has more moving parts than a test should own (several services, a proxy, a UI)
+- you are reproducing a production-like topology by hand
 
----
+**Testcontainers is the better tool when:**
+- the containers exist only for the duration of a test run
+- CI must not depend on an out-of-band `up` step having succeeded
+- each suite needs its own isolated instance
 
-## When to Use Docker Compose
-
-**Use Docker Compose when:**
-- Testing multiple services together
-- Complex container networking required
-- Reproducing production-like environment
-- Local development environment
-
-**Use Testcontainers when:**
-- Unit/integration tests in CI/CD
-- Per-test isolation needed
-- Faster test execution required
+Modern Compose ignores the top-level `version:` key; the migrated examples omit it, and so do the
+files below.
 
 ---
 
-## Basic Docker Compose Setup
+## App + PostgreSQL + Flyway
 
-### App + PostgreSQL
+Mirrors the layout the migrated examples use: Postgres, a one-shot Flyway container for the schema,
+and the application, with both Kora ports published.
 
 ```yaml
-# docker-compose.test.yml
-version: '3.8'
-
 services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "8080:8080"
-      - "8085:8085"
-    environment:
-      - APP_CONFIG_DATABASE_URL=jdbc:postgresql://postgres:5432/testdb
-      - APP_CONFIG_DATABASE_USER=postgres
-      - APP_CONFIG_DATABASE_PASSWORD=postgres
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8085/system/readiness"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
   postgres:
-    image: postgres:15-alpine
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    ports:
+      - '5432:5432'
     environment:
-      - POSTGRES_DB=testdb
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./src/test/resources/db/migration:/docker-entrypoint-initdb.d
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-volumes:
-  postgres_data:
-```
-
-### Running Tests
-
-```bash
-# Start all services
-docker-compose -f docker-compose.test.yml up -d
-
-# Wait for app to be ready
-sleep 30
-
-# Run tests
-./gradlew test
-
-# Stop services
-docker-compose -f docker-compose.test.yml down -v
-```
-
----
-
-## App + PostgreSQL + Kafka
-
-```yaml
-# docker-compose.test.yml
-version: '3.8'
-
-services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "8080:8080"
-      - "8085:8085"
-    environment:
-      - APP_CONFIG_DATABASE_URL=jdbc:postgresql://postgres:5432/testdb
-      - APP_CONFIG_DATABASE_USER=postgres
-      - APP_CONFIG_DATABASE_PASSWORD=postgres
-      - APP_CONFIG_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+  flyway:
+    image: flyway/flyway:10.2-alpine
+    restart: "no"
+    command: -url=jdbc:postgresql://postgres:5432/postgres -schemas=public -user=postgres -password=postgres -connectRetries=60 migrate
+    volumes:
+      - ./src/main/resources/db/migration:/flyway/sql
     depends_on:
       postgres:
         condition: service_healthy
+
+  application:
+    image: my-service
+    build: .
+    restart: unless-stopped
+    ports:
+      - '8080:8080'
+      - '8085:8085'
+    environment:
+      POSTGRES_JDBC_URL: jdbc:postgresql://postgres:5432/postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASS: postgres
+    depends_on:
+      - postgres
+      - flyway
+```
+
+The environment variable **names** are not conventions — they are whatever the application's config
+substitutes:
+
+```hocon
+httpServer {
+  port = 8080
+  system.port = 8085
+}
+
+jdbc {
+  jdbcUrl = ${POSTGRES_JDBC_URL}
+  username = ${POSTGRES_USER}
+  password = ${POSTGRES_PASS}
+}
+```
+
+Note `jdbc`, not the Kora 1.x `db`. A stale `db { ... }` section leaves the container dying on
+`ConfigValueException: Config expected value, but got null at path: 'ROOT.jdbc.username'`.
+
+Running the migration in its own container is worth doing even when the service also ships
+`database-flyway`: it separates "the schema is wrong" from "the application is wrong", and it is the
+shape a horizontally scaled deployment needs anyway, since concurrent replicas migrating on startup
+race each other.
+
+---
+
+## App + Kafka
+
+A Kafka broker advertises different addresses to different networks, and getting that wrong is the
+one Compose mistake that fails silently. The migrated example runs `apache/kafka-native` in KRaft
+mode with two plaintext listeners — one for the host, one for the Compose network:
+
+```yaml
+services:
+  kafka:
+    image: apache/kafka-native:4.1.0
+    restart: unless-stopped
+    ports:
+      - '9092:9092'
+      - '9093:9093'
+    environment:
+      KAFKA_KRAFT_MODE: "true"
+      KAFKA_PROCESS_ROLES: controller,broker
+      KAFKA_NODE_ID: 1
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@localhost:9093"
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_DOCKER://kafka:29092,CONTROLLER://0.0.0.0:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_DOCKER:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_DOCKER://kafka:29092
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      CLUSTER_ID: "123"
+    healthcheck:
+      test: nc -z localhost 9092 || exit 1
+      interval: 3s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+
+  application:
+    image: my-service
+    build: .
+    restart: unless-stopped
+    ports:
+      - '8080:8080'
+      - '8085:8085'
+    environment:
+      KAFKA_BOOTSTRAP: kafka:29092      # the in-network listener, NOT localhost:9092
+    depends_on:
       kafka:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8085/system/readiness"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
-  postgres:
-    image: postgres:15-alpine
-    environment:
-      - POSTGRES_DB=testdb
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-    volumes:
-      - ./src/test/resources/db/migration:/docker-entrypoint-initdb.d
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  kafka:
-    image: apache/kafka:3.8.0
-    ports:
-      - "9092:9092"
-    environment:
-      - KAFKA_NODE_ID=1
-      - KAFKA_PROCESS_ROLES=broker,controller
-      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
-      - KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
-      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
-      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
-    healthcheck:
-      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "kafka:9092"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 ```
+
+```yaml
+kafka:
+  listener:
+    user:
+      topics: "users"
+      driverProperties:
+        bootstrap.servers: ${KAFKA_BOOTSTRAP}
+        group.id: "users-gi"
+        auto.offset.reset: "earliest"
+  publisher:
+    task:
+      topic: "tasks"
+      driverProperties:
+        bootstrap.servers: ${KAFKA_BOOTSTRAP}
+```
+
+Give the application the **in-network** advertised listener (`kafka:29092`). Hand it
+`localhost:9092` and the bootstrap connection succeeds, the broker returns metadata pointing at
+`localhost`, and the consumer then quietly receives nothing — no error, no log line worth reading.
 
 ---
 
-## App + Cassandra
+## App + Cassandra + Redis
 
 ```yaml
-# docker-compose.test.yml
-version: '3.8'
-
 services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    ports:
-      - "8080:8080"
-      - "8085:8085"
-    environment:
-      - APP_CONFIG_CASSANDRA_CONTACT_POINTS=cassandra:9042
-      - APP_CONFIG_CASSANDRA_USER=cassandra
-      - APP_CONFIG_CASSANDRA_PASSWORD=cassandra
-      - APP_CONFIG_CASSANDRA_KEYSPACE=test_keyspace
-    depends_on:
-      cassandra:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8085/system/readiness"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 60s
-
   cassandra:
-    image: cassandra:5.0
+    image: cassandra:4.1.4
+    restart: unless-stopped
     ports:
-      - "9042:9042"
+      - '9042:9042'
     environment:
-      - CASSANDRA_DC=datacenter1
-      - CASSANDRA_RACK=rack1
-      - HEAP_NEWSIZE=128M
-      - MAX_HEAP_SIZE=1024M
-    volumes:
-      - cassandra_data:/var/lib/cassandra
-      - ./src/test/resources/migrations:/cassandra-init
+      JVM_OPTS: -Dcassandra.skip_wait_for_gossip_to_settle=0 -Dcassandra.initial_token=0
+      CASSANDRA_ENDPOINT_SNITCH: GossipingPropertyFileSnitch
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_NUM_TOKENS: 1
     healthcheck:
       test: ["CMD", "cqlsh", "-e", "DESCRIBE KEYSPACES"]
       interval: 10s
       timeout: 5s
       retries: 10
 
-volumes:
-  cassandra_data:
-```
-
----
-
-## Multiple Microservices
-
-```yaml
-# docker-compose.test.yml
-version: '3.8'
-
-services:
-  # API Gateway
-  gateway:
-    build:
-      context: ./gateway
-      dockerfile: Dockerfile
+  redis:
+    image: redis:7.2.4
+    restart: unless-stopped
     ports:
-      - "8080:8080"
+      - '6379:6379'
+    command: redis-server
+
+  application:
+    image: my-service
+    build: .
+    restart: unless-stopped
+    ports:
+      - '8080:8080'
+      - '8085:8085'
+    environment:
+      CASSANDRA_CONTACT_POINTS: cassandra:9042
+      CASSANDRA_USER: cassandra
+      CASSANDRA_PASS: cassandra
+      CASSANDRA_DC: datacenter1
+      CASSANDRA_KEYSPACE: petshop
+      REDIS_URL: redis://redis:6379/0
+      REDIS_USER: default
+      REDIS_PASS: redis
     depends_on:
-      - user-service
-      - order-service
-
-  # User Service
-  user-service:
-    build:
-      context: ./user-service
-      dockerfile: Dockerfile
-    environment:
-      - DATABASE_URL=jdbc:postgresql://postgres-users:5432/users
-    depends_on:
-      - postgres-users
-
-  # Order Service
-  order-service:
-    build:
-      context: ./order-service
-      dockerfile: Dockerfile
-    environment:
-      - DATABASE_URL=jdbc:postgresql://postgres-orders:5432/orders
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-    depends_on:
-      - postgres-orders
-      - kafka
-
-  # Databases
-  postgres-users:
-    image: postgres:15-alpine
-    environment:
-      - POSTGRES_DB=users
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-
-  postgres-orders:
-    image: postgres:15-alpine
-    environment:
-      - POSTGRES_DB=orders
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-
-  kafka:
-    image: apache/kafka:3.8.0
-    environment:
-      - KAFKA_PROCESS_ROLES=broker,controller
-      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@kafka:9093
-      - KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
-      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - cassandra
+      - redis
 ```
+
+Cassandra needs a generous `start_period`; it routinely takes longer than a minute to accept CQL.
 
 ---
 
-## Test Scripts
+## Health checks
 
-### Bash Test Runner
-
-```bash
-#!/bin/bash
-# run-tests.sh
-
-set -e
-
-echo "Starting Docker Compose services..."
-docker-compose -f docker-compose.test.yml up -d
-
-echo "Waiting for services to be ready..."
-sleep 30
-
-# Wait for app readiness
-max_attempts=30
-attempt=0
-while [ $attempt -lt $max_attempts ]; do
-    if curl -f http://localhost:8085/system/readiness 2>/dev/null; then
-        echo "App is ready!"
-        break
-    fi
-    echo "Waiting for app... ($attempt/$max_attempts)"
-    sleep 5
-    attempt=$((attempt + 1))
-done
-
-if [ $attempt -eq $max_attempts ]; then
-    echo "App failed to start"
-    docker-compose -f docker-compose.test.yml logs app
-    docker-compose -f docker-compose.test.yml down -v
-    exit 1
-fi
-
-echo "Running tests..."
-./gradlew test
-TEST_RESULT=$?
-
-echo "Stopping services..."
-docker-compose -f docker-compose.test.yml down -v
-
-exit $TEST_RESULT
-```
-
-### Gradle Integration
-
-```groovy
-// build.gradle
-tasks.register('dockerComposeUp', Exec) {
-    commandLine 'docker-compose', '-f', 'docker-compose.test.yml', 'up', '-d'
-}
-
-tasks.register('dockerComposeDown', Exec) {
-    commandLine 'docker-compose', '-f', 'docker-compose.test.yml', 'down', '-v'
-}
-
-tasks.register('waitForApp', Exec) {
-    dependsOn dockerComposeUp
-    commandLine 'bash', '-c', '''
-        for i in {1..30}; do
-            if curl -f http://localhost:8085/system/readiness 2>/dev/null; then
-                exit 0
-            fi
-            sleep 5
-        done
-        exit 1
-    '''
-}
-
-tasks.register('dockerComposeTest', Test) {
-    dependsOn waitForApp
-    finalizedBy dockerComposeDown
-    
-    // Pass app URL to tests
-    systemProperty 'test.app.url', 'http://localhost:8080'
-}
-```
-
----
-
-## Test Implementation
-
-### Using System Properties
-
-```java
-class DockerComposeApiTest {
-    
-    private static final String APP_URL = System.getProperty("test.app.url", "http://localhost:8080");
-    private final HttpClient httpClient = HttpClient.newHttpClient();
-
-    @Test
-    void shouldCreateUser() throws Exception {
-        var requestBody = new JSONObject()
-            .put("email", "test@example.com");
-
-        var request = HttpRequest.newBuilder()
-            .POST(HttpRequest.BodyPublishers.ofString(requestBody.toString()))
-            .uri(URI.create(APP_URL + "/api/users"))
-            .header("Content-Type", "application/json")
-            .timeout(Duration.ofSeconds(5))
-            .build();
-
-        var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-        assertEquals(200, response.statusCode());
-    }
-}
-```
-
-### Using Testcontainers with Compose
-
-```java
-import org.testcontainers.containers.DockerComposeContainer;
-import org.junit.jupiter.api.*;
-
-class DockerComposeTest {
-
-    private static final DockerComposeContainer<?> compose = 
-        new DockerComposeContainer<>(new File("docker-compose.test.yml"))
-            .withExposedService("app", 8080, Wait.forHttp("/system/readiness").forPort(8085))
-            .withExposedService("postgres", 5432)
-            .withLocalCompose(true);
-
-    @BeforeAll
-    static void beforeAll() {
-        compose.start();
-    }
-
-    @AfterAll
-    static void afterAll() {
-        compose.stop();
-    }
-
-    @Test
-    void shouldWorkWithCompose() {
-        String appHost = compose.getServiceHost("app", 8080);
-        int appPort = compose.getServicePort("app", 8080);
-        
-        // Use appHost:appPort for HTTP requests
-    }
-}
-```
-
----
-
-## Health Checks
-
-### Application Health Check
+The application health check is the same probe the Testcontainers wait strategy uses, on the same
+system port:
 
 ```yaml
 healthcheck:
@@ -454,99 +250,103 @@ healthcheck:
   start_period: 30s
 ```
 
-### PostgreSQL Health Check
+Two caveats:
 
-```yaml
-healthcheck:
-  test: ["CMD-SHELL", "pg_isready -U postgres"]
-  interval: 5s
-  timeout: 5s
-  retries: 5
-```
+- `curl` must exist in the image. `eclipse-temurin:*-jre-jammy` has it; the GraalVM native runtime
+  stage (`ubuntu:noble-*`) may not, and a slim/distroless base certainly will not. A health check
+  that always fails because the binary is missing looks exactly like an application that never
+  becomes ready.
+- Use `/system/readiness` for `depends_on: condition: service_healthy`, and `/system/liveness` for
+  restart policies. Readiness answers 503 while a dependency is still unreachable; liveness only
+  reports whether the process itself is functioning.
 
-### Kafka Health Check
-
-```yaml
-healthcheck:
-  test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
-  interval: 10s
-  timeout: 5s
-  retries: 5
-```
-
-### Cassandra Health Check
-
-```yaml
-healthcheck:
-  test: ["CMD", "cqlsh", "-e", "DESCRIBE KEYSPACES"]
-  interval: 10s
-  timeout: 5s
-  retries: 10
-```
+Raise `start_period` for a native image or a service with slow migrations rather than raising
+`retries` — during `start_period` a failing check does not count against the retry budget.
 
 ---
 
-## Environment Profiles
+## Driving tests against a Compose stack
 
-### Development
+If the stack is already up (started by CI, or by a `docker compose up -d` in a Gradle task), the
+test only needs the base URL:
 
-```yaml
-# docker-compose.dev.yml
-version: '3.8'
+```java
+class ComposeApiTest {
 
-services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    environment:
-      - APP_CONFIG_LOG_LEVEL=DEBUG
-    ports:
-      - "8080:8080"
-      - "8085:8085"
-    volumes:
-      - ./application.conf:/app/config/application.conf
+    private static final String APP_URL = System.getProperty("test.app.url", "http://localhost:8080");
+
+    @Test
+    void shouldCreateUser() throws Exception {
+        var request = HttpRequest.newBuilder()
+                .POST(HttpRequest.BodyPublishers.ofString("{\"email\":\"test@example.com\"}"))
+                .uri(URI.create(APP_URL + "/users"))
+                .header("Content-Type", "application/json")
+                .timeout(Duration.ofSeconds(5))
+                .build();
+
+        var response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
+        assertEquals(201, response.statusCode());
+    }
+}
 ```
 
-### CI/CD
+Gate the suite on readiness rather than on a sleep:
 
-```yaml
-# docker-compose.ci.yml
-version: '3.8'
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-services:
-  app:
-    image: ${APP_IMAGE}
-    environment:
-      - APP_CONFIG_LOG_LEVEL=INFO
-    # No volumes, use immutable image
+docker compose -f docker-compose.test.yml up -d
+trap 'docker compose -f docker-compose.test.yml down -v' EXIT
+
+for _ in $(seq 1 60); do
+    if curl -sf http://localhost:8085/system/readiness >/dev/null; then
+        ./gradlew test
+        exit 0
+    fi
+    sleep 2
+done
+
+echo "application never became ready" >&2
+docker compose -f docker-compose.test.yml logs application
+exit 1
 ```
+
+Testcontainers also has a module that starts a Compose file from inside the JVM, but its entry-point
+class was renamed across Testcontainers versions and the migrated Kora corpus does not use it —
+check the class name against the version you declare before adopting it, or stay on the
+`GenericContainer`/`AppContainer` path, which the corpus does exercise.
 
 ---
 
-## Best Practices
+## Best practices
 
-1. **Use health checks** — ensure services are ready before tests
-2. **Isolate test data** — use `-v` flag to remove volumes after tests
-3. **Pin image versions** — `postgres:15-alpine` not `postgres:latest`
-4. **Use depends_on with conditions** — `condition: service_healthy`
-5. **Set timeouts** — `start_period` for slow-starting services
-6. **Clean up** — always run `down -v` after tests
+1. **Pin image tags** — `postgres:16.4-alpine`, never `:latest`.
+2. **`depends_on` with `condition: service_healthy`**, not bare `depends_on`, which waits only for
+   the container to be created.
+3. **Publish both Kora ports** (`8080`, `8085`) — without `8085` there is no probe and no `/metrics`.
+4. **Name environment variables after the application's `${VAR}` keys**, and keep those keys on 2.0
+   names (`httpServer.port`, `httpServer.system.port`, `jdbc`).
+5. **`down -v`** between runs so a stale volume does not carry a previous schema forward.
+6. **Do not point a container at `localhost`** for a sibling service — use the service name.
 
 ---
 
 ## Troubleshooting
 
-| Problem | Solution |
-|---------|----------|
-| Services won't start | Check `docker-compose logs <service>` |
-| Health check fails | Increase `start_period`, verify endpoint |
-| Port conflicts | Use different ports or remove port mappings |
-| Network issues | Verify service names match DNS in compose |
+| Symptom | Likely cause |
+|---|---|
+| App container restarts in a loop | Config error at startup — `docker compose logs application`, look for `ConfigValueException` |
+| Health check never passes, app log looks fine | `curl` missing from the image, or the check points at 8080 instead of 8085 |
+| App is "healthy" but nothing answers on the expected port | Stale 1.x port keys ignored; the servers fell back to 8080/8085 |
+| Kafka consumer receives nothing, no errors | App given the host-facing advertised listener instead of the in-network one |
+| `Unsupported Database: PostgreSQL` at startup | `database-flyway` ships `flyway-core` only; add `org.flywaydb:flyway-database-postgresql` |
+| `UnsupportedClassVersionError` | Base image below JRE 25 |
 
 ---
 
 ## Related
 
-- [testcontainers-reference.md](testcontainers-reference.md) — Standard Testcontainers usage
+- [testcontainers-reference.md](testcontainers-reference.md) — the test-owned container path
 - [blackbox-integration-reference.md](blackbox-integration-reference.md) — E2E patterns
+- [docker-reference.md](docker-reference.md) — the images these services run

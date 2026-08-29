@@ -4,26 +4,36 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
-import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
-import ru.tinkoff.kora.test.extension.junit5.KoraAppTest;
-import ru.tinkoff.kora.test.extension.junit5.KoraAppTestConfigModifier;
-import ru.tinkoff.kora.test.extension.junit5.KoraConfigModification;
-import ru.tinkoff.kora.test.extension.junit5.TestComponent;
+import org.mockito.quality.Strictness;
+
+import io.koraframework.test.extension.junit5.KoraAppTest;
+import io.koraframework.test.extension.junit5.TestComponent;
+import io.koraframework.test.extension.junit5.mockito.MockitoStrictness;
 
 /**
- * Component test template with Mockito mock dependencies.
+ * Kora 2.0 component-test scaffold with Mockito mocks and given/when/then structure.
  *
  * Usage:
- * 1. Replace ${componentName} with your service class name
+ * 1. Replace ${componentName} with the service under test
  * 2. Replace ${dependencyName} with the dependency to mock
- * 3. Replace ${componentVarName} and ${dependencyVarName} with variable names
- * 4. Add test methods with proper given/when/then structure
+ * 3. Replace ${componentVarName} / ${dependencyVarName} with field names
+ * 4. Fill in the test bodies
+ *
+ * Notes:
+ * - @Mock alone is invisible to the extension; it must sit next to @TestComponent so the mock
+ *   replaces the node in the application graph.
+ * - Do NOT add @ExtendWith(MockitoExtension.class) — @KoraAppTest already creates, injects,
+ *   resets and strictness-checks the mocks.
+ * - @MockitoStrictness lives in io.koraframework.test.extension.junit5.mockito. Without it the
+ *   level is Strictness.WARN. Valid values: LENIENT, WARN, STRICT_STUBS.
+ * - This test has no KoraAppTestConfigModifier, so the real application.conf is used as-is.
  */
+@MockitoStrictness(Strictness.STRICT_STUBS)
 @KoraAppTest(Application.class)
-class ${componentName}Test implements KoraAppTestConfigModifier {
+class ${componentName}Test {
 
     @Mock
     @TestComponent
@@ -32,29 +42,18 @@ class ${componentName}Test implements KoraAppTestConfigModifier {
     @TestComponent
     private ${componentName} ${componentVarName};
 
-    @NotNull
-    @Override
-    public KoraConfigModification config() {
-        return KoraConfigModification.ofString("""
-            # Test configuration overrides
-            # Example:
-            # db.url = "jdbc:postgresql://localhost:5432/test"
-            """);
-    }
-
     @BeforeEach
     void setup() {
-        // Setup mock behavior
-        // Example:
+        // Shared stubbing. Under STRICT_STUBS every stub declared here must be used by every test,
+        // so prefer stubbing inside the test method that needs it.
         // when(${dependencyVarName}.findById(anyLong())).thenReturn(Optional.of(TEST_ENTITY));
-        // when(${dependencyVarName}.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
     }
 
     @Test
     void shouldCreateEntity() {
         // given
         // var input = new CreateRequest("test-data");
-        // when(${dependencyVarName}.exists(any())).thenReturn(true);
+        // when(${dependencyVarName}.save(any())).thenReturn("1");
 
         // when
         // var result = ${componentVarName}.create(input);
@@ -69,9 +68,9 @@ class ${componentName}Test implements KoraAppTestConfigModifier {
         // given
         // when(${dependencyVarName}.findById(anyLong())).thenReturn(Optional.empty());
 
-        // when/then
-        // var exception = assertThrows(EntityNotFoundException.class,
-        //     () -> ${componentVarName}.get(999L));
-        // assertEquals("Entity not found: 999", exception.getMessage());
+        // when / then
+        // var exception = assertThrows(HttpServerResponseException.class,
+        //         () -> ${componentVarName}.get(999L));
+        // assertEquals(404, exception.code());
     }
 }

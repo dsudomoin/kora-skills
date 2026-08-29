@@ -1,259 +1,191 @@
-# Authentication & Principal in Kora HTTP Server
+# Authentication Reference
 
-**Kora Version:** 1.2.x
+Where authentication lives in Kora 2.0 and how it attaches to this HTTP server.
 
-This reference covers custom authentication patterns for Kora HTTP server, including the recommended interceptor-based approach and the limitations of `HttpServerPrincipalExtractor` in Kora 1.2.x.
+> **The detail lives in the `kora-http-server-auth` sub-skill.** This page covers only the
+> server-side seams — the contracts, where they plug in, and what changed from 1.x — so that a
+> controller task does not have to load the whole auth skill. For scheme-specific work (Bearer/JWT,
+> Basic, API key, OpenAPI `securitySchemes`, scope checks, 401 vs 403) read that skill.
+
+## Contents
+
+- [What changed from 1.x](#what-changed-from-1x)
+- [The contracts](#the-contracts)
+- [How it attaches to the server](#how-it-attaches-to-the-server)
+- [Reading the principal in a handler](#reading-the-principal-in-a-handler)
+- [Hand-rolled auth without OpenAPI](#hand-rolled-auth-without-openapi)
+- [Pitfalls](#pitfalls)
 
 ---
 
-## Overview
+## What changed from 1.x
 
-Kora 1.2.x does **NOT** auto-bridge `HttpServerPrincipalExtractor` to controller method parameters. Using `Principal` as a controller parameter causes:
+The 1.x guidance in this skill said: do **not** use `Principal` as a controller parameter, because
+`HttpServerPrincipalExtractor` was not bridged and the request degraded from 401 to 400; stash the
+principal in a `Context` key from a global interceptor instead.
 
-1. The HTTP-server KSP to treat it as a request body
-2. Required dependency type errors during graph build
-3. 401 errors downgraded to 400 (because extractor exceptions are wrapped)
+**That advice is obsolete on both halves.**
 
-**Recommended pattern:** Authenticate in a global `@Tag(HttpServerModule)` interceptor, store the principal in `Context`, and read it in controllers via `Principal.current()`.
+- `Context` no longer exists, so the workaround is unimplementable.
+- `Principal` is now backed by a JDK `ScopedValue` and is read with `Principal.current()` from
+  anywhere inside the request — no controller parameter and no `Context` key needed.
+
+| 1.x | 2.0 |
+|---|---|
+| `ru.tinkoff.kora.common.Principal` | `io.koraframework.common.Principal` |
+| `…http.common.auth.PrincipalWithScopes` | `io.koraframework.http.common.auth.PrincipalWithScopes` |
+| `…http.server.common.auth.HttpServerPrincipalExtractor` | `io.koraframework.http.server.common.auth.HttpServerPrincipalExtractor` |
+| principal stashed in a `Context` key | `Principal.with(...)` binds a `ScopedValue`; `Principal.current()` reads it |
+| `@Tag(HttpServerModule.class)` on the auth interceptor | `@Tag(HttpServer.class)` |
+| ordinal `SecurityRequirementTagN` markers (OpenAPI) | tags named after the security scheme, e.g. `@Tag(ApiSecurity.BearerAuth.class)` |
 
 ---
 
-## Principal Pattern via Interceptor
-
-### Step 1: Define Your Principal Type
-
-Use an immutable record for the principal:
+## The contracts
 
 ```java
-package com.example.auth;
+package io.koraframework.common;
 
-import ru.tinkoff.kora.common.Principal;
+public interface Principal {
+    ScopedValue<Principal> VALUE = ScopedValue.newInstance();
 
-public record ClientPrincipal(String clientId, String apiKeyId) implements Principal {
-    @Override
-    public String name() {
-        return clientId;
-    }
-    
-    /**
-     * Typed accessor to avoid casting at call sites.
-     * Returns null if not authenticated — add null-checks.
-     */
-    public static ClientPrincipal current() {
-        return (ClientPrincipal) Principal.current();
-    }
+    @Nullable static Principal current();
+    static <T, X extends Throwable> T with(Principal principal, ScopedValue.CallableOp<T, X> op) throws X;
 }
 ```
 
-### Step 2: Global Auth Interceptor
+```java
+package io.koraframework.http.common.auth;
+
+public interface PrincipalWithScopes extends Principal {
+    Collection<String> scopes();
+}
+```
 
 ```java
-package com.example.auth;
+package io.koraframework.http.server.common.auth;
 
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.common.Context;
-import ru.tinkoff.kora.http.server.common.HttpServerInterceptor;
-import ru.tinkoff.kora.http.server.common.HttpServerRequest;
-import ru.tinkoff.kora.http.server.common.HttpServerResponse;
-import ru.tinkoff.kora.http.server.common.HttpServerResponseException;
-import ru.tinkoff.kora.http.server.common.InterceptChain;
-import ru.tinkoff.kora.http.server.common.annotation.Tag;
-import ru.tinkoff.kora.http.server.common.auth.Principal;
+public interface HttpServerPrincipalExtractor<T, P extends Principal> {
+    @Nullable P extract(HttpServerRequest request, @Nullable T token);
+}
+```
 
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionStage;
+`T` is the raw credential the transport produced (a `String` for Bearer, API key, Basic and
+Cookie schemes); `P` is your principal type.
 
-@Tag(HttpServerModule.class)  // Makes it global — only ONE global interceptor allowed
+```java
+public record UserContext(String userId, String traceId) implements Principal {}
+
 @Component
-public final class ApiKeyAuthInterceptor implements HttpServerInterceptor {
-    
+@Tag(ApiSecurity.BearerAuth.class)
+public final class UserContextExtractor implements HttpServerPrincipalExtractor<String, UserContext> {
+
+    private final TokenService tokens;
+
+    public UserContextExtractor(TokenService tokens) {
+        this.tokens = tokens;
+    }
+
     @Override
-    public CompletionStage<HttpServerResponse> intercept(Context context,
-                                                         HttpServerRequest request,
-                                                         InterceptChain chain) {
-        String apiKey = request.header("X-API-Key");
-        
-        if (apiKey == null || !isValid(apiKey)) {
-            // Return 401 immediately — don't continue the chain
-            return CompletableFuture.completedFuture(
-                HttpServerResponseException.of(401, "Invalid or missing API key")
-            );
+    public UserContext extract(HttpServerRequest request, @Nullable String token) {
+        if (token == null) {
+            return null;                       // no principal -> 401 from the generated interceptor
         }
-        
-        // Extract principal from API key
-        ClientPrincipal principal = new ClientPrincipal(
-            extractClientId(apiKey),
-            extractKeyId(apiKey)
-        );
-        
-        // Store principal in context BEFORE continuing the chain
-        Principal.set(context, principal);
-        
-        return chain.process(context, request);
-    }
-    
-    private boolean isValid(String apiKey) {
-        // Validate against database, cache, or HMAC signature
-        // Return true if valid, false otherwise
-    }
-    
-    private String extractClientId(String apiKey) {
-        // Extract client identifier from API key
-    }
-    
-    private String extractKeyId(String apiKey) {
-        // Extract key identifier from API key
+        return new UserContext(tokens.userId(token), request.headers().getFirst("x-trace-id"));
     }
 }
 ```
 
-### Step 3: Controller Reads Principal
+---
+
+## How it attaches to the server
+
+Authentication is an **interceptor**, not a separate subsystem. With an OpenAPI contract the
+generator emits one `ApiSecurity` interceptor per security scheme, each of which resolves the
+credential, calls your extractor, and binds the result for the rest of the request:
 
 ```java
-package com.example.controller;
+return Principal.with(bearerPrincipal, () -> chain.process(request));
+```
 
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.http.server.common.annotation.HttpController;
-import ru.tinkoff.kora.http.server.common.annotation.HttpRoute;
-import ru.tinkoff.kora.http.server.common.HttpMethod;
-import com.example.auth.ClientPrincipal;
-import com.example.service.OrderService;
-import com.example.dto.OrderResponse;
+Those interceptors are attached to the generated controllers with `@InterceptWith`, and the
+extractor is selected by `@Tag(ApiSecurity.<SchemeName>.class)` — the tag is named after the
+scheme in the contract, not by ordinal position.
 
-import java.util.List;
+Because it is an ordinary interceptor, everything in
+[Interceptors](interceptors-reference.md) applies: it never runs on the system server, and a
+hand-written server-scoped one needs `@Tag(HttpServer.class)`.
 
-@Component
-@HttpController
-public final class OrdersController {
-    
-    private final OrderService orderService;
-    
-    public OrdersController(OrderService orderService) {
-        this.orderService = orderService;
+---
+
+## Reading the principal in a handler
+
+```java
+@HttpRoute(method = HttpMethod.GET, path = "/me")
+@Json
+public UserResponse me() {
+    Principal principal = Principal.current();
+    if (!(principal instanceof UserContext user)) {
+        throw HttpServerResponseException.of(401, "Unauthenticated");
     }
-    
-    @HttpRoute(method = HttpMethod.GET, path = "/orders")
-    @Json
-    public List<OrderResponse> getOrders() {
-        // Typed accessor — no casting needed
-        ClientPrincipal principal = ClientPrincipal.current();
-        
-        // Null-check if route might not be protected
+    return userService.get(user.userId());
+}
+```
+
+`Principal.current()` returns `null` when the `ScopedValue` is unbound — which is the case on any
+route the auth interceptor does not cover, and in a unit test that calls the handler directly.
+Always null-check; never assume a binding exists.
+
+To assert scopes, extract `PrincipalWithScopes` and check `scopes()`.
+
+---
+
+## Hand-rolled auth without OpenAPI
+
+Without a generated `ApiSecurity`, write the interceptor yourself and bind the principal the same
+way:
+
+```java
+@Tag(HttpServer.class)
+@Component
+public final class AuthInterceptor implements HttpServerInterceptor {
+
+    private final HttpServerPrincipalExtractor<String, UserContext> extractor;
+
+    public AuthInterceptor(HttpServerPrincipalExtractor<String, UserContext> extractor) {
+        this.extractor = extractor;
+    }
+
+    @Override
+    public HttpServerResponse intercept(HttpServerRequest request, InterceptChain chain) throws Exception {
+        String header = request.headers().getFirst("authorization");
+        String token = (header != null && header.regionMatches(true, 0, "Bearer ", 0, 7))
+                ? header.substring(7)
+                : null;
+
+        UserContext principal = extractor.extract(request, token);
         if (principal == null) {
-            throw HttpServerResponseException.of(401, "Not authenticated");
+            return HttpServerResponseException.of(401, "Unauthenticated");
         }
-        
-        // Use principal for filtering, auditing, etc.
-        return orderService.findByClient(principal.clientId());
+        return Principal.with(principal, () -> chain.process(request));
     }
 }
 ```
 
----
-
-## Key Points
-
-### Context.Key for Custom Values
-
-For passing non-principal values (e.g., auth session, user profile, request metadata):
-
-```java
-public final class RequestContext {
-    public static final Context.Key<UserProfile> USER_PROFILE_KEY = Context.KeyImmutable.of("userProfile");
-    private RequestContext() {}
-}
-```
-
-- `Context.Key<T>` — mutable key
-- `Context.KeyImmutable<T>` — immutable key (recommended for records)
-- Static singleton — one key per value type
-
-### Interceptor Timing
-
-**Critical:** Set values in `Context` **BEFORE** calling `chain.process()`:
-
-```java
-context.set(PRINCIPAL_KEY, principal);  // BEFORE
-return chain.process(context, request);  // THEN
-```
-
-### Null Safety
-
-`Principal.current()` and `Context.current().get(KEY)` return `null` if:
-- The route is not protected by the interceptor
-- The interceptor didn't set the value
-- The request failed before the interceptor ran
-
-**Always add null-checks** in controllers unless you're certain the route is protected.
-
-### Status Code Preservation
-
-The interceptor pattern preserves correct status codes because the interceptor maps failures directly:
-
-```java
-// In interceptor — returns 401
-return CompletableFuture.completedFuture(
-    HttpServerResponseException.of(401, "Invalid API key")
-);
-
-// NOT this — would be wrapped to 400 by generated handler
-throw new AuthException("Invalid API key");  // Becomes 400!
-```
+Scope a narrower policy with `@InterceptWith(AuthInterceptor.class)` on a controller or a single
+route instead of the server-wide tag.
 
 ---
 
-## HttpServerPrincipalExtractor (Kora 1.2.x Limitation)
+## Pitfalls
 
-`ru.tinkoff.kora.http.server.common.auth.HttpServerPrincipalExtractor` exists but has **no auto-wiring** to controller parameters in Kora 1.2.x.
+| Symptom | Cause and fix |
+|---|---|
+| Auth interceptor never runs | Tagged `@Tag(HttpServerModule.class)` or untagged — use `@Tag(HttpServer.class)`, or apply it with `@InterceptWith` |
+| `Principal.current()` is null in a handler | No interceptor bound it on this route, or the test calls the handler directly |
+| `NoSuchElementException` reading the principal | Reading `Principal.VALUE.get()` directly instead of `Principal.current()` |
+| `No component found: HttpServerPrincipalExtractor<...>` | The extractor is missing `@Component`, or its `@Tag` does not match the scheme the generated code requests |
+| Probes are unauthenticated | Correct: the system router collects `@Tag(SystemApi.class)`, not `@Tag(HttpServer.class)`, so your interceptor never sees a probe. Restrict that port at the network level |
+| Auth applied but 400 instead of 401 | An extractor that throws leaks through the generated 400 wrapping — return `null` (or throw an `HttpServerResponseException` with your own code) |
 
-### Why It Doesn't Work
-
-1. The HTTP-server KSP treats `Principal` parameters as request bodies
-2. Requires `HttpServerRequestMapper<CompletionStage<ClientPrincipal>>`
-3. Mapper failures are wrapped as `HttpServerResponseException.of(400, ...)`
-4. Custom 401 exceptions get downgraded to 400
-
-### Potential Workaround (Not Recommended)
-
-To make 401 survive, your exception must implement `HttpServerResponse`:
-
-```java
-// Hack — not recommended
-public class ApiException extends RuntimeException implements HttpServerResponse {
-    @Override
-    public int code() { return 401; }
-    @Override
-    public HttpBody body() { return HttpBody.plaintext(getMessage()); }
-    @Override
-    public HttpHeaders headers() { return HttpHeaders.of(); }
-}
-```
-
-This is fragile and not worth the complexity. Use the interceptor pattern instead.
-
----
-
-## Comparison: Interceptor vs Extractor
-
-| Aspect | Interceptor Pattern | HttpServerPrincipalExtractor |
-|--------|---------------------|------------------------------|
-| **Status codes** | Correct (401/403) | Downgraded to 400 |
-| **Graph build** | No issues | Requires custom mapper |
-| **Controller params** | Read via `Principal.current()` | Would be direct param (doesn't work in 1.2.x) |
-| **Null handling** | Explicit null-check needed | N/A |
-| **Complexity** | Low | High (custom mapper, exception hacks) |
-| **Recommended** | ✅ Yes | ❌ No (in 1.2.x) |
-
----
-
-## Future Versions
-
-Check newer Kora versions (1.3+) for first-class `@Principal` parameter support. The Kora maintainers may add auto-bridging of `HttpServerPrincipalExtractor` to controller parameters in future releases.
-
----
-
-## See Also
-
-- [Context Propagation](context-propagation-reference.md) — Passing values from interceptor to controller
-- [Interceptors](interceptors-reference.md) — Global, controller, and method-level interceptors
-- [Error Handling](error-handling-reference.md) — `HttpServerResponseException` and error mapping
+**See also:** [Interceptors](interceptors-reference.md), [Request Enrichment](context-propagation-reference.md), and the `kora-http-server-auth` sub-skill.

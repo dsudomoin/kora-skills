@@ -1,49 +1,79 @@
 package com.example
 
-import com.example.api.PetApi
-import com.example.api.PetApiResponses
-import com.example.model.Pet
-import ru.tinkoff.kora.common.Component
-import ru.tinkoff.kora.common.annotation.Root
+import com.example.openapi.pet.api.PetApi
+import com.example.openapi.pet.api.PetApiResponses
+import com.example.openapi.pet.model.Pet
+import io.koraframework.common.annotation.Component
+import io.koraframework.http.client.common.exception.HttpClientResponseException
+import java.util.NoSuchElementException
 
 /**
- * Example usage of the generated HTTP client.
+ * Using a generated Kora 2.x OpenAPI HTTP client from Kotlin.
  *
- * The generated `PetApi` is injected via the constructor — Kora wires the
- * implementation at build time.
+ * The generated `PetApi` is injected by constructor; Kora wires the implementation at build time.
  *
- * IMPORTANT: generated methods return a sealed `*ApiResponses` wrapper, not the
- * bare model. Branch on the response with `is` / `when` and read `.content()`.
+ * `kotlin-client` emits **synchronous** functions. They cannot be marked `suspend`, and the
+ * interface is regenerated on every build so there is nothing to annotate. If the caller must stay
+ * coroutine-based, put the bridge in your own service - and decide whether it is needed at all:
+ * the call already runs on a virtual thread, so `withContext(Dispatchers.IO)` buys nothing.
+ *
+ * Generated methods return a sealed `*ApiResponses` wrapper with one variant per declared status
+ * code, never the bare model. In Kotlin the variants are data classes, so the payload is a
+ * **property**: `response.content`, not `response.content()`.
  */
-@Root
 @Component
-class PetService(
-    private val petApi: PetApi
-) {
+class PetService(private val petApi: PetApi) {
 
-    /** Fetch a pet; throws if the remote returns a non-200 variant. */
-    fun getPet(petId: Long): Pet {
-        val response = petApi.getPetById(petId)
-        if (response is PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse) {
-            return response.content()
-        }
-        error("Unexpected response: $response")
+    /**
+     * Exhaustive `when` over a sealed response - no `else` branch is needed, so adding a status
+     * code to the contract turns into a compile error here instead of a silent fall-through.
+     */
+    fun getPet(petId: Long): Pet = when (val response = petApi.getPetById(petId)) {
+        is PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse -> response.content
+        is PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse ->
+            throw NoSuchElementException("pet $petId")
     }
 
-    /** Create a pet via POST with a JSON request body. */
-    fun createPet(pet: Pet): Pet {
-        val response = petApi.addPet(pet)
-        if (response is PetApiResponses.AddPetApiResponse.AddPet200ApiResponse) {
-            return response.content()
-        }
-        error("Unexpected response: $response")
+    /** Returning null instead of throwing on the 404 variant. */
+    fun findPet(petId: Long): Pet? = when (val response = petApi.getPetById(petId)) {
+        is PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse -> response.content
+        is PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse -> null
     }
 
-    /** Branch over multiple status variants with a when expression. */
-    fun getPetOrNull(petId: Long): Pet? =
-        when (val response = petApi.getPetById(petId)) {
-            is PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse -> response.content()
-            is PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse -> null
-            else -> error("Unexpected response: $response")
-        }
+    /**
+     * The OpenAPI `default` response becomes a `*DefaultApiResponse` variant carrying the real
+     * status code alongside the error payload.
+     */
+    fun createPet(pet: Pet): Pet = when (val response = petApi.addPet(pet)) {
+        is PetApiResponses.AddPetApiResponse.AddPet200ApiResponse -> response.content
+        is PetApiResponses.AddPetApiResponse.AddPetDefaultApiResponse ->
+            error("addPet failed with ${response.statusCode}: ${response.content.message}")
+    }
+
+    /**
+     * Build generated models with NAMED arguments. Constructor parameters follow the contract's
+     * property declaration order and optional properties carry `= null` defaults, so reordering
+     * two same-typed properties in the spec leaves a positional call compiling while silently
+     * swapping the values.
+     */
+    fun newPet(id: Long, name: String, tag: String?): Pet =
+        Pet(id = id, name = name, tag = tag)
+
+    /**
+     * Parse an enum from a wire value with `fromValue`. The generated constant name is a normalised
+     * identifier (`available -> AVAILABLE`, `Dingo-Don -> DINGO_DON`, `5 -> NUMBER_5`), so
+     * `enumValueOf` / `valueOf` throws on perfectly valid contract values - and only once real data
+     * arrives.
+     */
+    fun parseStatus(raw: String): Pet.StatusEnum = Pet.StatusEnum.fromValue(raw)
+
+    /**
+     * Transport-level failures - connection refused, a status with no declared mapper - surface as
+     * [HttpClientResponseException] rather than as a response variant.
+     */
+    fun getPetOrFallback(petId: Long, fallback: Pet): Pet = try {
+        getPet(petId)
+    } catch (e: HttpClientResponseException) {
+        fallback
+    }
 }

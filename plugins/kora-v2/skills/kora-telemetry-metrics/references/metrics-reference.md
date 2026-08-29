@@ -1,175 +1,334 @@
-# Kora Built-in Metrics Reference
+# Kora 2.0 Built-in Metrics Reference
 
-**Local source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/metrics.md`
-**Local example:** `.kora-agent/kora-examples/examples/java/kora-java-telemetry/`
+Catalogue of the meters Kora registers itself. Every name below was read out of the
+`Default*MetricsFactory` class that calls `Timer.builder(...)` / `Counter.builder(...)` /
+`Gauge.builder(...)` in the Kora 2.0 source tree. Nothing here is carried over from the 1.x
+documentation.
 
-Catalogue of metrics Kora registers automatically once `MetricsModule` is connected. All names and tags follow [OpenTelemetry semantic conventions](https://opentelemetry.io/docs/specs/semconv/). In Prometheus output, dots become underscores and duration metrics gain `_count` / `_sum` / `_bucket` / `_max` suffixes.
+**Scope — read this before concluding a meter is not Kora's.** This catalogue covers the modules
+published under the `io.koraframework` group. Kora also registers four meters from the
+`io.koraframework.experimental` group, which no skill in this package covers and which are therefore
+*not* listed below: `camunda.engine.delegate.duration`, `camunda.rest.request.duration`,
+`camunda.rest.active_requests` (Camunda 7) and `zeebe.worker.handler.duration` (Camunda 8). If one of
+those appears in your scrape it is a genuine Kora meter — go to the module source, not to this file.
+
+> **None of these exist until you enable them.** `TelemetryConfig.MetricsConfig.enabled()` defaults
+> to `false`, and each factory additionally requires a `MeterRegistry` in the graph. See
+> [metrics-config-reference.md](metrics-config-reference.md).
 
 ## Contents
 
-- [Module: MetricsModule](#metricsmodule)
+- [How a meter name becomes a Prometheus series](#exposition)
 - [HTTP server](#http-server)
 - [HTTP client](#http-client)
 - [Database](#database)
 - [Kafka](#kafka)
-- [gRPC server](#grpc-server)
-- [gRPC client](#grpc-client)
-- [Scheduling](#scheduling)
+- [gRPC](#grpc)
 - [Cache](#cache)
+- [Scheduling](#scheduling)
 - [Resilience](#resilience)
-- [S3 client](#s3-client)
-- [System and JVM](#system-and-jvm)
+- [S3, SOAP, JMS, Redis](#s3-soap-jms-redis)
+- [Framework, JVM and system](#framework-jvm-and-system)
+- [Renamed and removed relative to 1.x](#renamed-and-removed-relative-to-1x)
+- [Naming your own metrics](#naming-your-own-metrics)
 
 ---
 
-## MetricsModule
+## How a meter name becomes a Prometheus series { #exposition }
 
-**Dependency:** `ru.tinkoff.kora:micrometer-module` (registers `PrometheusMeterRegistry`; no separate registry artifact needed)
-**Module:** `ru.tinkoff.kora.micrometer.module.MetricsModule`
+Kora registers meters under dotted OpenTelemetry-style names. Micrometer's
+`PrometheusMeterRegistry` performs the translation:
 
-```hocon
-metrics {
-    opentelemetrySpec = "V120"  # or "V123"
-}
+1. dots and dashes become underscores — `http.server.request.duration` → `http_server_request_duration`;
+2. a base-unit suffix is appended — `_seconds` for `Timer`, `_bytes` for a summary with
+   `baseUnit("bytes")`;
+3. distribution meters expand into `_count`, `_sum`, `_bucket`, `_max` series;
+4. counters gain `_total` — Micrometer does not double it, so a meter already named
+   `user.creation.total` exports as `user_creation_total`, not `user_creation_total_total`.
+
+**Read the exact series name off a running process before wiring a dashboard:**
+
+```bash
+curl -s http://localhost:8085/metrics | grep '^# TYPE http_server_request_duration'
 ```
 
-The module instruments all connected Kora modules and adds JVM metrics. The tables below list the metric, its Micrometer type, and the OpenTelemetry tag keys.
+Steps 1 and 2 are Micrometer's behaviour, not Kora's, so the suffix follows the Micrometer version
+on your classpath (`1.17.0` via the BOM). The prefix `http_server_request_duration` and the
+suffixed forms `jvm_memory_used_bytes` / `process_cpu_usage` / `logback_events_total` appear
+verbatim in the migrated observability guide's container smoke test, so the mechanism is confirmed
+against real 2.0 output.
+
+### Tag keys
+
+Kora passes OpenTelemetry semantic-convention constants — `HttpAttributes.HTTP_ROUTE`,
+`ErrorAttributes.ERROR_TYPE`, `DbAttributes.DB_OPERATION_NAME`, … — as tag keys. The literal label
+string is whatever that constant resolves to in the semconv artifacts the BOM pins
+(`io.opentelemetry.semconv:opentelemetry-semconv:1.43.0` and
+`opentelemetry-semconv-incubating:1.37.0-alpha`), which is why the tables below give the constant
+alongside the label. Tags that Kora hard-codes as string literals (`server.name`, `system.config`,
+`system.name.simple`, `system.name.canonical`, `origin`, `operation`, `type`, `name`, `state`,
+`status`, `reason`) are exact.
+
+Every metric additionally carries whatever you put in that component's
+`telemetry.metrics.tags { … }`.
 
 ---
 
-## HTTP server
+## HTTP server { #http-server }
 
-| Metric | Type | Tags |
-|--------|------|------|
-| `http.server.request.duration` | DistributionSummary | `http.request.method`, `http.response.status_code`, `http.route`, `url.scheme`, `server.address`, `error.type` |
-| `http.server.active_requests` | Gauge | `http.request.method`, `http.route`, `server.address`, `url.scheme` |
+Registered by `DefaultHttpServerMetricsFactory`. Config root `httpServer` (public) and
+`httpServer.system` (system server).
 
----
+| Meter | Type | Tags |
+|---|---|---|
+| `http.server.request.duration` | Timer (uses `metrics.slo()` as SLO buckets) | `server.name`, `ServerAttributes.SERVER_PORT` → `server.port`, `HttpAttributes.HTTP_REQUEST_METHOD` → `http.request.method`, `HttpAttributes.HTTP_ROUTE` → `http.route`, `UrlAttributes.URL_SCHEME` → `url.scheme`, `ServerAttributes.SERVER_ADDRESS` → `server.address`, `ErrorAttributes.ERROR_TYPE` → `error.type` |
+| `http.server.active_requests` | Gauge | `server.name`, `server.port`, `http.request.method`, `http.route`, `url.scheme`, `server.address` |
 
-## HTTP client
+**There is no status-code tag on the server-side duration timer in 2.0.** The `HttpServerResponse`
+is passed into `createMetricServerDuration(...)` but contributes no tag. A 1.x dashboard filtering
+`http_response_status_code=~"5.."` matches nothing. Use `error.type`:
 
-| Metric | Type | Tags |
-|--------|------|------|
-| `http.client.request.duration` | DistributionSummary | `http.request.method`, `http.response.status_code`, `server.address`, `url.scheme`, `http.route`, `error.type` |
+```promql
+# error ratio, 2.0
+  sum(rate(http_server_request_duration_seconds_count{error_type!=""}[5m]))
+/ sum(rate(http_server_request_duration_seconds_count[5m]))
+```
 
----
+`error.type` is `""` on success and the exception's canonical class name on failure;
+`CompletionException` is unwrapped to its cause first. `http.route` falls back to the literal
+`UNKNOWN_ROUTE` when no route template matched (404s, malformed paths) — a useful bounded bucket
+rather than raw paths.
 
-## Database
-
-| Metric | Type | Tags |
-|--------|------|------|
-| `db.client.request.duration` | DistributionSummary | `db.pool.name`, `db.statement`, `db.operation`, `error.type` |
-
----
-
-## Kafka
-
-| Metric | Type | Tags |
-|--------|------|------|
-| `messaging.receive.duration` | DistributionSummary | `messaging.system`, `messaging.destination`, `messaging.operation`, `error.type` |
-| `messaging.publish.duration` | DistributionSummary | `messaging.system`, `messaging.destination`, `messaging.partition_id`, `error.type` |
-| `messaging.process.batch.duration` | DistributionSummary | `messaging.system`, `messaging.destination`, `error.type` |
-| `messaging.kafka.consumer.lag` | Gauge | `messaging.system`, `messaging.destination`, `messaging.partition_id`, `messaging.consumer_group` |
+`server.name` is the transport name given to the factory module: `kora-undertow` for the public
+server, `kora-undertow-system` for the system server.
 
 ---
 
-## gRPC server
+## HTTP client { #http-client }
 
-| Metric | Type | Tags |
-|--------|------|------|
-| `rpc.server.duration` | DistributionSummary | `rpc.service`, `rpc.method`, `rpc.status`, `error.type` |
-| `rpc.server.requests_per_rpc` | Counter | `rpc.service`, `rpc.method` |
-| `rpc.server.responses_per_rpc` | Counter | `rpc.service`, `rpc.method` |
+Registered by `DefaultHttpClientMetricsFactory`. Config root `httpClient.<name>`, where `<name>` is
+the `@HttpClient("name")` value.
 
----
+| Meter | Type | Tags |
+|---|---|---|
+| `http.client.request.duration` | Timer (SLO buckets) | `http.request.method`, `HttpAttributes.HTTP_RESPONSE_STATUS_CODE` → `http.response.status_code`, `server.address` (when the URI has a host), `url.scheme` (when present), `http.route` (the URI template), `error.type`, plus `system.config`, `system.name.simple`, `system.name.canonical` |
 
-## gRPC client
+Unlike the server timer, the **client** timer does carry `http.response.status_code`.
 
-| Metric | Type | Tags |
-|--------|------|------|
-| `rpc.client.duration` | DistributionSummary | `rpc.service`, `rpc.method`, `rpc.status`, `error.type`, `server.address` |
-| `rpc.client.requests_per_rpc` | Counter | `rpc.service`, `rpc.method`, `server.address` |
-| `rpc.client.responses_per_rpc` | Counter | `rpc.service`, `rpc.method`, `server.address` |
+The three `system.*` tags come from `DefaultHttpClientTelemetry`: the client's config path, its
+simple class name and its canonical class name. They let you separate two clients that call the
+same host.
 
 ---
 
-## Scheduling
+## Database { #database }
 
-| Metric | Type | Tags |
-|--------|------|------|
-| `scheduling.job.duration` | DistributionSummary | `code.class`, `code.function`, `error.type` |
+Registered by `DefaultDatabaseMetricsFactory`, shared by JDBC and Cassandra. Config roots `jdbc`
+and `cassandra`.
+
+| Meter | Type | Tags |
+|---|---|---|
+| `db.client.operation.duration` | Timer (SLO buckets) | `DbIncubatingAttributes.DB_CLIENT_CONNECTION_POOL_NAME` → `db.client.connection.pool.name`, `DbAttributes.DB_SYSTEM_NAME` → `db.system.name`, `DbAttributes.DB_QUERY_TEXT` → `db.query.text`, `DbAttributes.DB_OPERATION_NAME` → `db.operation.name`, `error.type` |
+
+`db.query.text` is the repository's *query id*, not the raw SQL, so it stays bounded.
+`db.system.name` is derived from the JDBC URL (`jdbc:postgresql:…` → `postgresql`).
+
+### Pool metrics
+
+`jdbc.telemetry.metrics.driverMetrics` defaults to **`true`** and makes `JdbcDataSource` call
+`dataSource.setMetricRegistry(telemetry.meterRegistry())`, which is what produces Hikari's own
+`hikaricp_*` series.
+
+But when `jdbc.telemetry.metrics.enabled` is `false` (the default), the factory returns
+`NoopDatabaseTelemetry`, whose `meterRegistry()` is the `NoopMeterRegistry` — so Hikari is handed a
+registry that discards everything. **`driverMetrics = true` alone gives you no pool metrics;**
+`jdbc.telemetry.metrics.enabled = true` is the prerequisite.
+
+Cassandra behaves the same way through `CassandraSessionBuilderUtils`.
 
 ---
 
-## Cache
+## Kafka { #kafka }
 
-| Metric | Type | Tags |
-|--------|------|------|
-| `cache.duration` | DistributionSummary | `cache`, `operation`, `origin`, `status` |
-| `cache.ratio` | Counter | `cache`, `origin`, `type` |
+Config roots are the paths you pass to `@KafkaListener("path")` and `@KafkaPublisher("path")`.
 
-When using Caffeine, standard Micrometer cache meters are also registered: `cache.gets`, `cache.puts`, `cache.evictions` (Counter), `cache.size` (Gauge).
+### Consumer — `DefaultKafkaConsumerMetricsFactory`
+
+| Meter | Type | Tags |
+|---|---|---|
+| `messaging.process.duration` | Timer (SLO buckets) | `MESSAGING_SYSTEM` → `messaging.system` (= `kafka`), `MESSAGING_CLIENT_ID`, `MESSAGING_CONSUMER_GROUP_NAME`, `system.config`, `system.name.simple`, `system.name.canonical`, `error.type`, `MESSAGING_DESTINATION_NAME`, `MESSAGING_DESTINATION_PARTITION_ID` |
+| `messaging.process.batch.duration` | Timer (SLO buckets) | as above **without** destination/partition |
+| `messaging.kafka.consumer.lag` | Gauge | `messaging.system`, client id, consumer group, the three `system.*` tags, destination name, partition id |
+
+### Publisher — `DefaultKafkaPublisherMetricsFactory`
+
+| Meter | Type | Tags |
+|---|---|---|
+| `messaging.client.operation.duration` | Timer (SLO buckets) | `messaging.system` (= `kafka`), `MESSAGING_CLIENT_ID`, `MESSAGING_OPERATION_TYPE` (= `send`), the three `system.*` tags, `error.type`, destination name, partition id |
+| `messaging.client.sent.messages` | Counter | same tag set |
+
+Both sides also expose the Kafka driver's own meters when
+`telemetry.metrics.driverMetrics = true` — default **`false`** for Kafka, unlike JDBC.
 
 ---
 
-## Resilience
+## gRPC { #grpc }
 
-| Metric | Type | Tags |
-|--------|------|------|
-| `resilient.circuitbreaker.state` | Gauge | `name` (0=CLOSED, 1=HALF_OPEN, 2=OPEN) |
+| Meter | Type | Config root | Tags |
+|---|---|---|---|
+| `rpc.server.duration` | Timer (SLO buckets) | `grpcServer` | `server.name`, `server.port`, `RPC_SYSTEM` → `rpc.system` (= `grpc`), `RPC_SERVICE`, `RPC_METHOD`, `RPC_GRPC_STATUS_CODE` |
+| `rpc.client.duration` | Timer (SLO buckets) | `grpcClient.<ServiceSimpleName>` | `rpc.system` (= `grpc`), `rpc.service`, `rpc.method`, `rpc.grpc.status_code`, `server.address`, `server.port`, `error.type` |
+
+`rpc.server.requests_per_rpc` / `rpc.server.responses_per_rpc` and their client counterparts
+**do not exist in Kora 2.0** — no source registers them.
+
+---
+
+## Cache { #cache }
+
+Registered by `DefaultCaffeineCacheMetricsFactory` and `DefaultRedisCacheMetricsFactory`. Config
+root is the `@Cache("path")` value.
+
+| Meter | Type | Tags |
+|---|---|---|
+| `cache.operation.duration` | Timer (SLO buckets) | `system.config`, `system.name.simple`, `system.name.canonical`, `origin` (`caffeine` \| `redis`), `operation`, `error.type` |
+| `cache.ratio` | Counter | `system.config`, `system.name.simple`, `system.name.canonical`, `origin`, `operation`, `type` |
+
+`operation` is the cache operation enum name (`GET`, `PUT`, …); `type` on `cache.ratio` is the
+hit/miss discriminator. Both are bounded.
+
+---
+
+## Scheduling { #scheduling }
+
+Registered by `DefaultSchedulingMetricsFactory`. Telemetry config root `scheduling.telemetry`.
+
+| Meter | Type | Tags |
+|---|---|---|
+| `scheduling.job.duration` | Timer (SLO buckets) | `CodeAttributes.CODE_FUNCTION_NAME` → `code.function.name` (the job name), `system.config` (when the job has a config path), `system.name.simple`, `system.name.canonical`, `error.type` |
+
+---
+
+## Resilience { #resilience }
+
+Registered by the `Default*MetricsFactory` classes under `resilient/resilient-kora`. Global
+telemetry root `resilient.telemetry`, merged with the per-operation
+`resilient.<kind>.<name>.telemetry` section (operation values win over global ones).
+
+| Meter | Type | Tags |
+|---|---|---|
+| `resilient.circuitbreaker.state` | Gauge | `name` |
 | `resilient.circuitbreaker.transition` | Counter | `name`, `state` |
-| `resilient.circuitbreaker.call.acquire` | Counter | `name`, `state`, `status` |
+| `resilient.circuitbreaker.call.acquire` | Counter | `name`, `state`, `status` (the `CallAcquireStatus` enum name) |
+| `resilient.circuitbreaker.call.result` | Counter | `name`, `state`, `status` (the `CallResult` enum name) |
 | `resilient.retry.attempts` | Counter | `name` |
-| `resilient.retry.exhausted` | Counter | `name` |
+| `resilient.retry.exhausted` | Counter | `name`, `reason` (the `StopReason` enum name) |
 | `resilient.timeout.exhausted` | Counter | `name` |
+| `resilient.ratelimiter.acquire` | Counter | `name`, `status` |
 | `resilient.fallback.attempts` | Counter | `name`, `type` |
 
----
+`resilient.circuitbreaker.state` encodes the state numerically. Its description, verbatim from
+source: `Circuit Breaker state metrics, where 0 -> CLOSED, 1 -> HALF_OPEN, 2 -> OPEN`.
+Only one gauge exists per breaker `name` — the value is mutated, not re-registered per state.
 
-## S3 client
+`resilient.circuitbreaker.transition` is incremented **only** on a transition to `OPEN` or
+`HALF_OPEN`, never on the return to `CLOSED`. `resilient.circuitbreaker.call.acquire` is
+incremented only in `HALF_OPEN` (any status) and in `OPEN` when the call is `REJECTED` — so it is a
+rejection/probe counter, not a total-calls counter. Use `resilient.circuitbreaker.call.result` for
+per-call outcomes.
 
-| Metric | Type | Tags |
-|--------|------|------|
-| `s3.client.duration` | DistributionSummary | `aws.s3.bucket`, `aws.operation.name`, `error.type` |
-| `s3.kora.client.duration` | DistributionSummary | `aws.client.name`, `aws.s3.bucket`, `aws.operation.name`, `error.type` |
-
----
-
-## System and JVM
-
-| Metric | Type | Tags |
-|--------|------|------|
-| `kora.up` | Gauge | `version` (value = 1 while running) |
-| `jvm.gc.pause` | DistributionSummary | `action`, `cause` |
-| `jvm.gc.memory.allocated` | Counter | — |
-| `jvm.memory.used` | Gauge | `area`, `id` |
-| `jvm.memory.committed` | Gauge | `area`, `id` |
-| `jvm.memory.max` | Gauge | `area`, `id` |
-| `jvm.threads.live` | Gauge | — |
-| `jvm.threads.daemon` | Gauge | — |
-| `jvm.threads.peak` | Gauge | — |
-| `jvm.threads.states` | Gauge | `state` |
-| `process.cpu.usage` | Gauge | — |
-| `system.cpu.usage` | Gauge | — |
-| `system.cpu.count` | Gauge | — |
-| `process.files.open` | Gauge | — |
-| `process.files.max` | Gauge | — |
-| `process.uptime` | Gauge | — |
-| `logback.events` | Counter | `level` |
-| `jvm.classes.loaded` | Gauge | — |
-
-For the complete list (Camunda, JMS, SOAP, Redis/Lettuce, additional JVM gauges) see the local docs at `.kora-agent/kora-docs/mkdocs/docs/en/documentation/metrics.md`.
+`resilient.circuitbreaker.call.result` and `resilient.ratelimiter.acquire` are new in 2.0.
+Note that resilience **tracing** is off by default too: each `*TracingConfig` overrides
+`enabled()` to `false`.
 
 ---
 
-## Naming custom metrics
+## S3, SOAP, JMS, Redis { #s3-soap-jms-redis }
 
-Match the framework style:
+| Meter | Type | Emitted by | Distinguishing tags |
+|---|---|---|---|
+| `rpc.client.duration` | Timer | `DefaultAwsS3ClientMetricsFactory` | `rpc.system` = **`s3-aws`**, `rpc.method` (operation), `AwsIncubatingAttributes.AWS_S3_BUCKET`, `error.type`, the three `system.*` tags |
+| `rpc.client.duration` | Timer | `DefaultS3ClientMetricsFactory` (declarative client) | `rpc.system` = **`s3`**, same shape |
+| `rpc.client.duration` | Timer | `DefaultSoapClientMetricsFactory` | `rpc.system` = **`soap`**, `rpc.service`, `rpc.method`, `server.address`, `server.port`, `http.response.status_code`, `error.type`, SOAP fault code, the three `system.*` tags |
+| `messaging.receive.duration` | Timer | `DefaultJmsConsumerMetricsFactory` | `messaging.system` = `jms`, `MESSAGING_DESTINATION_NAME`, `error.type` |
+| `lettuce.command.completion.duration` | Timer | `DefaultLettuceTelemetry` | config root `lettuce` |
+| `lettuce.command.firstresponse.duration` | Timer | `DefaultLettuceTelemetry` | config root `lettuce` |
+
+All three S3/SOAP flavours share the meter name `rpc.client.duration`; **always split them by
+`rpc_system`** in a query, or you will aggregate S3 latency together with SOAP latency.
+`s3.client.duration` and `s3.kora.client.duration` from 1.x no longer exist.
+
+---
+
+## Framework, JVM and system { #framework-jvm-and-system }
+
+`PrometheusMeterRegistryWrapper.init()` registers exactly one Kora meter and binds exactly seven
+Micrometer binders — nothing else:
+
+| Meter | Type | Tags |
+|---|---|---|
+| `kora.up` | Gauge, constant `1` | `version` — read from the classpath resource `META-INF/kora/version/common`, or `UNKNOWN` |
+
+| Micrometer binder (all from `io.micrometer.core.instrument.binder`) | Covers |
+|---|---|
+| `ClassLoaderMetrics` | loaded/unloaded classes |
+| `JvmMemoryMetrics` | heap and non-heap pools, buffers |
+| `JvmGcMetrics` | GC pauses and allocation |
+| `ProcessorMetrics` | CPU count / usage / load average |
+| `JvmThreadMetrics` | live, daemon, peak, per-state thread counts |
+| `FileDescriptorMetrics` | open / max file descriptors |
+| `UptimeMetrics` | process uptime and start time |
+
+The exact series each binder emits is defined by Micrometer `1.17.0`, not by Kora — check
+[the Micrometer JVM/system binder docs](https://docs.micrometer.io/micrometer/reference/reference/jvm.html)
+or read your own `/metrics`. The migrated observability guide's smoke test confirms
+`jvm_memory_used_bytes` and `process_cpu_usage` in real 2.0 output.
+
+Kora binds **no** Logback metrics binder. `logback_events_total` appears only if your application
+registers `LogbackMetrics` itself.
+
+`kora.up` is the cheapest liveness signal in a dashboard, and its `version` label is the fastest way
+to see which Kora build a pod is actually running.
+
+---
+
+## Renamed and removed relative to 1.x { #renamed-and-removed-relative-to-1x }
+
+Do not port a 1.x metric list. What changed:
+
+| 1.x | 2.0 |
+|---|---|
+| `metrics { opentelemetrySpec = "V120" \| "V123" }` | **removed** — one fixed scheme, no global `metrics` config section exists |
+| `db.client.request.duration` (`V123`) | **`db.client.operation.duration`** |
+| tags `db.pool.name`, `db.statement`, `db.operation` | **`db.client.connection.pool.name`, `db.system.name`, `db.query.text`, `db.operation.name`** |
+| `cache.duration` | **`cache.operation.duration`** |
+| `messaging.receive.duration` (Kafka) | **`messaging.process.duration`** (JMS keeps `messaging.receive.duration`) |
+| `messaging.publish.duration` | **`messaging.client.operation.duration`** + **`messaging.client.sent.messages`** |
+| `s3.client.duration`, `s3.kora.client.duration` | **`rpc.client.duration`** with `rpc.system` = `s3-aws` / `s3` |
+| `rpc.*.requests_per_rpc`, `rpc.*.responses_per_rpc` | **removed** |
+| `http.server.request.duration` tag `http.response.status_code` | **removed on the server side** (the client timer keeps it) |
+| `rpc.status` on gRPC | **`rpc.grpc.status_code`** (`RpcIncubatingAttributes.RPC_GRPC_STATUS_CODE`) |
+| — | **new:** `resilient.circuitbreaker.call.result`, `resilient.ratelimiter.acquire` |
+
+---
+
+## Naming your own metrics { #naming-your-own-metrics }
+
+Match the framework style so your dashboards read consistently:
 
 | Pattern | Example | Type |
-|---------|---------|------|
+|---|---|---|
 | `<noun>.<action>.duration` | `user.creation.duration` | Timer |
 | `<noun>.<action>.total` | `user.creation.total` | Counter |
-| `<noun>.<attribute>` | `payment.amount` | DistributionSummary |
+| `<noun>.<attribute>` | `payment.amount` | DistributionSummary with `baseUnit(...)` |
 
-Use dots as separators, end durations with `.duration`, end monotonic counts with `.total`, and set `baseUnit(...)` for size summaries. See [Custom Metrics Reference](custom-metrics-reference.md).
+Dots as separators, `.duration` for latencies, `.total` for monotonic counts, `baseUnit(...)` for
+size summaries. See [custom-metrics-reference.md](custom-metrics-reference.md).
+
+---
+
+## References
+
+- [Micrometer concepts](https://docs.micrometer.io/micrometer/reference/concepts.html)
+- [OpenTelemetry semantic conventions](https://opentelemetry.io/docs/specs/semconv/)
+- [Prometheus naming practices](https://prometheus.io/docs/practices/naming/)

@@ -3,20 +3,29 @@ package ${package}
 import io.mockk.every
 import io.mockk.impl.annotations.MockK
 import io.mockk.verify
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import ru.tinkoff.kora.test.extension.junit5.KoraAppTest
-import ru.tinkoff.kora.test.extension.junit5.TestComponent
+import io.koraframework.test.extension.junit5.KoraAppTest
+import io.koraframework.test.extension.junit5.TestComponent
 
-// Component test: a real ${componentName} from the Graph with a mocked dependency.
-// @MockK creates the mock; @TestComponent registers it in the Graph in place of the
-// real ${dependencyName}. Do NOT add a "= mockk()" initializer and do NOT attach
-// MockKExtension — @KoraAppTest owns the mock lifecycle.
+// Component test: a real ${componentName} from the graph with a mocked dependency.
+//
+// @field:MockK creates the mock; @TestComponent registers it in the graph in place of the real
+// ${dependencyName} and injects the same instance into every component that depends on it.
+//
+//   - use @field:MockK, not bare @MockK: the bare form annotates the Kotlin property and is only
+//     discovered when kotlin-reflect is on the test classpath, otherwise the REAL component is
+//     injected with no error at all;
+//   - do NOT add a "= mockk()" initializer — the annotation builds the mock;
+//   - do NOT attach @ExtendWith(MockKExtension::class) — @KoraAppTest owns creation, injection
+//     and reset;
+//   - use every/verify, never coEvery/coVerify: Kora 2.0 contracts are synchronous.
 @KoraAppTest(Application::class)
 class ${componentName}Test {
 
-    @MockK
+    @field:MockK
     @TestComponent
     lateinit var ${dependencyVarName}: ${dependencyName}
 
@@ -33,6 +42,7 @@ class ${componentName}Test {
         val result = ${componentVarName}.doSomething()
 
         assertNotNull(result)
+        assertEquals(expectedValue, result)
         verify { ${dependencyVarName}.someMethod(any()) }
     }
 }

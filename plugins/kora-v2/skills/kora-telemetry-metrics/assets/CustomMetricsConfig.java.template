@@ -1,25 +1,33 @@
 package ${package};
 
-import ru.tinkoff.kora.common.Module;
-import ru.tinkoff.kora.micrometer.module.PrometheusMeterRegistryInitializer;
+import io.koraframework.common.annotation.Module;
+import io.koraframework.micrometer.module.PrometheusMeterRegistryInitializer;
 
 /**
- * Metrics customization module.
+ * Metrics customization module (Kora 2.0).
  *
- * A PrometheusMeterRegistryInitializer is a
- * Function&lt;PrometheusMeterRegistry, PrometheusMeterRegistry&gt;: it mutates the
- * registry configuration and MUST return the registry. It is applied exactly
- * once when the application graph is initialized.
+ * MetricsModule collects every PrometheusMeterRegistryInitializer with
+ * All&lt;PrometheusMeterRegistryInitializer&gt; and applies them inside
+ * PrometheusMeterRegistryWrapper.init(), BEFORE the JVM binders are bound and before
+ * kora.up is registered -- so common tags land on those meters too.
  *
- * Declare it as a `default` method of a `@Module` — Kora picks it up as a
- * component automatically; no extra annotation is required.
+ * PrometheusMeterRegistryInitializer extends
+ * Function&lt;PrometheusMeterRegistry, PrometheusMeterRegistry&gt;, so it MUST return the
+ * registry. Returning a registry you did not derive from the argument breaks the chain
+ * for every later initializer.
+ *
+ * Declare it as a `default` method of a `@Module` interface -- Kora picks it up as a
+ * component automatically. Several initializers may coexist; they are applied in graph
+ * order.
+ *
+ * This is the global alternative to the per-component telemetry.metrics.tags config key.
  */
 @Module
 public interface CustomMetricsConfig {
 
     /**
-     * Adds common tags attached to every metric.
-     * Keep these tags bounded — they multiply onto all time series.
+     * Adds common tags attached to every metric in the process.
+     * Keep the values bounded -- they multiply onto every time series.
      */
     default PrometheusMeterRegistryInitializer commonTagsInit() {
         return registry -> {

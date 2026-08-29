@@ -1,114 +1,93 @@
 package ${package};
 
+import io.koraframework.common.annotation.Component;
 import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.MeterRegistry;
-import ru.tinkoff.kora.common.Component;
+import io.micrometer.core.instrument.Timer;
 
 import java.time.Duration;
-import java.util.Locale;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
- * High-throughput metrics service with cached metric instances.
+ * High-throughput metrics service with cached meter instances (Kora 2.0).
  *
- * Use this pattern when:
- * - Operations have >1000 calls/second
- * - Metrics have multiple tag combinations (bounded cardinality)
- * - You need to avoid Micrometer internal ConcurrentHashMap contention
+ * Use this pattern when a meter carries tags whose values vary at runtime, and the hot
+ * path cannot afford a builder + registry lookup per call.
  *
- * Key patterns:
- * - Immutable record class as Map key
- * - computeIfAbsent for atomic create-or-get
- * - Separate maps for Timer and Counter types
- * - Bounded tag values only
+ * Kora's own instrumentation is built exactly this way -- see the requestDurationCache
+ * and activeRequestsCache maps in DefaultHttpServerMetricsFactory, and the guard comment
+ * it repeats above every builder method:
+ *
+ *     DO NOT ADD DYNAMIC TAGS IN BUILDER, use metric key instead of metric collision will happen
+ *
+ * That is the rule to respect here: the cache key must contain EVERY tag that varies.
+ * If it does not, two different tag sets collapse onto one cache entry, the
+ * first-registered meter wins, and later calls are recorded under the wrong labels.
+ *
+ * Tag values must still be bounded. Caching an unbounded tag only moves the memory leak
+ * from Micrometer's map into yours.
  */
 @Component
 public final class CachedMetricsService {
 
-    /**
-     * Immutable record for Map key.
-     * Tag values MUST be bounded (finite set).
-     */
-    record MetricKey(String operation, String status) {}
+    /** Key for custom.operation.duration -- both of its dynamic tags. */
+    private record DurationKey(String operation, String status) {}
 
-    private final ConcurrentHashMap<MetricKey, Timer> timers = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<MetricKey, Counter> counters = new ConcurrentHashMap<>();
+    /** Key for custom.operation.count -- both of its dynamic tags. */
+    private record CountKey(String operation, String type) {}
+
     private final MeterRegistry registry;
+    private final ConcurrentHashMap<DurationKey, Timer> timers = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<CountKey, Counter> counters = new ConcurrentHashMap<>();
 
     public CachedMetricsService(MeterRegistry registry) {
         this.registry = registry;
     }
 
     /**
-     * Records operation duration with cached Timer.
+     * Runs the action, records its duration under status=success or status=failed, and
+     * rethrows whatever it threw. The metric is recorded exactly once on either path.
      */
-    public <T> T recordOperation(String operation, Callable<T> action) {
+    public <T> T recordOperation(String operation, Callable<T> action) throws Exception {
+        var startedAt = System.nanoTime();
         try {
-            return recordOperation(operation, true, action);
+            var result = action.call();
+            recordOperationDuration(operation, System.nanoTime() - startedAt, true);
+            return result;
         } catch (Exception e) {
-            recordOperation(operation, false, () -> { throw e; });
-            throw new RuntimeException("Operation failed", e);
+            recordOperationDuration(operation, System.nanoTime() - startedAt, false);
+            throw e;
         }
     }
 
-    /**
-     * Records operation with explicit success/failure status.
-     */
-    public <T> T recordOperation(String operation, boolean success, Callable<T> action) {
-        var key = new MetricKey(operation, success ? "success" : "failed");
-
-        var timer = timers.computeIfAbsent(key, k ->
-            Timer.builder("custom.operation.duration")
-                .description("Duration of custom operations")
-                .tag("operation", k.operation())
-                .tag("status", k.status())
-                .serviceLevelObjectives(
-                    Duration.ofMillis(50),
-                    Duration.ofMillis(100),
-                    Duration.ofMillis(250),
-                    Duration.ofMillis(500),
-                    Duration.ofSeconds(1)
-                )
-                .register(registry)
-        );
-
-        try {
-            return timer.recordCallable(action);
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to record operation", e);
-        }
-    }
-
-    /**
-     * Records operation duration in nanoseconds.
-     */
+    /** Records a duration you measured yourself. */
     public void recordOperationDuration(String operation, long durationNanos, boolean success) {
-        var key = new MetricKey(operation, success ? "success" : "failed");
+        var key = new DurationKey(operation, success ? "success" : "failed");
+        var timer = this.timers.computeIfAbsent(key, k ->
+                Timer.builder("custom.operation.duration")
+                        .description("Duration of custom operations")
+                        .tag("operation", k.operation())
+                        .tag("status", k.status())
+                        .serviceLevelObjectives(
+                                Duration.ofMillis(50),
+                                Duration.ofMillis(100),
+                                Duration.ofMillis(250),
+                                Duration.ofMillis(500),
+                                Duration.ofSeconds(1))
+                        .register(this.registry));
 
-        var timer = timers.computeIfAbsent(key, k ->
-            Timer.builder("custom.operation.duration")
-                .tag("operation", k.operation())
-                .tag("status", k.status())
-                .register(registry)
-        );
-
-        timer.record(durationNanos, java.util.concurrent.TimeUnit.NANOSECONDS);
+        timer.record(durationNanos, TimeUnit.NANOSECONDS);
     }
 
-    /**
-     * Increments counter with cached Counter instance.
-     */
     public void incrementCounter(String operation, String type) {
-        var key = new MetricKey(operation, type);
-
-        var counter = counters.computeIfAbsent(key, k ->
-            Counter.builder("custom.operation.count")
-                .tag("operation", k.operation())
-                .tag("type", k.type())
-                .register(registry)
-        );
+        var key = new CountKey(operation, type);
+        var counter = this.counters.computeIfAbsent(key, k ->
+                Counter.builder("custom.operation.count")
+                        .tag("operation", k.operation())
+                        .tag("type", k.type())
+                        .register(this.registry));
 
         counter.increment();
     }

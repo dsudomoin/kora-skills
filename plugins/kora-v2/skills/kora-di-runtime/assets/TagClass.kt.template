@@ -1,43 +1,14 @@
 package ${packagePath}
 
-import ru.tinkoff.kora.common.Component
-import ru.tinkoff.kora.common.Tag
-
 /**
- * Tag class for component disambiguation.
+ * A tag marker.
  *
- * Usage:
- * - Simple marker class for @Tag annotation
- * - No fields or methods needed
- * - Just a type token
+ * `@Tag` (io.koraframework.common.annotation.Tag) takes a `KClass`, never a string — so rename and
+ * find-usages keep working. Any type can serve as a tag; an empty, purpose-named, non-instantiable
+ * class states the intent and nothing else.
  *
- * Example:
- *   @Tag(RedisTag::class)
- *   @Component
- *   class RedisCache : Cache
+ * Matching rules: an untagged injection point sees only untagged components, a tagged one only the
+ * same tag, and `@Tag(Tag.Any::class)` sees everything. Tagging one implementation of an interface
+ * therefore removes it from every untagged consumer of that interface.
  */
-class ${ClassName}
-
-// ============================================================================
-// EXAMPLE TAG CLASSES
-// ============================================================================
-//
-// // Cache implementations
-// class RedisTag
-// class CaffeineTag
-//
-// // Database implementations
-// class PrimaryTag
-// class SecondaryTag
-//
-// // Environment-specific
-// class ProdTag
-// class DevTag
-//
-// // Strategy pattern
-// class SyncTag
-// class AsyncTag
-//
-// // Tenant-specific (multi-tenant applications)
-// class TenantATag
-// class TenantBTag
+class ${ClassName} private constructor()

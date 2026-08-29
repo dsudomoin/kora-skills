@@ -1,24 +1,54 @@
 package ${package}
 
-import io.grpc.*
-import ru.tinkoff.kora.common.Component
+import io.grpc.Metadata
+import io.grpc.ServerCall
+import io.grpc.ServerCallHandler
+import io.grpc.ServerInterceptor
+import io.koraframework.common.annotation.Component
+import org.slf4j.LoggerFactory
 
 /**
- * Server interceptor for gRPC services.
- * Use for logging, metrics, authentication, or exception handling.
+ * gRPC [ServerInterceptor] for cross-cutting concerns: authentication, auditing,
+ * request enrichment, centralised exception mapping.
+ *
+ * Registration: GrpcServerFactoryModule collects interceptors with an UNTAGGED
+ * `All<ValueOf<ServerInterceptor>>` claim, so an untagged `@Component` is picked up automatically.
+ * Adding `@Tag(...)` to this class removes it from that collection — the build still succeeds and
+ * the app still starts, the interceptor simply never runs.
+ *
+ * Every interceptor is global. To scope one to a single proto service, compare against the
+ * generated `SERVICE_NAME` constant and pass everything else straight through.
+ *
+ * Do NOT write metrics, request/response logging, tracing or MDC interceptors here — the module
+ * already provides all four through `grpcServer.telemetry` (metrics and logging default to false
+ * and must be enabled explicitly).
+ *
+ * The `ReqT : Any, RespT : Any` bounds are required; without them Kotlin reports
+ * "'interceptCall' overrides nothing".
  */
 @Component
-class GrpcLoggingInterceptor : ServerInterceptor {
+class ${service_name}ServerInterceptor : ServerInterceptor {
 
-    override fun <ReqT, RespT> interceptCall(
-        serverCall: ServerCall<ReqT, RespT>,
-        metadata: Metadata,
-        serverCallHandler: ServerCallHandler<ReqT, RespT>
+    private val logger = LoggerFactory.getLogger(${service_name}ServerInterceptor::class.java)
+
+    override fun <ReqT : Any, RespT : Any> interceptCall(
+        call: ServerCall<ReqT, RespT>,
+        headers: Metadata,
+        next: ServerCallHandler<ReqT, RespT>
     ): ServerCall.Listener<ReqT> {
-        // Add custom logic here (logging, auth validation, metrics, etc.)
-        // Example: log method name
-        // println("gRPC call: " + serverCall.methodDescriptor.fullMethodName)
 
-        return serverCallHandler.startCall(serverCall, metadata)
+        // Scope to one service (remove to intercept every service on this server):
+        // if (${service_name}Grpc.SERVICE_NAME != call.methodDescriptor.serviceName) {
+        //     return next.startCall(call, headers)
+        // }
+
+        logger.info("Incoming gRPC request: method={}", call.methodDescriptor.fullMethodName)
+
+        // To reject a call, close it AND return an empty listener — doing only one of the two
+        // either hangs the client or raises "call already closed":
+        // call.close(Status.UNAUTHENTICATED.withDescription("Invalid API key"), Metadata())
+        // return object : ServerCall.Listener<ReqT>() {}
+
+        return next.startCall(call, headers)
     }
 }

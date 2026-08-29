@@ -1,72 +1,105 @@
-// Simple retry pattern for transient failures.
-// Replace `com.example.app.service` with your package.
+// @Retryable + a @Tag-bound RetryPredicate (Kora 2.0).
+// Replace `com.example.app.resilience` with your package.
 
-package com.example.app.service;
+package com.example.app.resilience;
 
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.resilient.retry.annotation.Retry;
+import java.net.ConnectException;
+import java.net.SocketTimeoutException;
+import java.util.Optional;
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Tag;
+import io.koraframework.resilient.retry.Retry;
+import io.koraframework.resilient.retry.RetryPredicate;
+import io.koraframework.resilient.retry.annotation.RetrySpec;
+import io.koraframework.resilient.retry.annotation.Retryable;
+
+// Linear backoff: delay + delayStep * (n - 1)
+@RetrySpec("resilient.retry.user")
+public interface UserRetry extends Retry {}
+
+// Exponential backoff + jitter + retry budget
+@RetrySpec("resilient.retry.external")
+interface ExternalRetry extends Retry {}
 
 @Component
-public class UserService {                                              // NOT final
+class UserService {                                                     // NOT final
 
     private final UserRepository repository;
     private final ExternalApi externalApi;
 
-    public UserService(UserRepository repository, ExternalApi externalApi) {
+    UserService(UserRepository repository, ExternalApi externalApi) {
         this.repository = repository;
         this.externalApi = externalApi;
     }
 
-    @Retry("user.read")
-    public java.util.Optional<User> findById(String id) {
+    // `attempts` counts RETRIES, not total invocations: attempts = 3 means up to 4 calls.
+    // When every attempt fails, RetryExhaustedException is thrown with the last failure as cause.
+    // With attempts = 0 or enabled = false the ORIGINAL exception propagates unwrapped instead —
+    // do not write `catch (RetryExhaustedException)` as the only error path.
+    @Retryable(UserRetry.class)
+    public Optional<User> findById(String id) {
         return repository.findById(id);
     }
 
-    // With exponential backoff:
-    // delay = 100ms, delayStep = 200ms → waits: 100ms, 300ms, 500ms, 700ms
-    @Retry("user.external")
-    public java.util.Optional<User> fetchExternal(String id) {
+    @Retryable(ExternalRetry.class)
+    public Optional<User> fetchExternal(String id) {
         return externalApi.fetchUser(id);
     }
 }
 
-// Repository placeholder
+// Retry predicate. In Kora 2.0 this is a single-method interface bound by @Tag(<Spec>.class);
+// the 1.x name() + test(Throwable) pair and the `failurePredicateName` config key are both gone.
+// A rejected exception ends the loop immediately and propagates unchanged.
+@Tag(ExternalRetry.class)
 @Component
-class UserRepository {
-    public java.util.Optional<User> findById(String id) {
-        return java.util.Optional.empty();
+final class TransientOnlyRetryPredicate implements RetryPredicate {
+
+    @Override
+    public boolean isRetryFailure(Throwable throwable) {
+        return throwable instanceof SocketTimeoutException
+            || throwable instanceof ConnectException;
     }
 }
 
-class User {
-    private final String id;
-    public User(String id) { this.id = id; }
-    public String getId() { return id; }
+// ---------------------------------------------------------------- placeholders
+
+record User(String id, String name) {}
+
+@Component
+class UserRepository {
+    Optional<User> findById(String id) {
+        return Optional.empty();
+    }
 }
 
 interface ExternalApi {
-    java.util.Optional<User> fetchUser(String id);
+    Optional<User> fetchUser(String id);
 }
 
 @Component
 class ExternalApiClient implements ExternalApi {
-    public java.util.Optional<User> fetchUser(String id) {
-        return java.util.Optional.empty();
+    @Override
+    public Optional<User> fetchUser(String id) {
+        return Optional.empty();
     }
 }
 
 // Config (HOCON):
 //
 // resilient.retry {
-//   "user.read" {
-//     delay = "100ms"
-//     attempts = 3
-//     delayStep = "100ms"
+//   user {
+//     delay = "100ms"       # REQUIRED
+//     attempts = 3          # REQUIRED — number of retries, not total calls
+//     delayStep = "100ms"   # optional, default 0 — waits 100ms, 200ms, 300ms
 //   }
-//   "user.external" {
+//   external {
 //     delay = "100ms"
-//     attempts = 4
-//     delayStep = "200ms"
-//     failurePredicateName = "TransientErrorsOnly"
+//     attempts = 5
+//     backoff { multiplier = 2.0, delayMax = "5s" }  # REPLACES delayStep: 100/200/400/800/1600ms
+//     jitter  { type = FULL, ratio = 0.5 }           # shortens each wait by up to 50%
+//     retryBudget { ratio = 0.1, tokensMax = 100 }   # caps retry amplification during an outage
 //   }
 // }
+//
+// Named sections do NOT inherit resilient.retry.default in Kora 2.0.

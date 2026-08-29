@@ -1,15 +1,7 @@
 rootProject.name = '${projectName}'
 
-// Include submodules for multi-module projects
-// Uncomment and modify as needed for projects with 500+ classes
-
+// Kora's DI graph does not require a multi-module layout. Split only when module boundaries are
+// real; @KoraSubmodule then exposes a module's factories to the @KoraApp that aggregates them.
+//
 // include ':common'
-// include ':domain-a'
-// include ':domain-b'
 // include ':app'
-
-// Example structure:
-// - common/     — shared types, utilities, common module interface
-// - domain-a/   — domain A module (entities, services, controllers)
-// - domain-b/   — domain B module (entities, services, controllers)
-// - app/        — application assembly (main Application interface)

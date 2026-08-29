@@ -1,35 +1,40 @@
 package ${package};
 
-import jakarta.annotation.Nullable;
-import ru.tinkoff.kora.database.cassandra.annotation.EntityCassandra;
-import ru.tinkoff.kora.database.common.annotation.Column;
-import ru.tinkoff.kora.database.common.annotation.Id;
-import ru.tinkoff.kora.database.common.annotation.Table;
+import io.koraframework.database.cassandra.annotation.EntityCassandra;
+import io.koraframework.database.common.annotation.Column;
+import io.koraframework.database.common.annotation.Id;
+import io.koraframework.database.common.annotation.Table;
+import org.jspecify.annotations.Nullable;
+
 import java.util.List;
 
-/**
- * Entity with UDT and collection of UDTs.
- * Demonstrates using UDT as field type and in collections.
+/*
+ * TEMPLATE NOTES — delete this block after copying.
+ *
+ * ${udt_name} must be annotated with @UDT (see cassandra-udt.java.template). Kora then generates
+ * both the scalar and the List<${udt_name}> column mappers and supplies them automatically.
+ *
+ * ONLY the scalar and List forms are generated. Set<${udt_name}> and Map<K, ${udt_name}> fail with
+ * "No component found for dependency: CassandraRowColumnMapper<Set<${udt_name}>>" — model the
+ * column as LIST<FROZEN<...>> or write the mapper pair by hand.
+ *
+ * The CQL type name is taken from the live column metadata, not from the Java class name, so
+ * ${udt_name} may be declared as any CQL type whose FIELD names match.
  *
  * CQL:
- * CREATE TYPE ${udt_name} (
- *     street TEXT,
- *     city TEXT,
- *     zipCode TEXT
- * );
- *
- * CREATE TABLE ${table_name} (
- *     id UUID PRIMARY KEY,
- *     name TEXT,
- *     address FROZEN<${udt_name}>,
- *     addresses LIST<FROZEN<${udt_name}>>
- * );
+ *   CREATE TYPE IF NOT EXISTS ${udt_name} (street TEXT, city TEXT, zip_code TEXT);
+ *   CREATE TABLE IF NOT EXISTS ${table_name} (
+ *       id        UUID PRIMARY KEY,
+ *       name      TEXT,
+ *       address   FROZEN<${udt_name}>,
+ *       addresses LIST<FROZEN<${udt_name}>>
+ *   );
  */
 @EntityCassandra
 @Table("${table_name}")
 public record ${entity_name}(
-    @Column("id") @Id java.util.UUID id,
+    @Id java.util.UUID id,
     @Column("name") String name,
-    @Column("address") ${udt_name} address,
+    @Column("address") @Nullable ${udt_name} address,
     @Column("addresses") List<${udt_name}> addresses
 ) {}

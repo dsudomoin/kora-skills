@@ -1,56 +1,75 @@
-// Timeout pattern for bounding operation latency.
-// Replace `com.example.app.service` with your package.
-// Class must be `open` for aspects to work.
+// @Timeout — per-attempt and overall (Kora 2.0).
+// The class AND every annotated method must be `open`.
+// Replace `com.example.app.resilience` with your package.
 
-package com.example.app.service
+package com.example.app.resilience
 
-import ru.tinkoff.kora.common.Component
-import ru.tinkoff.kora.resilient.timeout.annotation.Timeout
-import ru.tinkoff.kora.resilient.retry.annotation.Retry
+import io.koraframework.common.annotation.Component
+import io.koraframework.resilient.retry.Retry
+import io.koraframework.resilient.retry.annotation.RetrySpec
+import io.koraframework.resilient.retry.annotation.Retryable
+import io.koraframework.resilient.timeout.Timeouter
+import io.koraframework.resilient.timeout.annotation.Timeout
+import io.koraframework.resilient.timeout.annotation.TimeoutSpec
+
+// NOTE: the runtime contract is Timeouter — `Timeout` is the annotation.
+// A leftover @Timeout("report") crashes KSP with
+// "ClassCastException: String cannot be cast to KSType" instead of a readable error.
+@TimeoutSpec("resilient.timeout.report")
+interface ReportTimeouter : Timeouter
+
+// A shared timeout tier: one interface reused everywhere instead of a repeated string.
+@TimeoutSpec("resilient.timeout.perAttempt")
+interface PerAttemptTimeouter : Timeouter
+
+@RetrySpec("resilient.retry.report")
+interface ReportRetry : Retry
 
 @Component
-open class ReportService(                                               // open, not final
-    private val engine: ReportEngine
-) {
+open class ReportService(private val engine: ReportEngine) {
 
-    @Timeout("report.generate")
-    open fun generate(request: ReportRequest): Report {
-        return engine.generate(request)
-    }
+    // Throws TimeoutExhaustedException("Timeout exceeded <duration>") when the deadline passes.
+    // A blocking body runs on a per-timeouter VIRTUAL THREAD and is interrupted on expiry.
+    @Timeout(ReportTimeouter::class)
+    open fun generate(request: ReportRequest): Report = engine.generate(request)
 
-    // Per-attempt timeout with retry:
-    // @Retry outside @Timeout means timeout applies to each retry attempt
-    @Retry("report.generate")
-    @Timeout("report.generate.perAttempt")
-    open fun generateWithRetry(request: ReportRequest): Report {
-        return engine.generate(request)
-    }
+    // For a suspend function the aspect uses kotlinx.coroutines.withTimeout instead of the
+    // executor, so cancellation is cooperative and no extra thread is involved.
+    @Timeout(ReportTimeouter::class)
+    open suspend fun generateAsync(request: ReportRequest): Report = engine.generate(request)
+
+    // PER-ATTEMPT bound: @Retryable listed first (outer), @Timeout last (inner).
+    // Worst case ~= (attempts + 1) * duration + the retry delays.
+    @Retryable(ReportRetry::class)
+    @Timeout(PerAttemptTimeouter::class)
+    open fun generateWithPerAttemptTimeout(request: ReportRequest): Report = engine.generate(request)
+
+    // OVERALL budget: @Timeout first (outer), @Retryable last (inner).
+    // Keep the budget larger than the whole retry schedule or later attempts never run.
+    @Timeout(ReportTimeouter::class)
+    @Retryable(ReportRetry::class)
+    open fun generateWithOverallBudget(request: ReportRequest): Report = engine.generate(request)
 }
 
-// Report data class
-data class Report(val content: String)
+// ---------------------------------------------------------------- placeholders
 
-// ReportRequest data class
 data class ReportRequest(val id: String)
 
-// ReportEngine placeholder
+data class Report(val content: String)
+
 @Component
 open class ReportEngine {
-    open fun generate(request: ReportRequest): Report = Report("Report content")
+    open fun generate(request: ReportRequest): Report = Report("report:${request.id}")
 }
 
 // Config (HOCON):
 //
-// resilient.timeout {
-//   default { duration = "1s" }
-//   "report.generate" { duration = "30s" }
-//   "report.generate.perAttempt" { duration = "5s" }
+// resilient {
+//   timeout {
+//     report     { duration = "30s" }   # duration is REQUIRED and has no default
+//     perAttempt { duration = "2s" }
+//   }
+//   retry.report { delay = "500ms", attempts = 3, delayStep = "500ms" }
 // }
 //
-// With retry:
-//
-// resilient.retry."report.generate" {
-//   delay = "500ms"
-//   attempts = 3
-//   delayStep = "500ms"
-// }
+// Named sections do NOT inherit resilient.timeout.default in Kora 2.0.

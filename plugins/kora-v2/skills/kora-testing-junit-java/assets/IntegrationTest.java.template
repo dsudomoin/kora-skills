@@ -2,45 +2,54 @@ package ${package};
 
 import static org.junit.jupiter.api.Assertions.*;
 
-import org.jetbrains.annotations.NotNull;
+import java.time.Duration;
+import java.util.List;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.containers.output.Slf4jLogConsumer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.DockerImageName;
 
-import ru.tinkoff.kora.test.extension.junit5.KoraAppTest;
-import ru.tinkoff.kora.test.extension.junit5.KoraAppTestConfigModifier;
-import ru.tinkoff.kora.test.extension.junit5.KoraConfigModification;
-import ru.tinkoff.kora.test.extension.junit5.TestComponent;
+import io.koraframework.test.extension.junit5.KoraAppTest;
+import io.koraframework.test.extension.junit5.KoraAppTestConfigModifier;
+import io.koraframework.test.extension.junit5.KoraConfigModification;
+import io.koraframework.test.extension.junit5.TestComponent;
 
 /**
- * Integration test template with PostgreSQL TestContainer.
+ * Kora 2.0 integration test against a real PostgreSQL started by plain Testcontainers,
+ * with Flyway migrations run by io.koraframework:database-flyway on graph initialization.
  *
- * Usage:
- * 1. Replace ${repositoryName} with your repository class name
- * 2. Replace ${entityName} with your entity/DAO class name
- * 3. Replace ${tableName} with actual database table name
- * 4. Add test methods for CRUD operations
+ * Template placeholders are ${...} tokens such as ${repositoryName}. HOCON substitutions inside
+ * the config text block (${POSTGRES_JDBC_URL}) are Kora config placeholders — leave them as is.
  *
  * Requirements:
- * - Docker must be running
- * - Flyway migrations in src/main/resources/db/migration
- * - testImplementation "org.testcontainers:postgresql"
- * - testImplementation "org.testcontainers:junit-jupiter"
- * - testImplementation "ru.tinkoff.kora:database-flyway"
+ * - Docker running
+ * - Flyway migrations in the application module's src/main/resources/db/migration
+ * - build.gradle:
+ *     testAnnotationProcessor "io.koraframework:annotation-processors"
+ *     testRuntimeOnly         "org.postgresql:postgresql:42.7.3"
+ *     testImplementation      "io.koraframework:test-junit5"
+ *     testImplementation      "io.koraframework:database-jdbc"
+ *     testImplementation      "io.koraframework:database-flyway"
+ *     testImplementation      "org.flywaydb:flyway-database-postgresql:13.1.0" // dialect is mandatory
+ *     testImplementation      "org.testcontainers:junit-jupiter:1.21.4"
+ *     testImplementation      "org.testcontainers:postgresql:1.21.4"
+ *   On Testcontainers 2.x the module is named org.testcontainers:testcontainers-postgresql.
+ * - The production module must be compiled with -Akora.app.submodule.enabled=true so
+ *   TestApplication can extend its @KoraApp (see TestApplication.java.template).
  */
 @Testcontainers
 @KoraAppTest(TestApplication.class)
 class ${repositoryName}Test implements KoraAppTestConfigModifier {
 
     @Container
-    private static final PostgreSQLContainer<?> pg =
-        new PostgreSQLContainer<>(DockerImageName.parse("postgres:16"))
-            .withDatabaseName("testdb")
-            .withUsername("test")
-            .withPassword("test");
+    static final PostgreSQLContainer<?> POSTGRES =
+            new PostgreSQLContainer<>("postgres:16-alpine")
+                    .withStartupTimeout(Duration.ofSeconds(30))
+                    .withLogConsumer(new Slf4jLogConsumer(LoggerFactory.getLogger(PostgreSQLContainer.class)));
 
     @TestComponent
     private ${repositoryName} ${repositoryVarName};
@@ -48,13 +57,27 @@ class ${repositoryName}Test implements KoraAppTestConfigModifier {
     @TestComponent
     private TestApplication.Test${entityName}Repository testRepository;
 
-    @NotNull
+    /**
+     * The section is `jdbc`, not `db` — that is the Kora 2.0 rename. Leaving `db { }` here fails
+     * with: ConfigValueException: Config expected value, but got null at path 'ROOT.jdbc.username'.
+     * ofString replaces application.conf entirely, so every key the graph needs must be present.
+     */
     @Override
     public KoraConfigModification config() {
-        return KoraConfigModification.ofSystemProperty(
-                "DB_JDBC_URL", pg.getJdbcUrl())
-            .withSystemProperty("DB_USER", pg.getUsername())
-            .withSystemProperty("DB_PASS", pg.getPassword());
+        return KoraConfigModification.ofString("""
+                jdbc {
+                  jdbcUrl = ${POSTGRES_JDBC_URL}
+                  username = ${POSTGRES_USER}
+                  password = ${POSTGRES_PASS}
+                  poolName = "kora-test"
+                }
+                flyway {
+                  locations = "db/migration"
+                }
+                """)
+                .withSystemProperty("POSTGRES_JDBC_URL", POSTGRES.getJdbcUrl())
+                .withSystemProperty("POSTGRES_USER", POSTGRES.getUsername())
+                .withSystemProperty("POSTGRES_PASS", POSTGRES.getPassword());
     }
 
     @BeforeEach
@@ -63,60 +86,33 @@ class ${repositoryName}Test implements KoraAppTestConfigModifier {
     }
 
     @Test
-    void shouldSaveAndFind() {
-        // given
-        var entity = new ${entityName}("test-data");
-
-        // when
-        ${repositoryVarName}.save(entity);
-        var found = ${repositoryVarName}.findById(entity.id());
+    void shouldInsertAndFind() {
+        // given / when — repository contracts are synchronous, nothing to unwrap
+        var id = ${repositoryVarName}.insert(new ${entityName}(null, "test-data"));
 
         // then
+        var found = ${repositoryVarName}.findById(id);
         assertNotNull(found);
-        assertEquals(entity.data(), found.data());
+        assertEquals("test-data", found.data());
     }
 
     @Test
     void shouldDelete() {
-        // given
-        var entity = new ${entityName}("test-data");
-        ${repositoryVarName}.save(entity);
+        var id = ${repositoryVarName}.insert(new ${entityName}(null, "test-data"));
 
-        // when
-        ${repositoryVarName}.deleteById(entity.id());
+        ${repositoryVarName}.deleteById(id);
 
-        // then
-        var found = ${repositoryVarName}.findById(entity.id());
-        assertNull(found);
-    }
-
-    @Test
-    void shouldUpdate() {
-        // given
-        var entity = new ${entityName}("original-data");
-        ${repositoryVarName}.save(entity);
-
-        // when
-        var updated = new ${entityName}(entity.id(), "updated-data");
-        ${repositoryVarName}.update(updated);
-
-        // then
-        var found = ${repositoryVarName}.findById(entity.id());
-        assertNotNull(found);
-        assertEquals("updated-data", found.data());
+        assertNull(${repositoryVarName}.findById(id));
     }
 
     @Test
     void shouldFindAll() {
-        // given
-        ${repositoryVarName}.save(new ${entityName}("data-1"));
-        ${repositoryVarName}.save(new ${entityName}("data-2"));
-        ${repositoryVarName}.save(new ${entityName}("data-3"));
+        ${repositoryVarName}.insert(new ${entityName}(null, "data-1"));
+        ${repositoryVarName}.insert(new ${entityName}(null, "data-2"));
+        ${repositoryVarName}.insert(new ${entityName}(null, "data-3"));
 
-        // when
-        var all = testRepository.findAll();
+        List<${entityName}> all = testRepository.findAll();
 
-        // then
         assertEquals(3, all.size());
     }
 }

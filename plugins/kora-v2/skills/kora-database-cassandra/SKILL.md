@@ -1,344 +1,481 @@
 ---
 name: kora-database-cassandra
-description: "Kora Cassandra/ScyllaDB repositories — @Repository extends CassandraRepository, @Query CQL, @EntityCassandra, @UDT, @Batch, per-method @CassandraProfile. Use when adding a Cassandra repository or mapping rows/UDTs."
+description: "Kora 2.0 Cassandra/ScyllaDB repositories — @Repository interfaces extending CassandraRepository, @Query CQL, @EntityCassandra, @UDT, @Batch, @CassandraProfile, CassandraRowMapper/CassandraResultSetMapper/CassandraParameterColumnMapper, and the executor() + CassandraQuery manual API from io.koraframework:database-cassandra. Use when adding a Cassandra repository, mapping rows or user-defined types, tuning driver profiles and consistency under the cassandra config section, or porting a Kora 1.x Cassandra repository that still uses suspend/Mono/Flux or getCassandraConnectionFactory()."
+license: Apache-2.0
+metadata:
+  kora-version: "2.x"
 ---
 
-# Kora Database Cassandra Skill
+# Kora Database Cassandra
 
-> **Kora sub-skill — obey the [kora-v1 meta rules](../../SKILL.md) on every task:** **R0** ensure `.kora-agent/` docs+examples are cloned · **R1** read this sub-skill before writing code · **R2** Kora APIs only — no Spring/Micronaut/Quarkus, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
+> **Kora sub-skill — obey the [kora-v2 meta rules](../../SKILL.md) on every task:** **R0** ground the workspace on Kora 2.0 refs before starting (framework source at tag `2.0.0.RC1` + `kora-examples` at `migration/2.0`; `kora-docs` is 1.x only) · **R1** read this sub-skill before writing code · **R2** Kora 2.0 APIs only — no Spring/Micronaut/Quarkus, no Kora 1.x APIs, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
 
-**Focus:** Cassandra/ScyllaDB distributed database integration using DataStax Java Driver 4.x.
+| | |
+|---|---|
+| **Artifact** | `io.koraframework:database-cassandra` (BOM `io.koraframework:kora-bom`) |
+| **Module** | `CassandraDatabaseModule` — `io.koraframework.database.cassandra` |
+| **Base interface** | `CassandraRepository` — one method, `CassandraExecutor executor()` |
+| **Shared DB annotations** | `io.koraframework.database.common.annotation` — `@Repository`, `@Query`, `@Batch`, `@Table`, `@Column`, `@Id`, `@Embedded` |
+| **Cassandra annotations** | `io.koraframework.database.cassandra.annotation` — `@EntityCassandra`, `@UDT`, `@CassandraProfile` |
+| **Mapper contracts** | `…cassandra.mapper.result.{CassandraRowMapper, CassandraRowColumnMapper, CassandraResultSetMapper, CassandraAsyncResultSetMapper}` · `…cassandra.mapper.parameter.CassandraParameterColumnMapper` |
+| **Manual query API** | `CassandraExecutor` + `CassandraQuery` — `io.koraframework.database.cassandra` |
+| **Config section** | `cassandra` |
+| **Driver** | `org.apache.cassandra:java-driver-core` 4.19.3 — the **Java packages are still `com.datastax.oss.driver.api.*`** |
 
-> **Use for:** High-write-throughput, horizontally-scalable NoSQL workloads with tunable consistency levels, time-series data, event sourcing, and distributed systems requiring eventual consistency.
+## ⚑ The driver moved Maven coordinates, not Java packages
 
-**Read this first when:**
-- Adding a Cassandra repository with `@Repository` and CQL queries
-- Modeling entities with `@EntityCassandra`, `@UDT` for user-defined types
-- Configuring profile-based consistency levels and request timeouts
-- Implementing async signatures with `CompletionStage`, Reactor, or Kotlin Flow
+Kora 2.0 resolves the DataStax driver from `org.apache.cassandra:java-driver-core` (with
+`org.apache.cassandra:java-driver-metrics-micrometer` for driver metrics), replacing the 1.x
+`com.datastax.oss:java-driver-core`. The **groupId** changed; the **package names did not**.
+`CqlSession`, `Row`, `ResultSet`, `SettableByName`, `GettableByName`, `UdtValue`,
+`UserDefinedType` and `ConsistencyLevel` all still live under `com.datastax.oss.driver.api.*`,
+and every Kora 2.0 Cassandra API imports them from there.
+
+So `import com.datastax.oss.driver.api.core.cql.Row;` is **correct** in a 2.0 service; only a
+build file that names `com.datastax.oss:java-driver-core` is stale. In practice you never write
+the coordinate at all — `io.koraframework:database-cassandra` brings the driver transitively.
 
 ---
 
 ## Quick Start
 
-### 1. Add Dependency
+### 1. Dependency
 
-All Kora artifacts inherit their version from the `kora-parent` BOM; never pin
-individual `ru.tinkoff.kora:*` versions. Annotation processing is mandatory —
-without it no repository implementation is generated.
+**Java** (`build.gradle`):
 
 ```groovy
+configurations {
+    koraBom
+    annotationProcessor.extendsFrom(koraBom); compileOnly.extendsFrom(koraBom); implementation.extendsFrom(koraBom)
+    api.extendsFrom(koraBom); testImplementation.extendsFrom(koraBom); testAnnotationProcessor.extendsFrom(koraBom)
+}
+
 dependencies {
-    koraBom platform("ru.tinkoff.kora:kora-parent:1.2.19")
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"   // Java
-    // ksp "ru.tinkoff.kora:symbol-processors"                    // Kotlin (instead of annotationProcessor)
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")   // koraVersion=2.0.0.RC1
+    annotationProcessor "io.koraframework:annotation-processors"
 
-    implementation "ru.tinkoff.kora:database-cassandra"
-    implementation "ru.tinkoff.kora:config-hocon"
-    implementation "ru.tinkoff.kora:logging-logback"
-
-    // Optional: only when repository methods return Mono/Flux
-    implementation "io.projectreactor:reactor-core:3.6.18"
+    implementation "io.koraframework:database-cassandra"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
 }
 ```
 
-### 2. Enable Module
+**Kotlin** (`build.gradle.kts`) — KSP instead of `annotationProcessor`, never `kapt`:
+
+```kotlin
+plugins {
+    kotlin("jvm") version "2.4.10"
+    id("com.google.devtools.ksp") version "2.3.11"
+}
+
+dependencies {
+    implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+    ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
+
+    implementation("io.koraframework:database-cassandra")
+    implementation("io.koraframework:config-hocon")
+    implementation("io.koraframework:logging-logback")
+}
+```
+
+Java toolchain 25 is the floor for every Kora 2.0 artifact.
+
+### 2. Enable the module
 
 ```java
 @KoraApp
-public interface Application extends CassandraDatabaseModule {}
+public interface Application extends HoconConfigModule, LogbackModule, CassandraDatabaseModule {
+
+    static void main(String[] args) {
+        KoraApplication.run(ApplicationGraph::graph);
+    }
+}
 ```
 
-### 3. Define Entity
+### 3. Entity
 
 ```java
-@Table("users")
 @EntityCassandra
 public record User(
-    @Column("id") @Id UUID id,
-    @Column("name") String name,
-    @Column("email") String email,
-    @Column("created_at") Instant createdAt,
-    @Column("nickname") @Nullable String nickname
+    String id,
+    @Column("value1") int field1,
+    String value2,
+    @Nullable String value3
 ) {}
 ```
 
-### 4. Create Repository
+`@Nullable` is JSpecify (`org.jspecify.annotations.Nullable`) and is **type-use**: put it directly
+on the type it qualifies. Without `@Nullable` on a component, a null column throws
+`NullPointerException` from the generated row mapper.
+
+`@Table` is only needed for [SQL macros](references/cql-repository-reference.md#sql-macros); `@Id`
+only matters to macros too — Cassandra needs no primary-key marker for hand-written CQL.
+Column names default to `snake_case` of the component name when `@Column` is absent.
+
+### 4. Repository
 
 ```java
 @Repository
 public interface UserRepository extends CassandraRepository {
-    
+
     @Query("SELECT * FROM users WHERE id = :id")
     @Nullable
-    User findById(UUID id);
-    
+    User findById(String id);
+
     @Query("SELECT * FROM users")
     List<User> findAll();
-    
-    @Query("INSERT INTO users (id, name, email, created_at) VALUES (:user.id, :user.name, :user.email, :user.createdAt)")
+
+    @Query("INSERT INTO users(id, value1, value2, value3) VALUES (:user.id, :user.field1, :user.value2, :user.value3)")
     void insert(User user);
-    
+
     @Query("DELETE FROM users WHERE id = :id")
-    void deleteById(UUID id);
+    void deleteById(String id);
 }
 ```
 
-> **Entity parameter binding:** when a method parameter is an entity object,
-> each column is bound through the dotted accessor `:param.field`
-> (e.g. `:user.id`), not a bare `:id`. A bare `:id` only resolves when `id` is
-> itself the name of a method parameter (as in `findById(UUID id)`).
+> **Entity parameter binding:** when a method parameter is an entity, each column binds through the
+> dotted accessor `:param.field` (`:user.id`). A bare `:id` resolves only when `id` is itself the
+> name of a method parameter, as in `findById(String id)`. An unused method parameter is a
+> compile error (`Query parameter is unused`).
 
-### 5. Configure Connection
+### 5. Configuration
 
 ```hocon
 cassandra {
-    auth {
-        login = ${CASSANDRA_USER}
-        password = ${CASSANDRA_PASS}
+  auth {
+    login = ${CASSANDRA_USER}
+    password = ${CASSANDRA_PASS}
+  }
+  basic {
+    contactPoints = ${CASSANDRA_CONTACT_POINTS}
+    dc = ${CASSANDRA_DC}
+    sessionKeyspace = ${CASSANDRA_KEYSPACE}
+    request {
+      timeout = 5s
     }
-    basic {
-        contactPoints = ["localhost:9042"]
-        dc = "datacenter1"
-        sessionKeyspace = "mykeyspace"
-        request {
-            timeout = 5s
-        }
-    }
-    telemetry {
-        logging {
-            enabled = true
-        }
-    }
+  }
+  telemetry.logging.enabled = true
 }
 ```
 
+`telemetry.logging.enabled` and `telemetry.metrics.enabled` default to **false** in Kora 2.0 —
+turn them on explicitly or you get no query logs and no `db_*` metrics.
+
 ---
 
-## Basic CRUD Patterns
+## Execution model — what a repository method may return
 
-### Insert
+Kora 2.0 contracts are synchronous and run on virtual threads. Cassandra keeps one narrow
+exception: the **Java** generator still emits the driver's own `executeAsync` path.
+
+| Language | Supported return types |
+|---|---|
+| Java | `void`, `T`, `@Nullable T`, primitives, `Optional<T>`, `List<T>`, **and** `CompletionStage<T>` / `CompletableFuture<T>` (including `…<Void>` and `…<List<T>>`) |
+| Kotlin | `Unit`, `T`, `T?`, `List<T>` — **synchronous only** |
+
+- **Kotlin `suspend` is rejected at compile time.** The KSP repository builder fails before any
+  generator runs, with `Suspend methods are not supported by the repository generator.` The
+  suggested replacement is Java `StructuredTaskScope` for real parallelism.
+- **`Flow<T>` is not a usable Kotlin return type** either: nothing in the framework tests or the
+  migrated Kotlin example uses it, and the generator's non-suspend path applies the mapper to a
+  `ResultSet` while the `Flow` branch supplies a `CassandraRowMapper` whose `apply` takes a `Row`
+  — the generated file does not type-check.
+- **Reactor is gone.** `database-cassandra` has no Reactor dependency, no `Mono`/`Flux` handling
+  and no `CassandraReactiveResultSetMapper`. Do not add `reactor-core` for it.
+- `Optional<T>` works in Java only; in Kotlin use `T?`.
+- `UpdateCount` is a JDBC-only return type — the Cassandra generator does not handle it.
+
+Java async example (this is the shape the migrated Kora example ships and tests):
 
 ```java
-@Query("INSERT INTO users (id, name, email) VALUES (:user.id, :user.name, :user.email)")
-void insert(User user);
+@Repository
+public interface UserAsyncRepository extends CassandraRepository {
 
-// Batch insert: one single-row INSERT bound to entity fields, parameter marked @Batch
-@Query("INSERT INTO users (id, name, email) VALUES (:user.id, :user.name, :user.email)")
+    @Query("SELECT * FROM users WHERE id = :id")
+    CompletableFuture<User> findById(String id);
+
+    @Query("SELECT * FROM users")
+    CompletionStage<List<User>> findAll();
+
+    @Query("INSERT INTO users(id, value1) VALUES (:user.id, :user.field1)")
+    CompletionStage<Void> insert(User user);
+}
+```
+
+See [Async Patterns Reference](references/async-patterns-reference.md) for chaining, batching and
+the Kotlin migration path.
+
+---
+
+## CRUD, batches and lightweight transactions
+
+```java
+// Batch: one single-row statement, the list parameter marked @Batch.
+// The generator builds a BatchStatement with DefaultBatchType.UNLOGGED.
+@Query("INSERT INTO users(id, value1) VALUES (:user.id, :user.field1)")
 void insertBatch(@Batch List<User> user);
 
-// Conditional insert (LWT)
-@Query("INSERT INTO users (id, name) VALUES (:user.id, :user.name) IF NOT EXISTS")
+// LWT: the first column of the result is the [applied] flag, so boolean works
+@Query("INSERT INTO users(id, value1) VALUES (:user.id, :user.field1) IF NOT EXISTS")
 boolean insertIfNotExists(User user);
-```
 
-### Select
-
-```java
-@Query("SELECT * FROM users WHERE id = :id")
-@Nullable
-User findById(UUID id);
-
-@Query("SELECT * FROM users WHERE id IN :ids")
-List<User> findByIds(List<UUID> ids);
-
-@Query("SELECT * FROM users LIMIT 100")
-List<User> findFirst100();
-```
-
-### Update
-
-```java
-@Query("UPDATE users SET name = :user.name, email = :user.email WHERE id = :user.id")
-void update(User user);
-
-// Conditional update (LWT)
-@Query("UPDATE users SET email = :email WHERE id = :id IF email = :oldEmail")
-boolean updateIfEmailMatches(UUID id, String email, String oldEmail);
-```
-
-### Delete
-
-```java
-@Query("DELETE FROM users WHERE id = :id")
-void deleteById(UUID id);
+@Query("UPDATE users SET value2 = :value2 WHERE id = :id IF value2 = :oldValue2")
+boolean updateIfMatches(String id, String value2, String oldValue2);
 
 @Query("TRUNCATE users")
 void deleteAll();
 ```
 
----
+A `@Batch` method must not declare a result mapper — the generator returns no mapped result for
+batch statements. Cassandra has **no transactions**: `CassandraExecutor` has no `inTx` and there
+is nothing equivalent to JDBC's `JdbcExecutor.inTx(...)`. LWT (`IF`/`IF NOT EXISTS`) is per-partition
+compare-and-set, not a multi-statement transaction.
 
-## Async Signatures
-
-### CompletionStage (Recommended)
-
-```java
-@Query("SELECT * FROM users WHERE id = :id")
-CompletableFuture<User> findByIdAsync(UUID id);
-
-@Query("INSERT INTO users (id, name) VALUES (:user.id, :user.name)")
-CompletionStage<Void> insertAsync(User user);
-```
-
-### Project Reactor
-
-```java
-@Query("SELECT * FROM users WHERE id = :id")
-Mono<User> findByIdReactive(UUID id);
-
-@Query("SELECT * FROM users")
-Flux<User> findAllReactive();
-```
-
-### Kotlin Coroutines
-
-```kotlin
-@Query("SELECT * FROM users WHERE id = :id")
-suspend fun findByIdAsync(id: UUID): User?
-
-@Query("SELECT * FROM users")
-fun findAllFlow(): Flow<User>
-```
+`IN` clauses need care: Kora ships **no** `CassandraParameterColumnMapper<List<T>>` for native
+element types, so `@Query("… WHERE id IN :ids") List<User> findByIds(List<String> ids)` fails the
+graph with `No component found for dependency: CassandraParameterColumnMapper<List<String>>`.
+Bind an `IN` list with `CassandraQuery.named().bindIn(...)` through `executor()`, or supply your
+own list mapper via `@Mapping`.
 
 ---
 
-## UDT Support
-
-```java
-@UDT
-public record AddressUDT(
-    @Column("street") String street,
-    @Column("city") String city,
-    @Column("zipCode") String zipCode
-) {}
-
-@Table("users")
-@EntityCassandra
-public record User(
-    @Column("id") @Id UUID id,
-    @Column("name") String name,
-    @Column("address") AddressUDT address
-) {}
-```
-
----
-
-## Profile-Based Consistency
-
-All request-level tuning (consistency, timeout, page size) lives under
-`basic.request`. A profile overrides any `basic.request.*` (and `advanced.*`)
-key for the queries that reference it.
-
-### Configuration
-
-```hocon
-cassandra {
-    basic {
-        request {
-            consistency = "QUORUM"        // default consistency for all queries
-            serialConsistency = "SERIAL"  // consistency for lightweight transactions
-            timeout = "5s"
-        }
-    }
-    profiles {
-        analytics {
-            basic.request.consistency = "ONE"
-            basic.request.timeout = "30s"
-        }
-        critical {
-            basic.request.consistency = "ALL"
-            basic.request.timeout = "5s"
-        }
-    }
-}
-```
-
-### Using Profiles
-
-`@CassandraProfile` targets methods only (`@Target(ElementType.METHOD)`). It
-cannot be placed on the repository interface — apply it per `@Query` method.
+## User-defined types
 
 ```java
 @Repository
-public interface EventRepository extends CassandraRepository {
+public interface UserRepository extends CassandraRepository {
 
-    @CassandraProfile("analytics")
-    @Query("SELECT * FROM events WHERE type = :type ALLOW FILTERING")
-    List<Event> findByType(String type);
+    @EntityCassandra
+    record Entity(String id, Name name) {
+
+        @UDT
+        record Name(String first, String last) {}
+    }
+
+    @Query("SELECT * FROM entities_udt WHERE id = :id")
+    @Nullable
+    Entity findById(String id);
+
+    @Query("INSERT INTO entities_udt(id, name) VALUES (:entity.id, :entity.name)")
+    void insert(Entity entity);
 }
 ```
+
+```sql
+CREATE TYPE IF NOT EXISTS username(first text, last text);
+CREATE TABLE IF NOT EXISTS entities_udt (id VARCHAR, name FROZEN<username>, PRIMARY KEY (id));
+```
+
+`@UDT` carries **no type name**. The generated mappers read the user-defined type off the bound
+statement's own metadata (`_stmt.getType(index)`) and address fields by column name, so the CQL
+type may be called anything — only the field names have to line up. Kora generates mappers for a
+scalar UDT and for `List<UDT>`; `Set<UDT>` and `Map<K, UDT>` are **not** generated and need a
+hand-written mapper. Details in [UDT Mapping Reference](references/udt-mapping-reference.md).
+
+---
+
+## Driver profiles
+
+Request tuning lives under `basic.request`. A profile overrides any `basic.request.*` /
+`advanced.*` key it declares and inherits the rest from the root section.
+
+```hocon
+cassandra {
+  basic.request {
+    consistency = "QUORUM"
+    serialConsistency = "SERIAL"
+    timeout = 5s
+  }
+  profiles {
+    analytics {
+      basic.request.consistency = "ONE"
+      basic.request.timeout = 30s
+      basic.request.pageSize = 1000
+    }
+  }
+}
+```
+
+```java
+@CassandraProfile("analytics")
+@Query("SELECT * FROM events WHERE type = :type ALLOW FILTERING")
+List<Event> findByType(String type);
+```
+
+`@CassandraProfile` is `@Target(METHOD)` — it cannot go on the repository interface.
+See [Consistency Reference](references/consistency-reference.md).
+
+---
+
+## Manual queries — `executor()` and `CassandraQuery`
+
+`CassandraRepository.executor()` returns a `CassandraExecutor` (this replaces the 1.x
+`getCassandraConnectionFactory()`). It exposes the live `CqlSession` plus telemetry-wrapped
+helpers, and pairs with the `CassandraQuery` builder for dynamic CQL:
+
+```java
+var query = CassandraQuery.named()
+    .cql("SELECT id, name FROM users WHERE tenant_id = :tenant_id")
+    .bind("tenant_id", tenantId)
+    .cqlIf(" AND status = :status", status != null)
+    .bindIf("status", status, status != null)
+    .cqlIf(" AND id IN (:ids)", !ids.isEmpty())
+    .bindInIf("ids", ids, !ids.isEmpty())
+    .opts(o -> o.consistencyLevel(DefaultConsistencyLevel.LOCAL_QUORUM).pageSize(500))
+    .build();
+
+List<User> users = repository.executor()
+    .queryList(query, row -> new User(row.getString("id"), row.getString("name")));
+```
+
+`CassandraExecutor` also has `currentSession()`, `telemetry()`, `query(...)`, `queryOne(...)` and
+`queryOptional(...)`. `queryOne` returns `@Nullable T`. Full API in the
+[CQL Repository Reference](references/cql-repository-reference.md#manual-queries).
+
+---
+
+## Custom mappers and the `@Component` rule
+
+| Contract | Signature | Applied with |
+|---|---|---|
+| `CassandraRowMapper<T>` | `@Nullable T apply(Row row)` | `@Mapping` on the method |
+| `CassandraResultSetMapper<T>` | `@Nullable T apply(ResultSet rows)` | `@Mapping` on the method |
+| `CassandraRowColumnMapper<T>` | `@Nullable T apply(GettableByName row, int index)` | `@Mapping` on an entity component |
+| `CassandraParameterColumnMapper<T>` | `void apply(SettableByName<?> stmt, int index, @Nullable T value)` | `@Mapping` on a parameter or entity component |
+| `CassandraAsyncResultSetMapper<T>` | `CompletionStage<T> apply(AsyncResultSet rows)` | `@Mapping` on a Java async method |
+
+**Whether a mapper needs `@Component` is decided by its constructor**, because the generated
+repository either constructs the mapper itself or asks the graph for it:
+
+- Java — mapper class is `final` **and** has a public no-arg constructor, and `@Mapping` carries no
+  tag → the repository does `new Mapper()` in its own constructor. `@Component` is then optional.
+- Kotlin — class is not `open` and has a single no-arg constructor → same, constructed inline.
+- Anything else (constructor dependencies, a non-`final`/`open` class, a tagged mapping) → the
+  mapper becomes a constructor parameter of the generated repository and **must** be in the graph,
+  or the build fails with `No component found for dependency: …`.
+
+Declare **one** component per mapper type; two `@Component`s implementing the same
+`CassandraRowMapper<T>` give `Multiple components match dependency:`. Kora's own scalar mappers in
+`CassandraMapperModule` are `@DefaultComponent`, so your own `@Component` for the same type wins
+without conflict.
+
+**Kotlin nullability trap.** The contracts are `@NullMarked`, so an override must match the
+declared nullability exactly. `CassandraParameterColumnMapper.apply` takes `@Nullable T value`:
+
+```kotlin
+class FieldTypeParameterMapper : CassandraParameterColumnMapper<FieldType> {
+    override fun apply(stmt: SettableByName<*>, index: Int, value: FieldType?) {   // T? — required
+        if (value != null) stmt.setInt(index, value.code) else stmt.setToNull(index)
+    }
+}
+```
+
+With `value: FieldType` Kotlin reports `'apply' overrides nothing` and never mentions nullability.
+The Java twin compiles either way, so a mechanically ported mapper fails only on the Kotlin side.
+Return types may be narrowed to non-null; only parameters must stay nullable.
 
 ---
 
 ## Assets
 
-### Entity Templates
+### Entities and UDTs
 | Template | Language | Description |
-|----------|----------|-------------|
-| `cassandra-entity-single-id.java.template` | Java | Entity with single-field ID |
-| `cassandra-entity-single-id.kt.template` | Kotlin | Data class with single-field ID |
-| `cassandra-entity-composite-id.java.template` | Java | Entity with composite partition key |
-| `cassandra-entity-composite-id.kt.template` | Kotlin | Data class with composite key |
-| `cassandra-entity-with-udt.java.template` | Java | Entity with UDT and List<UDT> |
+|---|---|---|
+| `cassandra-entity-single-id.java.template` | Java | `@EntityCassandra` record, single-field key |
+| `cassandra-entity-single-id.kt.template` | Kotlin | `@EntityCassandra` data class, single-field key |
+| `cassandra-entity-composite-id.java.template` | Java | `@Id @Embedded` composite key record |
+| `cassandra-entity-composite-id.kt.template` | Kotlin | `@Id @Embedded` composite key data class |
+| `cassandra-entity-with-udt.java.template` | Java | Entity with a UDT field and `List<UDT>` |
+| `cassandra-udt.java.template` | Java | Basic `@UDT` record |
+| `cassandra-udt.kt.template` | Kotlin | Basic `@UDT` data class |
+| `cassandra-nested-udt.java.template` | Java | `@UDT` containing another `@UDT` |
 
-### Repository Templates
+### Repositories
 | Template | Language | Description |
-|----------|----------|-------------|
-| `cassandra-crud-single-id-repository.java.template` | Java | CRUD with LWT support |
-| `cassandra-crud-single-id-repository.kt.template` | Kotlin | Kotlin CRUD repository |
-| `cassandra-crud-composite-id-repository.java.template` | Java | CRUD for composite key |
-| `cassandra-crud-composite-id-repository.kt.template` | Kotlin | Kotlin composite key CRUD |
-| `cassandra-async-repository.java.template` | Java | CompletionStage async |
-| `cassandra-async-repository.kt.template` | Kotlin | Kotlin async |
-| `cassandra-lwt-repository.java.template` | Java | Lightweight transactions |
-| `cassandra-lwt-repository.kt.template` | Kotlin | Kotlin LWT |
-| `cassandra-kotlin-coroutine-repository.kt.template` | Kotlin | Kotlin coroutines + Flow |
+|---|---|---|
+| `cassandra-crud-single-id-repository.java.template` | Java | Synchronous CRUD + batch + LWT |
+| `cassandra-crud-single-id-repository.kt.template` | Kotlin | Synchronous CRUD + batch + LWT |
+| `cassandra-crud-composite-id-repository.java.template` | Java | CRUD over a composite key |
+| `cassandra-crud-composite-id-repository.kt.template` | Kotlin | CRUD over a composite key |
+| `cassandra-crud-abstract-repository.java.template` | Java | Generic base interface driven by SQL macros |
+| `cassandra-crud-abstract-repository.kt.template` | Kotlin | Generic base interface driven by SQL macros |
+| `cassandra-lwt-repository.java.template` | Java | Lightweight transactions in depth |
+| `cassandra-lwt-repository.kt.template` | Kotlin | Lightweight transactions in depth |
+| `cassandra-async-repository.java.template` | Java | `CompletionStage` / `CompletableFuture` repository (Java only) |
 
-### UDT Templates
+### Mappers
 | Template | Language | Description |
-|----------|----------|-------------|
-| `cassandra-udt.java.template` | Java | Basic UDT (Address example) |
-| `cassandra-udt.kt.template` | Kotlin | Kotlin UDT data class |
-| `cassandra-nested-udt.java.template` | Java | Nested UDT structure |
+|---|---|---|
+| `cassandra-mappers.java.template` | Java | Row / result-set / column read+write mappers, `@Component` rule |
+| `cassandra-mappers.kt.template` | Kotlin | Same, with the mandatory `value: T?` override signature |
 
 ---
 
 ## Reference Documents
 
 | Document | Description |
-|----------|-------------|
-| [CQL Repository Reference](references/cql-repository-reference.md) | @EntityCassandra, CQL queries, custom mappers, return types |
-| [UDT Mapping Reference](references/udt-mapping-reference.md) | @UDT, nested types, collections of UDTs |
-| [Consistency Reference](references/consistency-reference.md) | Consistency levels, profiles, retry policies |
-| [Async Patterns Reference](references/async-patterns-reference.md) | CompletionStage, Reactor, Kotlin Flow |
-| [Cassandra Config Reference](references/cassandra-config-reference.md) | Connection, timeouts, load balancing, multiple keyspaces |
+|---|---|
+| [CQL Repository Reference](references/cql-repository-reference.md) | `@EntityCassandra`, generated mapper names, parameters, return types, SQL macros, `executor()` + `CassandraQuery`, multiple sessions |
+| [UDT Mapping Reference](references/udt-mapping-reference.md) | `@UDT` semantics, nesting, `List<UDT>`, what is not generated |
+| [Consistency Reference](references/consistency-reference.md) | Consistency levels, driver profiles, LWT serial consistency |
+| [Async Patterns Reference](references/async-patterns-reference.md) | Java `CompletionStage` repositories, `CassandraAsyncResultSetMapper`, Kotlin migration off `suspend`/`Flow` |
+| [Cassandra Config Reference](references/cassandra-config-reference.md) | Every `cassandra.*` key that exists, telemetry defaults, `Configurer` components |
 
 ---
 
-## Best Practices
+## Migrating a Kora 1.x Cassandra repository
 
-1. **Use `@EntityCassandra` on DAO records** — generates the Cassandra row and
-   result-set mappers eagerly at compile time instead of in a late generation round.
-2. **Add `@Column` to every component** — makes the CQL column name explicit
-   (e.g. Java `createdAt` -> column `created_at`).
-3. **`@Id` is optional** — Cassandra needs no special primary-key marker; add
-   `@Id` only when you use [SQL macros](references/cql-repository-reference.md).
-4. **Use `@Nullable`, not `Optional`** — for nullable single-row return values.
-5. **Extend `CassandraRepository`** — required base interface for the generator.
-6. **Keep DTOs and DAOs separate** — HTTP `@Json` DTOs are not Cassandra entities.
-7. **Apply `@CassandraProfile` per method** — separate analytics from critical reads.
-8. **Model tables from query patterns** — avoid unbounded `SELECT ... FROM table` scans in production.
+| Kora 1.x | Kora 2.0 |
+|---|---|
+| `ru.tinkoff.kora:database-cassandra`, BOM `kora-parent` | `io.koraframework:database-cassandra`, BOM `io.koraframework:kora-bom` |
+| `ru.tinkoff.kora.database.*` | `io.koraframework.database.*` |
+| `com.datastax.oss:java-driver-core` in the build | `org.apache.cassandra:java-driver-core` (transitive — usually just delete the line) |
+| `com.datastax.oss.driver.api.*` imports | **unchanged** — keep them |
+| `getCassandraConnectionFactory()` | `executor()` returning `CassandraExecutor` |
+| `Mono<T>` / `Flux<T>` methods | synchronous `T` / `List<T>`, or Java `CompletionStage<T>` |
+| `CassandraReactiveResultSetMapper` | removed — use `CassandraResultSetMapper` / `CassandraAsyncResultSetMapper` |
+| Kotlin `suspend fun` / `Flow<T>` methods | plain `fun` returning `T?` / `List<T>` |
+| `jakarta.annotation.Nullable` | `org.jspecify.annotations.Nullable` (type-use position) |
+
+The config section is still `cassandra` and the key layout under `basic` / `advanced` / `profiles`
+/ `auth` / `telemetry` is unchanged — JDBC's `db` → `jdbc` rename has **no** Cassandra counterpart.
+What did change under `telemetry` is the defaults: logging and metrics are now off unless enabled.
 
 ---
 
 ## Common Pitfalls
 
 | Symptom | Fix |
-|---------|-----|
-| `@CassandraProfile` rejected on the interface | It is `@Target(METHOD)` — move it onto each `@Query` method. |
-| Config key `basic.consistency` ignored | Consistency lives under `basic.request.consistency`. |
-| Profile timeout ignored (`requestTimeout`) | Override `basic.request.timeout` inside the profile, not a flat key. |
-| Complex field not mapped | Nested types need `@UDT`; collections of UDTs need `FROZEN` in CQL. |
-| `Required field is not nullable but row has null` | Add `@Nullable` to the optional record component. |
-| Repository method not generated | Annotation processor missing, or the interface does not extend `CassandraRepository`. |
+|---|---|
+| `Suspend methods are not supported by the repository generator` | Kotlin repositories are synchronous — drop `suspend`; use `StructuredTaskScope` for parallel fan-out |
+| Generated Kotlin file does not compile after adding `Flow<T>` | `Flow` is not a supported Cassandra return type — return `List<T>` |
+| `No component found for dependency: CassandraRowMapper<X>` | Annotate `X` with `@EntityCassandra`, or supply a `CassandraRowMapper<X>` `@Component` / `@Mapping` |
+| `No component found for dependency: CassandraParameterColumnMapper<List<T>>` | No built-in list binder — use `CassandraQuery.bindIn(...)` or write the mapper |
+| `No component found for dependency: …Mapper` for a mapper you wrote | It has constructor deps or is non-`final`/`open` — add `@Component` |
+| `Multiple components match dependency: CassandraRowMapper<X>` | Two `@Component`s for the same mapper type — keep one |
+| `'apply' overrides nothing` on a Kotlin mapper | The `value` parameter must be `T?` |
+| `NullPointerException: Result field x is not nullable but row y has null` | Add `@Nullable` (JSpecify) to that entity component / make the Kotlin property `T?` |
+| `@CassandraProfile` rejected on the interface | It is `@Target(METHOD)` — move it onto each `@Query` method |
+| `Query parameter is unused: x` | Every method parameter must appear as `:x` (or `:x.field` for entities) in the CQL |
+| No query logs, no `db_*` metrics | `cassandra.telemetry.logging.enabled` / `metrics.enabled` default to `false` |
+| `basic.consistency` silently ignored | Consistency lives at `basic.request.consistency` |
+| `CassandraSession failed to start for contact points …` | Check contact points, `basic.dc`, keyspace, credentials, TLS, network |
+
+---
+
+## Best Practices
+
+1. **Model tables from query patterns.** Cassandra has no joins and no ad-hoc filtering; every
+   `ALLOW FILTERING` in production code is a modelling bug waiting to happen.
+2. **Annotate DAOs with `@EntityCassandra`** so row and result-set mappers are generated in the
+   first processing round rather than through the late extension fallback.
+3. **Prefer synchronous signatures.** They run on virtual threads and keep stack traces intact;
+   reach for Java `CompletionStage` only when you actually pipeline the futures.
+4. **Use `@Nullable`, not `Optional`,** for nullable single-row results — and it is the only option
+   in Kotlin.
+5. **Keep DTOs and DAOs apart.** An `@Json` HTTP model is not a Cassandra entity.
+6. **Scope consistency with `@CassandraProfile`,** not by rewriting queries.
+7. **Test against a real container.** The Kora examples use
+   `io.goodforgod:testcontainers-extensions-scylla` with `@KoraAppTest`; see
+   [`kora-testing-junit-java`](../kora-testing-junit-java/SKILL.md) /
+   [`kora-testing-junit-kotlin`](../kora-testing-junit-kotlin/SKILL.md).

@@ -1,61 +1,103 @@
 ---
 name: kora-telemetry-tracing
-description: "Kora OpenTelemetry tracing — OTLP gRPC/HTTP exporter modules, tracing.exporter config, Tracer injection, manual spans, context propagation. Use when exporting traces to Jaeger/Zipkin/Tempo or adding manual spans."
+description: "Kora 2.0 OpenTelemetry tracing — artifact opentelemetry-tracing plus the two OTLP exporters opentelemetry-tracing-exporter-grpc and opentelemetry-tracing-exporter-http, the OpentelemetryTracingModule / OpentelemetryGrpcExporterModule / OpentelemetryHttpExporterModule graph modules, the tracing and tracing.exporter config keys, custom spans through the injected KoraTracer or io.opentelemetry.api.trace.Tracer, and span-context propagation through the ScopedValue-backed io.koraframework.common.telemetry.OpentelemetryContext. Use when exporting traces to an OTLP backend (OpenTelemetry Collector, Jaeger, Grafana Tempo), adding business spans, overriding the Sampler, or debugging spans that never appear."
+license: Apache-2.0
+metadata:
+  kora-version: "2.x"
 ---
 
 # Kora Telemetry Tracing
 
-> **Kora sub-skill — obey the [kora-v1 meta rules](../../SKILL.md) on every task:** **R0** ensure `.kora-agent/` docs+examples are cloned · **R1** read this sub-skill before writing code · **R2** Kora APIs only — no Spring/Micronaut/Quarkus, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
+> **Kora sub-skill — obey the [kora-v2 meta rules](../../SKILL.md) on every task:** **R0** ground the workspace on Kora 2.0 refs before starting (framework source at tag `2.0.0.RC1` + `kora-examples` at `migration/2.0`; `kora-docs` is 1.x only) · **R1** read this sub-skill before writing code · **R2** Kora 2.0 APIs only — no Spring/Micronaut/Quarkus, no Kora 1.x APIs, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
 
-Kora collects traces in the OpenTelemetry standard and exports them in OTLP format. The framework already emits baseline spans for supported modules (HTTP server/client, database, Kafka, gRPC); you add an exporter module, point it at a collector, and optionally create manual spans for business steps the framework cannot infer.
+**Version:** Kora 2.0 (`io.koraframework`, `2.0.0.RC1` on Maven Central) | **Java:** 25 | **OpenTelemetry:** 1.65.0 | **Gradle:** 9.5.1
 
-Read this when:
-- adding an OTLP exporter (`OpentelemetryGrpcExporterModule` or `OpentelemetryHttpExporterModule`),
-- configuring `tracing.exporter` toward Jaeger, Zipkin, or Grafana Tempo,
-- creating manual spans with the injected `Tracer` and correct parent context,
-- propagating `OpentelemetryContext` across async / coroutine boundaries,
-- overriding the default `Sampler`.
+Kora 2.0 produces OpenTelemetry spans and exports them in OTLP. Modules that carry telemetry (HTTP
+server/client, JDBC, Cassandra, Kafka, gRPC, cache, scheduling, SOAP, S3) already emit their own
+spans; you add one exporter module, point it at an OTLP endpoint, and add business spans where the
+framework cannot infer them.
 
-## Quick Start
+**Read this when:**
 
-### 1. Dependency
+- adding OTLP export — `OpentelemetryGrpcExporterModule` or `OpentelemetryHttpExporterModule`,
+- configuring the `tracing` / `tracing.exporter` sections,
+- writing a custom span with the injected `KoraTracer` or the raw `Tracer`,
+- propagating span context to another thread or across a boundary the framework does not own,
+- overriding the `Sampler`,
+- debugging "the app is up, tracing is on, and there are no spans".
 
-The example repo pins the BOM via `kora-parent`; all Kora artifacts inherit that version, so never version a `ru.tinkoff.kora:*` artifact yourself.
+---
+
+## 1. Three things to know before writing anything
+
+**Tracing is ON by default.** `OpentelemetryTracingConfig.enabled()` returns `true`, and so does
+the per-component `TelemetryConfig.TracingConfig.enabled()`. This is the opposite of metrics and
+logging, which default to `false`. You never write `tracing.enabled = true`; you only ever write
+`false` to switch it off.
+
+**The one place where it is OFF: the system server.**
+`SystemHttpServerConfig.SystemHttpServerTelemetryConfig.SystemHttpServerTracingConfig` overrides
+`enabled()` to `false`, so nothing under `httpServer.system` — liveness, readiness, `/metrics` —
+produces spans. Probe traffic showing up as "no spans" is correct behaviour, not a bug. Set
+`httpServer.system.telemetry.tracing.enabled = true` if you actually want probe spans.
+
+**Kora's own `Context` type is gone.** There is no `io.koraframework.common.Context`, no
+`Context.current()`, no `Context.fork()`, no `OpentelemetryContext.get(ctx)` / `.set(ctx, …)`.
+Contracts are synchronous on virtual threads and span context travels in a **`ScopedValue`**.
+The type named `OpentelemetryContext` still exists but is a completely different thing:
+`io.koraframework.common.telemetry.OpentelemetryContext` **implements**
+`io.opentelemetry.context.Context` and exposes `ScopedValue<Context> VALUE`. See
+[§4](#4-custom-spans) and the [spans reference](references/spans-and-context-reference.md).
+
+---
+
+## 2. Quick start
+
+### 2.1 Dependency
+
+Pick **one** exporter artifact. The protocol is fixed by the artifact, not by a config key.
+
+| Artifact | Module interface | Wire protocol | Typical endpoint |
+|---|---|---|---|
+| `io.koraframework:opentelemetry-tracing-exporter-grpc` | `OpentelemetryGrpcExporterModule` | OTLP/gRPC | `http://collector:4317` |
+| `io.koraframework:opentelemetry-tracing-exporter-http` | `OpentelemetryHttpExporterModule` | OTLP/HTTP | `http://collector:4318/v1/traces` |
+
+Both `api`-depend on `io.koraframework:opentelemetry-tracing`, so the OpenTelemetry API
+(`Tracer`, `Span`, `StatusCode`, `SpanKind`), the SDK trace package (`Sampler`) and the semantic
+conventions come transitively — never add `io.opentelemetry:*` yourself.
 
 === "Java"
     ```groovy
     dependencies {
-        koraBom platform("ru.tinkoff.kora:kora-parent:1.2.19")
-        annotationProcessor "ru.tinkoff.kora:annotation-processors"
+        koraBom platform("io.koraframework:kora-bom:$koraVersion")   // koraVersion=2.0.0.RC1
+        annotationProcessor "io.koraframework:annotation-processors"
 
-        // OTLP over gRPC (recommended)
-        implementation "ru.tinkoff.kora:opentelemetry-tracing-exporter-grpc"
-        // Alternative: OTLP over HTTP
-        // implementation "ru.tinkoff.kora:opentelemetry-tracing-exporter-http"
+        implementation "io.koraframework:opentelemetry-tracing-exporter-grpc"
+        // or: implementation "io.koraframework:opentelemetry-tracing-exporter-http"
     }
     ```
 
 === "Kotlin"
-    ```groovy
+    ```kotlin
     dependencies {
-        koraBom platform("ru.tinkoff.kora:kora-parent:1.2.19")
-        ksp "ru.tinkoff.kora:symbol-processors"
+        implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+        ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
 
-        implementation("ru.tinkoff.kora:opentelemetry-tracing-exporter-grpc")
-        // implementation("ru.tinkoff.kora:opentelemetry-tracing-exporter-http")
+        implementation("io.koraframework:opentelemetry-tracing-exporter-grpc")
+        // or: implementation("io.koraframework:opentelemetry-tracing-exporter-http")
     }
     ```
 
-The OpenTelemetry API (`io.opentelemetry.api.trace.Tracer`, `Span`, `StatusCode`) is a transitive dependency of the exporter module — you do not add `io.opentelemetry:opentelemetry-api` separately.
+Never pin a version on an individual `io.koraframework:*` artifact — the BOM does it.
 
-### 2. Connect the module
+### 2.2 Connect the module
 
 === "Java"
     ```java
-    import ru.tinkoff.kora.common.KoraApp;
-    import ru.tinkoff.kora.application.graph.KoraApplication;
-    import ru.tinkoff.kora.config.hocon.HoconConfigModule;
-    import ru.tinkoff.kora.opentelemetry.tracing.exporter.grpc.OpentelemetryGrpcExporterModule;
+    import io.koraframework.application.graph.KoraApplication;
+    import io.koraframework.common.annotation.KoraApp;
+    import io.koraframework.config.hocon.HoconConfigModule;
+    import io.koraframework.opentelemetry.tracing.exporter.grpc.OpentelemetryGrpcExporterModule;
 
     @KoraApp
     public interface Application extends
@@ -70,178 +112,226 @@ The OpenTelemetry API (`io.opentelemetry.api.trace.Tracer`, `Span`, `StatusCode`
 
 === "Kotlin"
     ```kotlin
-    import ru.tinkoff.kora.common.KoraApp
-    import ru.tinkoff.kora.application.graph.KoraApplication
-    import ru.tinkoff.kora.config.hocon.HoconConfigModule
-    import ru.tinkoff.kora.opentelemetry.tracing.exporter.grpc.OpentelemetryGrpcExporterModule
+    import io.koraframework.application.graph.KoraApplication
+    import io.koraframework.common.annotation.KoraApp
+    import io.koraframework.config.hocon.HoconConfigModule
+    import io.koraframework.opentelemetry.tracing.exporter.grpc.OpentelemetryGrpcExporterModule
 
     @KoraApp
     interface Application : HoconConfigModule, OpentelemetryGrpcExporterModule
+
+    fun main() {
+        KoraApplication.run { ApplicationGraph.graph() }
+    }
     ```
 
-For the HTTP exporter swap in `OpentelemetryHttpExporterModule` from package `ru.tinkoff.kora.opentelemetry.tracing.exporter.http`.
+For OTLP/HTTP swap in `OpentelemetryHttpExporterModule` from
+`io.koraframework.opentelemetry.tracing.exporter.http`. **Extend exactly one of them.** They are not
+complementary: each declares its own `SpanExporter` and `SpanProcessor`, and each declares an
+exporter-config method with the same name and the same erased signature but a different return type,
+so inheriting both is a conflict rather than a merge.
 
-### 3. Configure the exporter
-
-`endpoint` is the only required field. Attributes under `tracing.attributes` are attached to every span; `service.name` is how the service is found in the trace UI.
+### 2.3 Configure
 
 ```hocon
 tracing {
   exporter {
-    endpoint = "http://localhost:4317"
+    endpoint = ${OTLP_ENDPOINT}    # http://collector:4317 for gRPC
   }
   attributes {
-    "service.name" = "my-service"
+    "service.name" = "order-service"
     "service.namespace" = "kora"
   }
 }
 ```
 
-Externalize the endpoint per environment:
+`endpoint` is `@Nullable` with no default. Leaving it unset is **not** an error and **not** a
+warning: `spanExporter(...)` returns `SpanExporter.composite()` and `spanProcessor(...)` returns
+`SpanProcessor.composite()`, so spans are still created and sampled but nothing ever leaves the
+process. That is the single most common cause of "tracing is enabled and I see nothing".
 
-```hocon
-tracing {
-  exporter {
-    endpoint = ${OTLP_ENDPOINT}
-  }
-}
+`opentelemetryTracingResource(...)` builds the OTLP resource **only** from `tracing.attributes`, so
+`"service.name"` has to be set there — nothing else supplies it. Every migrated example and guide
+sets it explicitly.
+
+Full key set, defaults and per-backend wiring:
+[references/exporter-setup-reference.md](references/exporter-setup-reference.md).
+
+---
+
+## 3. Where framework spans come from
+
+Every telemetry-carrying module resolves an **optional** `Tracer` from the graph and checks its own
+`telemetry.tracing.enabled`. Both must hold:
+
+```java
+var traceEnabled = this.tracer != null && config.tracing().enabled();   // DefaultHttpServerTelemetryFactory
 ```
 
-### 4. Manual span
+So a component emits spans when (a) `opentelemetry-tracing` is on the classpath and its module is on
+the graph, and (b) its section does not disable tracing. Config roots, verified in the module
+factories:
 
-Manual spans wrap business steps. Read the current Kora `Context`, take the `OpentelemetryContext` out of it, parent the new span on it, register the span back into the context, and restore the previous context in `finally`.
+| Component | Section |
+|---|---|
+| Public HTTP server | `httpServer.telemetry.tracing` |
+| System HTTP server | `httpServer.system.telemetry.tracing` — **`enabled` defaults to `false`** |
+| HTTP clients | `httpClient.<name>.telemetry.tracing` |
+| JDBC | `jdbc.telemetry.tracing` |
+| Cassandra | `cassandra.telemetry.tracing` |
+| gRPC server | `grpcServer.telemetry.tracing` |
+| gRPC client | `grpcClient.<ServiceSimpleName>.telemetry.tracing` |
+
+`TelemetryConfig.TracingConfig` offers exactly two keys — `enabled` (default `true`) and
+`attributes` (a `Map<String,String>` merged onto that module's spans, default empty). The HTTP
+server adds one more, `tracePathFull` (default `true`), which controls the `url.path` attribute.
+
+The HTTP server names its span `"<METHOD> <pathTemplate>"` with `SpanKind.SERVER` and tags it with
+typed semantic-convention keys (`HttpAttributes.HTTP_ROUTE`, `UrlAttributes.URL_SCHEME`,
+`ServerAttributes.SERVER_ADDRESS`, …). It creates **no span for an unrouted request** —
+`request.pathTemplate()` is `null` on a 404, so an unmatched URL produces nothing.
+
+---
+
+## 4. Custom spans
+
+Inject **`KoraTracer`** (`io.koraframework.opentelemetry.tracing.KoraTracer`, supplied as a
+`@DefaultComponent` by `OpentelemetryTracingModule`). It starts the span, binds it into the
+`ScopedValue` for the duration of the callback, sets `StatusCode.OK`, records and rethrows on
+failure, and ends the span — so there is no lifecycle to get wrong.
 
 === "Java"
     ```java
-    import io.opentelemetry.api.trace.StatusCode;
-    import io.opentelemetry.api.trace.Tracer;
-    import ru.tinkoff.kora.common.Component;
-    import ru.tinkoff.kora.common.Context;
-    import ru.tinkoff.kora.opentelemetry.common.OpentelemetryContext;
+    import io.koraframework.common.annotation.Component;
+    import io.koraframework.opentelemetry.tracing.KoraTracer;
 
     @Component
     public final class OrderService {
 
-        private final Tracer tracer;
+        private final KoraTracer tracer;
 
-        public OrderService(Tracer tracer) {
+        public OrderService(KoraTracer tracer) {
             this.tracer = tracer;
         }
 
         public Order processOrder(Order order) {
-            var ctx = Context.current();
-            var otctx = OpentelemetryContext.get(ctx);
-            var span = tracer.spanBuilder("order.process")
-                    .setParent(otctx.getContext())
-                    .startSpan();
-
-            OpentelemetryContext.set(ctx, otctx.add(span));
-            try {
-                var result = doProcess(order);
-                span.setStatus(StatusCode.OK);
-                return result;
-            } catch (RuntimeException e) {
-                span.recordException(e);
-                span.setStatus(StatusCode.ERROR, e.getMessage());
-                throw e;
-            } finally {
-                span.end();
-                OpentelemetryContext.set(ctx, otctx);
-            }
+            return tracer.traceParent("order.process", span -> {
+                span.setAttribute("order.id", order.id());
+                return doProcess(order);
+            });
         }
     }
     ```
 
 === "Kotlin"
     ```kotlin
-    import io.opentelemetry.api.trace.StatusCode
-    import io.opentelemetry.api.trace.Tracer
-    import ru.tinkoff.kora.common.Component
-    import ru.tinkoff.kora.common.Context
-    import ru.tinkoff.kora.opentelemetry.common.OpentelemetryContext
+    import io.koraframework.common.annotation.Component
+    import io.koraframework.opentelemetry.tracing.KoraTracer
 
     @Component
-    class OrderService(private val tracer: Tracer) {
+    class OrderService(private val tracer: KoraTracer) {
 
-        fun processOrder(order: Order): Order {
-            val ctx = Context.current()
-            val otctx = OpentelemetryContext.get(ctx)
-            val span = tracer.spanBuilder("order.process")
-                .setParent(otctx.context)
-                .startSpan()
-
-            OpentelemetryContext.set(ctx, otctx.add(span))
-            try {
-                val result = doProcess(order)
-                span.setStatus(StatusCode.OK)
-                return result
-            } catch (e: RuntimeException) {
-                span.recordException(e)
-                span.setStatus(StatusCode.ERROR, e.message ?: "error")
-                throw e
-            } finally {
-                span.end()
-                OpentelemetryContext.set(ctx, otctx)
-            }
-        }
+        fun processOrder(order: Order): Order =
+            tracer.traceParent("order.process", KoraTracer.TraceCallable<Order, RuntimeException> { span ->
+                span.setAttribute("order.id", order.id)
+                doProcess(order)
+            })
     }
     ```
 
-## Key types
+    Kotlin needs the explicit SAM constructor: `traceParent` is overloaded on
+    `TraceCallable`/`TraceRunnable` and a bare lambda does not pick one — the same shape as
+    `JdbcExecutor.SqlSupplier { … }` in the migrated examples.
 
-| Type | Package | Role |
-|------|---------|------|
-| `OpentelemetryGrpcExporterModule` | `ru.tinkoff.kora.opentelemetry.tracing.exporter.grpc` | OTLP over gRPC |
-| `OpentelemetryHttpExporterModule` | `ru.tinkoff.kora.opentelemetry.tracing.exporter.http` | OTLP over HTTP |
-| `Tracer` | `io.opentelemetry.api.trace` | Span factory, injected from the graph |
-| `Span` / `StatusCode` | `io.opentelemetry.api.trace` | A measured step and its status |
-| `Context` | `ru.tinkoff.kora.common` | Kora request context (use `Context.current()`, `.fork()`) |
-| `OpentelemetryContext` | `ru.tinkoff.kora.opentelemetry.common` | Bridge between Kora `Context` and OpenTelemetry context |
+`traceParent(name, …)` nests under whatever span is current; `traceNew(name, …)` starts a detached
+root trace. Both come in a value-returning (`TraceCallable`) and a void (`TraceRunnable`) form, and
+both hand you the `Span` so you can add attributes and events.
 
-`OpentelemetryContext` static accessors for the current request: `OpentelemetryContext.getSpan()` and `OpentelemetryContext.getTraceId()`.
+`KoraTracer` cannot customise the `SpanBuilder` — the `Consumer<SpanBuilder>` overloads are private
+— so `SpanKind`, links and an explicit parent need the raw `Tracer` plus a `ScopedValue` binding.
+That pattern, plus reading the current span, propagating to another thread, and W3C header
+propagation, is in [references/spans-and-context-reference.md](references/spans-and-context-reference.md).
 
-## References
+**Never call `span.makeCurrent()` or `Context.makeCurrent()`.** Kora's `ContextStorage`
+implementation throws `IllegalStateException` from `attach(...)` because a `ScopedValue` cannot be
+imperatively attached. The standard OpenTelemetry `try (var scope = span.makeCurrent())` idiom is a
+runtime failure in Kora 2.0.
 
-| Topic | File |
-|-------|------|
-| Exporter modules, OTLP config keys, Jaeger/Zipkin/Tempo backends | [references/exporter-setup-reference.md](references/exporter-setup-reference.md) |
-| Manual spans, attributes, async/coroutine propagation, sampler override | [references/spans-and-context-reference.md](references/spans-and-context-reference.md) |
+---
 
-## Assets
+## 5. Key types
 
-Templates in `assets/`:
+| Type | Package / artifact | Role |
+|---|---|---|
+| `OpentelemetryTracingModule` | `io.koraframework.opentelemetry.tracing` · `opentelemetry-tracing` | Supplies `TracerProvider`, `Tracer`, `KoraTracer`, `Sampler`, `IdGenerator`, `Resource`. No export on its own |
+| `OpentelemetryGrpcExporterModule` | `io.koraframework.opentelemetry.tracing.exporter.grpc` · `opentelemetry-tracing-exporter-grpc` | Adds an OTLP/gRPC `SpanExporter` + `BatchSpanProcessor` |
+| `OpentelemetryHttpExporterModule` | `io.koraframework.opentelemetry.tracing.exporter.http` · `opentelemetry-tracing-exporter-http` | Adds an OTLP/HTTP `SpanExporter` + `BatchSpanProcessor` |
+| `KoraTracer` | `io.koraframework.opentelemetry.tracing` | `traceParent` / `traceNew` span wrappers, `@DefaultComponent` |
+| `Tracer`, `Span`, `SpanKind`, `StatusCode` | `io.opentelemetry.api.trace` | OpenTelemetry API, injected/used directly |
+| `Sampler` | `io.opentelemetry.sdk.trace.samplers` | `@DefaultComponent`, overridable on `@KoraApp` |
+| `OpentelemetryContext` | `io.koraframework.common.telemetry` · `common` | `implements io.opentelemetry.context.Context`; holds `ScopedValue<Context> VALUE` — the carrier |
+| `Context` | **`io.opentelemetry.context`** | The OpenTelemetry context. There is no Kora `Context` in 2.0 |
+| `Observation` | `io.koraframework.common.telemetry` | Framework observation bound alongside the span (`HttpServerObservation` and friends extend it) |
 
-| File | Purpose |
-|------|---------|
-| `Application.tracing.java.template` | `@KoraApp` with the gRPC exporter (Java) |
-| `Application.tracing.kt.template` | `@KoraApp` with the gRPC exporter (Kotlin) |
-| `build.gradle.tracing.template` | Gradle dependency snippet (BOM + processor) |
-| `application.tracing.conf.template` | HOCON `tracing` block |
-| `TracingService.java.template` | Reusable manual-span wrapper (Java) |
-| `TracingService.kt.template` | Reusable manual-span wrapper (Kotlin) |
+---
 
-## Backends
+## 6. Backends
 
-| Backend | Module | Endpoint example | Notes |
-|---------|--------|------------------|-------|
-| Jaeger | gRPC | `http://jaeger:4317` | enable `COLLECTOR_OTLP_ENABLED` |
-| Jaeger | HTTP | `http://jaeger:4318/v1/traces` | OTLP HTTP path |
-| Zipkin | HTTP | `http://zipkin:9411/api/v2/spans` | set `compression = "none"` |
-| Grafana Tempo | gRPC | `http://tempo:4317` | set `compression = "none"` |
+Kora 2.0 ships OTLP exporters and nothing else — there is no Jaeger-native and no Zipkin exporter
+module. Anything you export to must accept OTLP, directly or through an OpenTelemetry Collector.
 
-## Common pitfalls
+| Backend | How | Endpoint |
+|---|---|---|
+| OpenTelemetry Collector | native OTLP; the neutral choice, fans out to anything | `http://otel:4317` (gRPC) / `http://otel:4318/v1/traces` (HTTP) |
+| Jaeger | native OTLP ingest, `COLLECTOR_OTLP_ENABLED=true` | `http://jaeger:4317` / `http://jaeger:4318/v1/traces` |
+| Grafana Tempo | native OTLP ingest | `http://tempo:4317` / `http://tempo:4318/v1/traces` |
+| Zipkin | **no OTLP ingest** — put a Collector in front with a `zipkin` exporter | Collector's OTLP port, never `:9411/api/v2/spans` |
+
+The OTLP/HTTP endpoint includes the signal path `/v1/traces`; the OTLP/gRPC endpoint does not.
+
+---
+
+## 7. Common pitfalls
 
 | Symptom | Cause / fix |
-|---------|-------------|
-| Span shows as a separate trace | Missing parent — `setParent(otctx.getContext())` and restore context in `finally` |
-| No traces in the backend | Wrong `endpoint` or port; gRPC is 4317, OTLP HTTP is 4318 |
-| Spans never appear / leak | `span.end()` missing — always end in `finally` |
-| Lost context in async code | `fork()` the Kora `Context` before the async hop and `OpentelemetryContext.set` inside it (see references) |
-| Service absent in the UI | `tracing.attributes."service.name"` not set |
-| Tried `tracing.sampler { ... }` | Sampling is not a config key — override `opentelemetryTracingSampler()` in `@KoraApp` (see references) |
+|---|---|
+| App is up, `tracing.enabled` untouched, no spans anywhere | `tracing.exporter.endpoint` unset → the exporter and processor degrade to no-ops silently |
+| Probe / metrics traffic produces no spans | Correct: `httpServer.system` overrides `tracing.enabled` to `false` |
+| Spans arrive with no service name | `tracing.attributes."service.name"` not set — the resource is built only from that map |
+| `IllegalStateException` from `attach` | `span.makeCurrent()` / `Context.makeCurrent()` — unsupported, use `KoraTracer` or `ScopedValue.where(OpentelemetryContext.VALUE, …)` |
+| Code will not compile: no `Context.current()` / `Context.fork()` / `OpentelemetryContext.get(ctx)` | Kora 1.x API. `Context` is removed; the only `Context` is `io.opentelemetry.context.Context` |
+| Span is its own root trace | Started outside the `ScopedValue` binding, or `traceNew` used where `traceParent` was meant |
+| Kotlin: "none of the following functions can be called with the arguments supplied" on `traceParent` | Overload does not infer — use `KoraTracer.TraceCallable<T, E> { … }` / `TraceRunnable<E> { … }` |
+| `@KoraApp` extends both exporter modules | Not a supported combination — the two `SpanExporter`/`SpanProcessor` declarations and the identically-erased config methods collide. Keep one |
+| Nothing exported to `:4318` with the gRPC module (or `:4317` with the HTTP one) | Protocol comes from the artifact; swap the module, not a config key |
+| `tracing.sampler { … }` ignored | No such key. Sampling is code — override `opentelemetryTracingSampler()` |
+| `tracing.exporter.retry { … }` ignored | The key is `retryPolicy`, not `retry` |
 
-## What this skill does NOT cover
+---
 
-- Metrics (Micrometer/Prometheus) — see `kora-telemetry-metrics`.
-- Structured logging / Logback — see `kora-telemetry-logging`.
-- Per-module telemetry toggles (e.g. `httpServer.telemetry.*`) live in the respective communication modules.
+## 8. References
+
+| Topic | File |
+|---|---|
+| Exporter modules, every `tracing.*` key with its default, retry policy, backends, troubleshooting | [references/exporter-setup-reference.md](references/exporter-setup-reference.md) |
+| `KoraTracer`, raw `Tracer` + `ScopedValue`, span kinds and semconv attributes, reading the current span, cross-thread and W3C propagation, sampler override | [references/spans-and-context-reference.md](references/spans-and-context-reference.md) |
+
+## 9. Assets
+
+| File | Purpose |
+|---|---|
+| [`assets/Application.tracing.java.template`](assets/Application.tracing.java.template) | `@KoraApp` with the OTLP/gRPC exporter (Java) |
+| [`assets/Application.tracing.kt.template`](assets/Application.tracing.kt.template) | `@KoraApp` with the OTLP/gRPC exporter (Kotlin) |
+| [`assets/build.gradle.tracing.template`](assets/build.gradle.tracing.template) | Gradle dependency snippet (BOM + processor + exporter) |
+| [`assets/application.tracing.conf.template`](assets/application.tracing.conf.template) | HOCON `tracing` block with real keys and defaults |
+| [`assets/TracingService.java.template`](assets/TracingService.java.template) | Raw-`Tracer` span wrapper with `SpanKind` support (Java) |
+| [`assets/TracingService.kt.template`](assets/TracingService.kt.template) | Raw-`Tracer` span wrapper with `SpanKind` support (Kotlin) |
+
+## 10. Not covered here
+
+- Metrics (Micrometer / Prometheus) — `kora-telemetry-metrics`.
+- Structured logging and Logback — `kora-telemetry-logging`. Trace correlation is automatic:
+  `KoraAsyncAppender` captures `Span.current().getSpanContext()` and `ConsoleTextRecordEncoder`
+  prints `traceId=…` whenever the span context is valid.
+- Liveness / readiness probes and the system server layout — `kora-http-server`.
+- Per-component telemetry sections beyond `telemetry.tracing.*` — the owning module's skill.

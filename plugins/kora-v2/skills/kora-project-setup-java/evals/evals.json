@@ -5,11 +5,14 @@
       "skills": ["kora-project-setup-java"],
       "query": "Create a new Kora service in Java from scratch with Gradle.",
       "expected_behavior": [
-        "Creates build.gradle with the application and java plugins",
-        "Imports the BOM via koraBom platform(\"ru.tinkoff.kora:kora-parent:1.2.19\") declared once",
-        "Adds annotationProcessor \"ru.tinkoff.kora:annotation-processors\"",
+        "Creates build.gradle with the java and application plugins",
+        "Imports the BOM via koraBom platform(\"io.koraframework:kora-bom:$koraVersion\") declared once",
+        "Pins koraVersion=2.0.0.RC1 and resolves it from plain mavenCentral()",
+        "Adds annotationProcessor \"io.koraframework:annotation-processors\"",
         "Defines an @KoraApp interface as the graph root",
-        "Does not version individual ru.tinkoff.kora:* artifacts",
+        "Does not version individual io.koraframework:* artifacts",
+        "Does not put 2.0.0-SNAPSHOT in the project, and does not add the Sonatype snapshot repository",
+        "Does not use the removed ru.tinkoff.kora group or the kora-parent BOM",
         "Does not use foreign-framework annotations or field injection"
       ],
       "tags": ["scaffold", "basic"]
@@ -23,7 +26,7 @@
         "Wires annotationProcessor.extendsFrom(koraBom) so the processor classpath gets the BOM",
         "Extends implementation, compileOnly, and the test configurations from koraBom",
         "Explains the annotation-processor classpath is separate from the application classpath",
-        "Does not put an explicit version on the annotation-processors dependency"
+        "Does not put an explicit version on the io.koraframework:annotation-processors dependency"
       ],
       "tags": ["gradle", "bom", "advanced"]
     },
@@ -32,10 +35,12 @@
       "skills": ["kora-project-setup-java"],
       "query": "Write the main application class that boots the Kora graph.",
       "expected_behavior": [
-        "Annotates the interface with @KoraApp from ru.tinkoff.kora.common.KoraApp",
-        "Extends framework *Module interfaces such as UndertowHttpServerModule and HoconConfigModule",
+        "Annotates the interface with @KoraApp imported from io.koraframework.common.annotation.KoraApp",
+        "Extends framework *Module interfaces such as UndertowPublicHttpServerModule and HoconConfigModule",
         "Calls KoraApplication.run(ApplicationGraph::graph) in main",
-        "Imports KoraApplication from ru.tinkoff.kora.application.graph",
+        "Imports KoraApplication from io.koraframework.application.graph",
+        "Explains the generated graph class is the interface simple name plus Graph, in the same package",
+        "Does not import @KoraApp from io.koraframework.common (the annotation lives one package deeper)",
         "Does not reference a foreign-framework application-bootstrap annotation"
       ],
       "tags": ["app-graph", "basic"]
@@ -45,34 +50,76 @@
       "skills": ["kora-project-setup-java"],
       "query": "My Kora Java build produces no generated code and ApplicationGraph cannot be resolved.",
       "expected_behavior": [
-        "Identifies the missing annotationProcessor \"ru.tinkoff.kora:annotation-processors\" as the cause",
-        "Notes that ApplicationGraph is generated from the @KoraApp interface at compile time",
+        "Identifies the missing annotationProcessor \"io.koraframework:annotation-processors\" as the cause",
+        "Notes that the graph class is generated from the @KoraApp interface at compile time",
         "Suggests running ./gradlew classes to trigger the processor",
-        "Points to build/generated/sources/annotationProcessor/ for the generated graph"
+        "Points to build/generated/sources/annotationProcessor/ for the generated graph",
+        "Mentions verifying the processor classpath with ./gradlew dependencies --configuration annotationProcessor"
       ],
       "tags": ["troubleshooting", "advanced"]
+    },
+    {
+      "id": "kora-project-setup-java-wrong-processor-coordinate",
+      "skills": ["kora-project-setup-java"],
+      "query": "My build.gradle has annotationProcessor \"ru.tinkoff.kora:annotation-processors\" and implementation \"ru.tinkoff.kora:json-module\" with platform(\"ru.tinkoff.kora:kora-parent:1.2.19\"). Gradle cannot resolve anything. Fix it for Kora 2.0.",
+      "expected_behavior": [
+        "Replaces the group ru.tinkoff.kora with io.koraframework on every coordinate",
+        "Replaces the kora-parent BOM with io.koraframework:kora-bom at 2.0.0.RC1",
+        "Replaces json-module with json-common (json-module does not exist in 2.0)",
+        "Keeps the processor artifact name annotation-processors and leaves it unversioned under the BOM",
+        "Does not keep the artifact name kora-parent under the new group: io.koraframework:kora-parent exists on Central only as a 2.0.0.alpha leftover and is not part of the RC1 release",
+        "Does not invent a 2.0 coordinate for a module that was removed"
+      ],
+      "tags": ["troubleshooting", "regression", "advanced"]
     },
     {
       "id": "kora-project-setup-java-toolchain",
       "skills": ["kora-project-setup-java"],
       "query": "Which JDK and Gradle version should I use for a Kora Java project, and how do I configure the toolchain?",
       "expected_behavior": [
-        "States JDK 17 minimum, 25 recommended",
-        "Configures the Java toolchain with JavaLanguageVersion in build.gradle",
+        "States that Kora 2.0 artifacts are compiled for JVM 25, so 25 is the floor",
+        "Configures the Java toolchain with JavaLanguageVersion.of(25) in build.gradle",
         "Adds the foojay-resolver-convention plugin in settings.gradle",
-        "Notes Gradle 7+ is required and the wrapper pins a current distribution"
+        "Notes the Gradle wrapper the reference apps pin (9.5.1)",
+        "Does not claim --enable-preview is required for consumers of Kora 2.0"
       ],
       "tags": ["toolchain", "basic"]
+    },
+    {
+      "id": "kora-project-setup-java-gradle-jvm-too-old",
+      "skills": ["kora-project-setup-java"],
+      "query": "Configuration fails with 'Dependency requires at least JVM runtime version 25. This build uses a Java 21 JVM.' My toolchain already says JavaLanguageVersion.of(25).",
+      "expected_behavior": [
+        "Explains the toolchain does not control the JVM that runs Gradle itself",
+        "Identifies the buildscript classpath (io.koraframework:openapi-generator) as what is resolved by the Gradle JVM",
+        "Tells the user to run Gradle on JDK 25 or newer, e.g. via JAVA_HOME",
+        "Advises against committing org.gradle.java.home because the path is machine-specific",
+        "Does not suggest lowering the toolchain or excluding the dependency"
+      ],
+      "tags": ["toolchain", "regression", "advanced"]
+    },
+    {
+      "id": "kora-project-setup-java-stale-generated-sources",
+      "skills": ["kora-project-setup-java"],
+      "query": "After moving my project to Kora 2.0 the build reports hundreds of 'package ru.tinkoff.kora.common.annotation does not exist' errors in files I never wrote, all under build/generated.",
+      "expected_behavior": [
+        "Identifies stale generator output left in build/generated as the cause",
+        "Explains generator tasks do not delete previous output and the build cache key ignores the package change",
+        "Prescribes ./gradlew clean followed by a build with --no-build-cache",
+        "Does not suggest editing the generated sources",
+        "Does not treat the error as a missing dependency"
+      ],
+      "tags": ["troubleshooting", "regression", "advanced"]
     },
     {
       "id": "kora-project-setup-java-test-setup",
       "skills": ["kora-project-setup-java"],
       "query": "Add the Gradle setup so I can write a @KoraAppTest for my new Kora service.",
       "expected_behavior": [
-        "Adds testImplementation \"ru.tinkoff.kora:test-junit5\"",
-        "Adds testAnnotationProcessor \"ru.tinkoff.kora:annotation-processors\"",
+        "Adds testImplementation \"io.koraframework:test-junit5\"",
+        "Adds testAnnotationProcessor \"io.koraframework:annotation-processors\"",
         "Enables useJUnitPlatform() in the test task",
-        "Uses @KoraAppTest with @TestComponent to inject graph components",
+        "Uses @KoraAppTest with @TestComponent imported from io.koraframework.test.extension.junit5",
         "Does not use a foreign-framework test annotation or a mock-bean construct"
       ],
       "tags": ["testing", "advanced"]
@@ -82,13 +129,53 @@
       "skills": ["kora-project-setup-java"],
       "query": "I scaffolded a Kora app; how do I actually expose an HTTP endpoint?",
       "expected_behavior": [
-        "Adds implementation \"ru.tinkoff.kora:http-server-undertow\"",
-        "Extends UndertowHttpServerModule in the @KoraApp interface",
-        "Creates a @Component @HttpController with an @HttpRoute method",
-        "Configures httpServer.publicApiHttpPort and privateApiHttpPort in application.conf",
-        "Uses constructor injection rather than field injection"
+        "Adds implementation \"io.koraframework:http-server-undertow\"",
+        "Extends UndertowPublicHttpServerModule in the @KoraApp interface",
+        "Creates a @Component @HttpController with an @HttpRoute method returning HttpServerResponse",
+        "Configures httpServer.port and httpServer.system.port in application.conf",
+        "Uses constructor injection rather than field injection",
+        "Does not use the removed publicApiHttpPort / privateApiHttpPort config keys"
       ],
       "tags": ["http", "basic"]
+    },
+    {
+      "id": "kora-project-setup-java-ports-silently-default",
+      "skills": ["kora-project-setup-java"],
+      "query": "My application.conf sets httpServer.publicApiHttpPort = 8090 and httpServer.privateApiHttpPort = 8091 but the service still answers on 8080 and 8085.",
+      "expected_behavior": [
+        "Explains those keys do not exist in Kora 2.0 config, so the defaults apply",
+        "Gives the 2.0 keys: httpServer.port and httpServer.system.port",
+        "Mentions the system API defaults: port 8085 serving /system/readiness, /system/liveness and /metrics",
+        "States SystemHttpServerConfig overrides port() to 8085 rather than inheriting 8080, so the two servers do not collide",
+        "Does not claim a port conflict or an 'address already in use' failure"
+      ],
+      "tags": ["config", "regression", "advanced"]
+    },
+    {
+      "id": "kora-project-setup-java-nullability",
+      "skills": ["kora-project-setup-java"],
+      "query": "Compilation fails with 'type annotation @org.jspecify.annotations.Nullable is not expected here' after I annotated a nested type. Also, can I keep using jakarta.annotation.Nullable?",
+      "expected_behavior": [
+        "States Kora 2.0 uses JSpecify and that its annotations are type-use",
+        "Shows the correct position on a qualified nested type: Outer.@Nullable Inner",
+        "Notes the array and generic positions differ in meaning",
+        "States jakarta.annotation.Nullable is not what Kora 2.0 uses",
+        "Does not suggest suppressing the error or removing nullability information"
+      ],
+      "tags": ["nullability", "regression", "advanced"]
+    },
+    {
+      "id": "kora-project-setup-java-telemetry-defaults",
+      "skills": ["kora-project-setup-java"],
+      "query": "My new Kora service starts fine but there are no request logs and no http_server_* metrics. Nothing is misconfigured as far as I can tell.",
+      "expected_behavior": [
+        "Explains component telemetry logging and metrics default to false in Kora 2.0",
+        "Shows enabling httpServer.telemetry.logging.enabled and httpServer.telemetry.metrics.enabled",
+        "Notes metrics additionally need a MeterRegistry in the graph (micrometer-module)",
+        "Does not state tracing is enabled everywhere: the system server overrides tracing enabled() to false under httpServer.system",
+        "Does not claim telemetry is on by default"
+      ],
+      "tags": ["config", "telemetry", "advanced"]
     }
   ]
 }

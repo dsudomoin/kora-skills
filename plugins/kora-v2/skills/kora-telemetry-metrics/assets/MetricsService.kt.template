@@ -1,98 +1,97 @@
 package ${package}
 
+import io.koraframework.common.annotation.Component
 import io.micrometer.core.instrument.Counter
 import io.micrometer.core.instrument.DistributionSummary
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Timer
-import ru.tinkoff.kora.common.Component
 import java.time.Duration
 import java.util.Locale
 import java.util.concurrent.Callable
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Business metrics service example.
+ * Business metrics service (Kora 2.0).
+ *
+ * Custom meters need only MetricsModule on the @KoraApp interface -- they are registered
+ * straight onto the MeterRegistry and are NOT gated by any telemetry.metrics.enabled
+ * flag. Those flags govern Kora's own component instrumentation.
+ *
+ * Without MetricsModule the graph fails to build with
+ * "No component found for dependency: io.micrometer.core.instrument.MeterRegistry".
  *
  * Demonstrates:
- * - Timer for operation duration
- * - Counter with dynamic low-cardinality tag (email provider)
- * - Gauge for current value
- * - DistributionSummary for size distribution
- * - Metric instance caching for high throughput
+ * - a Timer with SLO histogram buckets, registered once
+ * - a Counter with a bounded dynamic tag, cached per tag value
+ * - a DistributionSummary with an explicit base unit
  */
 @Component
 class MetricsService(
     private val meterRegistry: MeterRegistry
 ) {
 
-    private val userCreationTimer: Timer
+    private val userCreationTimer: Timer = Timer.builder("user.creation.duration")
+        .description("Time taken to create users")
+        .serviceLevelObjectives(
+            Duration.ofMillis(50),
+            Duration.ofMillis(100),
+            Duration.ofMillis(250),
+            Duration.ofMillis(500)
+        )
+        .register(meterRegistry)
+
+    private val payloadSizeSummary: DistributionSummary = DistributionSummary.builder("user.payload.size")
+        .description("User payload size distribution")
+        .baseUnit("bytes")
+        .register(meterRegistry)
+
     private val userCreationCounters = ConcurrentHashMap<String, Counter>()
-    private val payloadSizeSummary: DistributionSummary
-
-    init {
-        // Timer with SLO-based histogram buckets
-        userCreationTimer = Timer.builder("user.creation.duration")
-            .description("Time taken to create users")
-            .serviceLevelObjectives(
-                Duration.ofMillis(50),
-                Duration.ofMillis(100),
-                Duration.ofMillis(250),
-                Duration.ofMillis(500)
-            )
-            .register(meterRegistry)
-
-        // DistributionSummary for payload sizes
-        payloadSizeSummary = DistributionSummary.builder("user.payload.size")
-            .description("User payload size distribution")
-            .baseUnit("bytes")
-            .register(meterRegistry)
-    }
 
     /**
-     * Records user creation with timer and counter.
-     * Counter is cached by email provider (low-cardinality tag).
+     * Times the action and counts the creation by email provider.
+     *
+     * Kotlin has no checked exceptions, so anything the action throws simply propagates --
+     * a metrics helper must never hide a business failure.
      */
     fun <T> recordUserCreation(email: String, action: Callable<T>): T {
-        try {
-            val result = userCreationTimer.recordCallable(action)
-            userCreationCounter(emailProvider(email)).increment()
-            return result
-        } catch (e: RuntimeException) {
-            throw e
-        } catch (e: Exception) {
-            throw IllegalStateException("Failed to record user creation metrics", e)
-        }
+        val result = userCreationTimer.recordCallable(action)
+        userCreationCounter(emailProvider(email)).increment()
+        return result
     }
 
-    /**
-     * Records payload size.
-     */
+    /** DistributionSummary.record takes a double. */
     fun recordPayloadSize(sizeBytes: Int) {
         payloadSizeSummary.record(sizeBytes.toDouble())
     }
 
     /**
-     * Gets or creates counter for email provider.
-     * Uses computeIfAbsent for thread-safe caching.
+     * One Counter per email provider, created atomically by computeIfAbsent.
+     * The cache is only safe because emailProvider() maps to a bounded set.
      */
-    private fun userCreationCounter(emailProvider: String): Counter {
-        return userCreationCounters.computeIfAbsent(emailProvider) { provider ->
+    private fun userCreationCounter(emailProvider: String): Counter =
+        userCreationCounters.computeIfAbsent(emailProvider) { provider ->
             Counter.builder("user.creation.total")
                 .description("Total number of users created")
                 .tag("email.provider", provider)
                 .register(meterRegistry)
         }
-    }
 
     /**
-     * Extracts email provider (domain) from email address.
-     * Returns "unknown" for invalid emails.
+     * Maps an email address onto a bounded set of providers.
+     *
+     * Returning the raw domain would put every signup in charge of the series count --
+     * an unbounded tag and a memory leak. Extend the when, do not remove it.
      */
     private fun emailProvider(email: String): String {
         val at = email.indexOf('@')
         if (at < 0 || at == email.length - 1) {
             return "unknown"
         }
-        return email.substring(at + 1).lowercase(Locale.ROOT)
+        return when (email.substring(at + 1).lowercase(Locale.ROOT)) {
+            "gmail.com", "googlemail.com" -> "gmail"
+            "outlook.com", "hotmail.com", "live.com" -> "outlook"
+            "yandex.ru", "ya.ru" -> "yandex"
+            else -> "other"
+        }
     }
 }

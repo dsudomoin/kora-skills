@@ -1,29 +1,33 @@
 package ${package}
 
+import io.grpc.Status
+import io.grpc.stub.StreamObserver
+import io.koraframework.common.annotation.Component
 import ${proto_package}.${service_name}Grpc
 import ${proto_package}.${request_class}
 import ${proto_package}.${response_class}
-import io.grpc.Status
-import io.grpc.stub.StreamObserver
-import ru.tinkoff.kora.common.Component
 
 /**
- * gRPC service implementation for ${service_name}.
- * Extend the generated ${service_name}ImplBase and annotate with @Component.
+ * Counterpart gRPC service implementation (Kora 2.0).
+ * The authoritative server guidance is the kora-grpc-server skill.
+ *
+ * A @Component extending a generated *ImplBase is a BindableService, which
+ * GrpcServerFactoryModule collects and registers — no @Tag and no registration call.
  */
 @Component
 class ${service_name}Service : ${service_name}Grpc.${service_name}ImplBase() {
 
     override fun ${method_name}(request: ${request_class}, responseObserver: StreamObserver<${response_class}>) {
         try {
-            // TODO: Implement business logic
             val response = ${response_class}.newBuilder()
-                // .setField(value)
+                // .setMessage(...)
                 .build()
 
             responseObserver.onNext(response)
             responseObserver.onCompleted()
         } catch (e: Exception) {
+            // Exactly one of onCompleted/onError may be called, and never both. An exception that
+            // escapes this method reaches the client as an opaque UNKNOWN.
             responseObserver.onError(
                 Status.INTERNAL
                     .withDescription(e.message)

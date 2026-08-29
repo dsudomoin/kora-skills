@@ -1,39 +1,48 @@
 package ${packagePath};
 
-import ru.tinkoff.kora.common.KoraSubmodule;
-import ru.tinkoff.kora.config.hocon.HoconConfigModule;
-import ru.tinkoff.kora.logging.logback.LogbackModule;
+import io.koraframework.common.annotation.KoraSubmodule;
 
 /**
- * Example KoraSubmodule interface for multi-module Gradle projects.
+ * Example @KoraSubmodule — how a Gradle subproject exports its Kora components.
  *
- * @KoraSubmodule is used to split a Kora application into separate Gradle modules.
- * Each submodule has its own build.gradle and can be developed/tested independently.
+ * <p>The processor generates {@code ${Module}ModuleSubmoduleImpl} next to this interface,
+ * containing a provider for every @Component class and every @Module provider method compiled in
+ * THIS Gradle subproject, carrying over their @Tag, @Root and @DefaultComponent annotations.
+ * The assembly project's @KoraApp then extends this interface and the generated companion is
+ * wired in automatically.
  *
- * When to split:
- * - 500+ classes
- * - Clear domain boundaries (pet-api, vet-api)
- * - Multiple teams working on different domains
- * - Compilation time exceeds 2 minutes
+ * <p>An empty body is normal — the interface is only the handle; the generated companion carries
+ * the contents.
  *
- * Usage in Application:
- * ```java
- * @KoraApp
- * public interface Application extends CommonModule, PetModule {
- *     static void main(String[] args) {
- *         KoraApplication.run(ApplicationGraph::graph);
- *     }
- * }
- * ```
+ * <p>Required build wiring in THIS subproject, or nothing is generated
+ * ("Kora submodule was not generated yet: expected type: ...SubmoduleImpl"):
+ * <pre>
+ *   // Java
+ *   annotationProcessor "io.koraframework:annotation-processors"
  *
- * See: references/kora-submodule-reference.md
- * See: references/module-auto-discovery-reference.md
+ *   // Kotlin (ksp is not covered by the BOM platform, so it needs an explicit version)
+ *   ksp("io.koraframework:symbol-processors:2.0.0.RC1")
+ * </pre>
+ *
+ * <p>Use {@code api} (not {@code implementation}) for the Kora modules this interface extends —
+ * the assembly project has to see those types to extend this interface at all.
+ *
+ * <p>Usage from the assembly project:
+ * <pre>
+ *   &#64;KoraApp
+ *   public interface Application extends ${Module}Module, HoconConfigModule, LogbackModule {
+ *       static void main(String[] args) {
+ *           KoraApplication.run(ApplicationGraph::graph);
+ *       }
+ *   }
+ * </pre>
+ *
+ * <p>See: references/kora-submodule-reference.md
+ * <p>See: references/module-auto-discovery-reference.md
  */
 @KoraSubmodule
-public interface ${Module}Module extends
-    HoconConfigModule,  // External module - config support
-    LogbackModule       // External module - logging support
-{
-    // Add domain-specific factory methods here if needed
-    // All components from this module are available to parent Application
+public interface ${Module}Module {
+    // Optional: factory methods shared by everything in this subproject.
+    // @Component classes and @Module interfaces elsewhere in this subproject are exported
+    // automatically — they do not need to be mentioned here.
 }

@@ -1,5 +1,14 @@
-// Top-level @Mapper interface — Kora's MapStruct extension discovers it and registers the impl as a component.
-// Inject `OrderMapper` like any other component; the generated `OrderMapperImpl` is what actually runs.
+// Kora 2.0 — MapStruct mapper (Java).
+//
+// Kora's `mapstruct-java-extension` (already inside `io.koraframework:annotation-processors`)
+// finds this @Mapper interface, looks up the MapStruct-generated `OrderMapperImpl`, and binds
+// its single public constructor into the DI graph. Inject `OrderMapper` by constructor.
+//
+// Requires, in build.gradle:
+//   annotationProcessor "io.koraframework:annotation-processors"
+//   annotationProcessor "org.mapstruct:mapstruct-processor:1.6.3"
+//   implementation      "org.mapstruct:mapstruct:1.6.3"
+//
 // Replace `com.example.app.mapper` with your package.
 
 package com.example.app.mapper;
@@ -15,25 +24,24 @@ import org.mapstruct.Mapping;
 import org.mapstruct.MappingTarget;
 import org.mapstruct.Named;
 import org.mapstruct.NullValuePropertyMappingStrategy;
+import org.mapstruct.ReportingPolicy;
 
-import java.time.OffsetDateTime;
-import java.util.UUID;
-
-@Mapper                                                          // no @Component needed; Kora's extension wires it
+@Mapper(unmappedTargetPolicy = ReportingPolicy.IGNORE)   // no @Component — the extension binds the impl
 public interface OrderMapper {
 
-    // DTO → entity: generate id and timestamp via inline expressions.
+    // DTO -> entity: generate id and timestamp via inline expressions.
     @Mapping(target = "id", expression = "java(java.util.UUID.randomUUID())")
     @Mapping(target = "createdAt", expression = "java(java.time.OffsetDateTime.now())")
     @Mapping(target = "status", constant = "PENDING")
     Order toEntity(CreateOrderDto dto);
 
-    // Entity → DTO: rename field, format enum via @Named helper.
+    // Entity -> DTO: rename a field, format an enum via a @Named helper.
     @Mapping(source = "createdAt", target = "created")
     @Mapping(source = "status", target = "status", qualifiedByName = "statusToString")
     OrderDto toDto(Order entity);
 
-    // In-place PATCH: only non-null PATCH fields overwrite the existing entity.
+    // In-place PATCH: only non-null patch fields overwrite the existing entity.
+    // The target must be mutable — a record cannot be patched in place.
     @BeanMapping(nullValuePropertyMappingStrategy = NullValuePropertyMappingStrategy.IGNORE)
     @Mapping(target = "id", ignore = true)
     @Mapping(target = "createdAt", ignore = true)
@@ -47,15 +55,22 @@ public interface OrderMapper {
     }
 }
 
-// Usage:
+// Usage — the mapper is an ordinary constructor dependency:
+//
+//   import io.koraframework.common.annotation.Component;
 //
 //   @Component
-//   public class OrdersService {
+//   public final class OrdersService {
 //       private final OrderMapper mapper;
-//       public OrdersService(OrderMapper mapper) { this.mapper = mapper; }
+//       private final OrderRepository repo;
+//
+//       public OrdersService(OrderMapper mapper, OrderRepository repo) {
+//           this.mapper = mapper;
+//           this.repo = repo;
+//       }
 //
 //       public OrderDto create(CreateOrderDto body) {
-//           var saved = repo.save(mapper.toEntity(body));
+//           var saved = repo.save(mapper.toEntity(body));   // synchronous — Kora 2.0 has no reactive contracts
 //           return mapper.toDto(saved);
 //       }
 //   }

@@ -1,279 +1,186 @@
-# Kafka Offset Management Reference
+# Kafka Offset Reference (Kora 2.0)
 
-**Source:** [.kora-agent/kora-docs/mkdocs/docs/en/documentation/kafka.md](../../../.kora-agent/kora-docs/mkdocs/docs/en/documentation/kafka.md)
-
-Complete reference for Kafka offset management: auto-commit, manual commit, and rebalance handling.
+Who commits, when, and what happens when nobody does.
 
 ## Contents
 
-- [Overview](#overview)
-- [Auto-Commit (Default)](#auto-commit-default)
-- [Manual Commit](#manual-commit)
-- [Manual Commit for Batches](#manual-commit-for-batches)
-- [Offset Configuration](#offset-configuration)
-- [Rebalance and Offset Commit](#rebalance-and-offset-commit)
-- [Common Pitfalls](#common-pitfalls)
-- [Best Practices](#best-practices)
+- [The decision table](#the-decision-table)
+- [Kora-managed commits](#kora-managed-commits)
+- [Driver auto-commit](#driver-auto-commit)
+- [Manual commits](#manual-commits)
+- [Assign mode](#assign-mode)
+- [Where reading starts](#where-reading-starts)
+- [Rebalance and shutdown](#rebalance-and-shutdown)
+- [Pitfalls](#pitfalls)
 
 ---
 
-## Overview
+## The decision table
 
-Kora provides flexible offset management strategies:
+Two independent switches. The **signature** decides whether Kora commits at all
+(`shouldCommit = <no Consumer parameter>`, fixed at compile time); the **driver property** decides
+whether commits are allowed (`commitAllowed = !enable.auto.commit`, evaluated in the container).
 
-| Strategy | Description | Use Case |
-|----------|-------------|----------|
-| **Auto-commit** (default) | Offset committed after processing | Most use cases |
-| **Manual commit** | Developer controls commit timing | Exactly-once semantics |
-| **Rebalance commit** | Commit on partition revocation | Prevent message loss |
+| `Consumer` parameter | `enable.auto.commit` | Who commits | When |
+|---|---|---|---|
+| absent | unset | **Kora** | after each record (record/key-value shape) or after the poll (batch shape) |
+| absent | `false` | **Kora** | as above |
+| absent | `true` | **Kafka driver** | on its own timer, independent of your handler |
+| present | any | **you** | wherever you call `commitSync()` |
+| any | any, assign mode | **nobody** | commits are disabled |
 
----
-
-## Auto-Commit (Default)
-
-Kora automatically commits offset after successful processing.
-
-### Commit Timing by Signature
-
-| Method Signature | Commit Timing |
-|-----------------|---------------|
-| `void process(String value)` | After each message |
-| `void process(ConsumerRecords<?, ?> records)` | After entire batch |
-| `void process(ConsumerRecord<?, ?> record)` | After each message |
-
-### Example
-
-```java
-@KafkaListener("kafka.consumer.userEvents")
-void process(String value) {
-    userService.handle(value);
-    // commitSync() called automatically after return
-}
-```
-
-> **Risk:** If application crashes after processing but before commit — message will be reprocessed.
+If `enable.auto.commit` is absent the subscribe container rewrites the properties with
+`enable.auto.commit = false` before creating the client, so the default is Kora-managed commits.
 
 ---
 
-## Manual Commit
+## Kora-managed commits
 
-For manual control, add `Consumer` parameter to method signature.
-
-### Basic Manual Commit
-
-```java
-@KafkaListener("kafka.consumer.userEvents")
-void process(ConsumerRecord<String, String> record, Consumer<String, String> consumer) {
-    try {
-        userService.handle(record.value());
-        
-        // Commit after successful processing
-        consumer.commitSync();
-        
-    } catch (Exception e) {
-        log.error("Processing failed, offset not committed", e);
-        // Don't commit — message will be reprocessed
-        throw e;
-    }
-}
-```
-
-### Use Cases for Manual Commit
-
-- Exactly-once semantics
-- Batch processing with intermediate commits
-- Sync with database transactions
-
----
-
-## Manual Commit for Batches
-
-### Intermediate Commit Pattern
+The natural, safest shape: no `Consumer` parameter, no `enable.auto.commit`.
 
 ```java
 @KafkaListener("kafka.consumer.orders")
-void process(ConsumerRecords<String, OrderEvent> records, 
-             Consumer<String, OrderEvent> consumer) {
-    
-    int processed = 0;
-    int batchSize = 50;
-    
-    for (ConsumerRecord<String, OrderEvent> record : records) {
-        try {
-            orderService.process(record.value());
-            processed++;
-            
-            // Intermediate commit every N messages
-            if (processed % batchSize == 0) {
-                consumer.commitSync();
-                log.info("Committed after {} messages", processed);
-            }
-        } catch (Exception e) {
-            log.error("Failed at offset={}", record.offset(), e);
-            // Commit processed before throwing
-            if (processed > 0) {
-                consumer.commitSync();
-            }
-            throw e;
+void process(String value) {
+    orderService.handle(value);
+}   // Kora commits offset+1 for this record here
+```
+
+**Single-record shape** — `RecordHandler` commits per record, after your method returns:
+
+```java
+consumer.commitSync(Map.of(
+    new TopicPartition(record.topic(), record.partition()),
+    new OffsetAndMetadata(record.offset() + 1, record.leaderEpoch(), NO_METADATA)));
+```
+
+The committed value is `offset + 1` — the next record to read. If the commit throws `WakeupException`
+(shutdown racing the commit) it is retried once and then rethrown.
+
+**Batch shape** — `RecordsHandler` commits once, after your method returns, with a plain
+`consumer.commitSync()` covering the whole poll.
+
+A record that throws is **not** committed, so it is redelivered — unless it threw
+`KafkaSkipRecordException` or a `SkippableRecordException`, which are swallowed and *do* commit.
+
+Delivery is therefore **at-least-once**. Make handlers idempotent.
+
+---
+
+## Driver auto-commit
+
+`"enable.auto.commit" = true` hands committing to the Kafka client's background timer. Kora then
+skips its own commit entirely (`commitAllowed = false`).
+
+This is what the Kora example applications use, because it is fast and the examples tolerate loss.
+It is **not** the safe default for business processing: the driver can commit an offset whose record
+your handler has not finished, so a crash loses it. Prefer leaving the key unset.
+
+---
+
+## Manual commits
+
+Adding a `Consumer<K, V>` parameter switches Kora's automatic commit off for that listener — even if
+you never call `commitSync()`. Forgetting the call means the group never advances and every restart
+replays from the last committed position.
+
+```java
+@KafkaListener("kafka.consumer.orders")
+void process(ConsumerRecord<String, String> record, Consumer<String, String> consumer) {
+    orderRepository.insert(record.value());
+    consumer.commitSync();
+}
+```
+
+Do not swallow the exception before committing — if the write failed, not committing is the point.
+
+**Batch with periodic commits.** `commitSync()` without arguments commits the consumer's current
+position for all assigned partitions, which after iterating part of a batch is the position of the
+last record *returned by the poll*, not the last one you processed. To checkpoint mid-batch
+accurately, commit explicit offsets:
+
+```java
+@KafkaListener("kafka.consumer.analytics")
+void process(ConsumerRecords<String, String> records, Consumer<String, String> consumer) {
+    var pending = new HashMap<TopicPartition, OffsetAndMetadata>();
+    int n = 0;
+    for (var record : records) {
+        analytics.handle(record.value());
+        pending.put(new TopicPartition(record.topic(), record.partition()),
+                    new OffsetAndMetadata(record.offset() + 1));
+        if (++n % 100 == 0) {
+            consumer.commitSync(pending);
+            pending.clear();
         }
     }
-    
-    // Final commit
-    consumer.commitSync();
-}
-```
-
----
-
-## Offset Configuration
-
-### Starting Position
-
-Configure initial position in consumer configuration.
-
-```hocon
-kafka {
-  consumer {
-    userEvents {
-      topics = ["user-events"]
-      
-      # Starting position
-      offset = "earliest"  // earliest, latest, or duration
-      # offset = "5m"     // 5 minutes ago
-      # offset = "1h"     // 1 hour ago
-      
-      driverProperties {
-        "bootstrap.servers" = "localhost:9092"
-        "group.id" = "user-service"
-        "auto.offset.reset" = "earliest"  # For new consumer groups
-      }
-    }
-  }
-}
-```
-
-### Duration-based Offset
-
-| Value | Description |
-|-------|-------------|
-| `"earliest"` | Start from beginning of topic |
-| `"latest"` | Start from current position (new messages only) |
-| `"5m"` | Start from 5 minutes ago |
-| `"1h"` | Start from 1 hour ago |
-| `"24h"` | Start from 24 hours ago |
-
-> **Note:** Duration-based offset works only if `group.id` is not specified (no committed offsets exist).
-
----
-
-## Rebalance and Offset Commit
-
-Commit offsets in `onPartitionsRevoked` to prevent data loss.
-
-### Rebalance Listener Implementation
-
-```java
-@Tag(UserEventsTag.class)  // Same tag class the listener is annotated with
-@Component
-public final class UserEventsRebalanceListener implements ConsumerAwareRebalanceListener {
-    
-    @Override
-    public void onPartitionsRevoked(Consumer<?, ?> consumer, 
-                                     Collection<TopicPartition> partitions) {
-        log.info("Partitions revoked: {}", partitions);
-        
-        // Commit current offsets before rebalance
-        consumer.commitSync();
-        
-        // Clear caches, close resources
-        cache.clear();
-    }
-    
-    @Override
-    public void onPartitionsAssigned(Consumer<?, ?> consumer, 
-                                      Collection<TopicPartition> partitions) {
-        log.info("Partitions assigned: {}", partitions);
-        // Initialize state for new partitions
-    }
-    
-    @Override
-    public void onPartitionsLost(Consumer<?, ?> consumer, 
-                                  Collection<TopicPartition> partitions) {
-        log.warn("Partitions lost (consumer evicted): {}", partitions);
-        // Don't commit — consumer no longer owns these partitions
+    if (!pending.isEmpty()) {
+        consumer.commitSync(pending);
     }
 }
 ```
 
-### Key Points
-
-| Method | Action | Reason |
-|--------|--------|--------|
-| `onPartitionsRevoked` | Commit offsets | Prevent message loss |
-| `onPartitionsAssigned` | Initialize state | Prepare for processing |
-| `onPartitionsLost` | Don't commit | Consumer evicted, can't commit |
+**Read-process-write.** To tie the commit to a Kafka write, commit through the producer transaction
+instead of the consumer — `Transaction.sendOffsetsToTransaction(offsets, consumer.groupMetadata())`.
+See the [transactions reference](kafka-transactions-reference.md).
 
 ---
 
-## Common Pitfalls
+## Assign mode
 
-| Problem | Cause | Solution |
-|---------|-------|----------|
-| **Message loss** | Offset not committed before crash | Use manual commit or commit in `onPartitionsRevoked` |
-| **Duplicate processing** | Offset committed before processing completes | Commit after business logic, implement idempotency |
-| **Wrong start position** | Default `latest` when `earliest` needed | Set `offset = "earliest"` explicitly |
-| **Rebalance storm** | Long processing without heartbeat | Increase `max.poll.interval.ms` |
+Without a `group.id` there is no group, no committed offset, and `commitAllowed` is hardcoded
+`false`. The container tracks the last offset per partition **in memory** and re-seeks to it when
+partitions are refreshed. A restart starts over from the `offset` config key.
 
 ---
 
-## Best Practices
+## Where reading starts
 
-### 1. Commit After Processing
+| Mode | Key | Effect |
+|---|---|---|
+| Subscribe, group has committed offsets | — | resumes at the committed offset; `offset` and `auto.offset.reset` are both ignored |
+| Subscribe, brand-new group | `auto.offset.reset` (`earliest` / `latest`) | driver property, **not** the Kora `offset` key |
+| Assign | `offset` = `earliest` / `latest` / a `Duration` | Kora seeks explicitly on every assignment |
 
-Never commit before business logic completes:
-
-```java
-// GOOD
-@KafkaListener("kafka.consumer.events")
-void process(ConsumerRecord<String, String> record, Consumer<String, String> consumer) {
-    saveToDatabase(record.value());
-    consumer.commitSync();  // Commit after save
-}
-```
-
-### 2. Implement Idempotency
-
-Handle duplicate messages safely:
-
-```java
-@KafkaListener("kafka.consumer.events")
-void process(ConsumerRecord<String, String> record, Consumer<String, String> consumer) {
-    if (isDuplicate(record.value())) {
-        log.debug("Duplicate, skipping: {}", record.offset());
-        consumer.commitSync();
-        return;
-    }
-    // Process
-    consumer.commitSync();
-}
-```
-
-### 3. Test Offset Behavior
-
-Verify `earliest` vs `latest` in staging environment:
-
-```hocon
-# Development - start from beginning
-offset = "earliest"
-
-# Production - only new messages
-offset = "latest"
-```
+The most common misconfiguration is `offset = "earliest"` in a section that has a `group.id`: it does
+nothing, and the group starts at `latest` because `auto.offset.reset` defaults to `latest`.
 
 ---
 
-## Related References
+## Rebalance and shutdown
 
-- [Kafka Consumer Reference](kafka-consumer-reference.md) — Basic configuration
-- [Kafka Rebalance Reference](kafka-rebalance-reference.md) — Rebalance handling
-- [Kafka Batch Reference](kafka-batch-reference.md) — Batch processing with commits
+**Rebalance.** With Kora-managed commits the offset of every completed record is already committed,
+so a rebalance loses nothing. With manual commits, commit in `onPartitionsRevoked` — see the
+[rebalance reference](kafka-rebalance-reference.md). Never commit in `onPartitionsLost`; the
+partitions are already gone.
+
+**Shutdown.** `release()` wakes each consumer and waits `shutdownWait` for in-flight handlers.
+There is no final "commit everything" step: a handler that was interrupted did not commit, and its
+record is redelivered. `shutdownWait` should exceed your slowest handler.
+
+---
+
+## Pitfalls
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Records reprocessed after every restart | a `Consumer` parameter is declared but `commitSync()` is never called | commit, or drop the parameter |
+| Records lost on a crash | `"enable.auto.commit" = true` commits ahead of the handler | remove the key and let Kora commit |
+| `offset = "earliest"` has no effect | `group.id` is set | use `auto.offset.reset = "earliest"` |
+| Lag never decreases although processing succeeds | assign mode — nothing is committed | expected; use subscribe if you need committed offsets |
+| Poison record replays forever | handler throws on every attempt, so it is never committed | `KafkaSkipRecordException`, or route to a DLQ and return |
+| `WakeupException` in commit logs during shutdown | commit raced `release()` | Kora retries once; harmless |
+| Mid-batch `commitSync()` commits too much | the no-arg overload commits the poll position | pass an explicit offset map |
+
+---
+
+## Related references
+
+- [Listener signatures](kafka-listener-reference.md)
+- [Strategies](kafka-strategies-reference.md)
+- [Batch processing](kafka-batch-reference.md)
+- [Rebalance](kafka-rebalance-reference.md)
+- [Transactions](kafka-transactions-reference.md)
+
+**Source:** framework tag `2.0.0.RC1` —
+[RecordHandler](https://github.com/kora-projects/kora/blob/2.0.0.RC1/kafka/kafka/src/main/java/io/koraframework/kafka/common/consumer/containers/handlers/impl/RecordHandler.java) ·
+[RecordsHandler](https://github.com/kora-projects/kora/blob/2.0.0.RC1/kafka/kafka/src/main/java/io/koraframework/kafka/common/consumer/containers/handlers/impl/RecordsHandler.java) ·
+[KafkaSubscribeConsumerContainer](https://github.com/kora-projects/kora/blob/2.0.0.RC1/kafka/kafka/src/main/java/io/koraframework/kafka/common/consumer/containers/KafkaSubscribeConsumerContainer.java)

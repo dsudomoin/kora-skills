@@ -1,236 +1,242 @@
-# Caffeine Cache Reference
+# Caffeine cache reference
 
-**Module:** `CaffeineCacheModule`  
-**Artifact:** `ru.tinkoff.kora:cache-caffeine`  
-**Interface:** `CaffeineCache<K, V>`
+**Artifact:** `io.koraframework:cache-caffeine`
+**Module:** `io.koraframework.cache.caffeine.CaffeineCacheModule`
+**Contract:** `io.koraframework.cache.caffeine.CaffeineCache<K, V> extends Cache<K, V>`
+**Config type:** `io.koraframework.cache.caffeine.CaffeineCacheConfig`
 
 ---
 
 ## Contents
 
-- [When to Use Caffeine](#when-to-use-caffeine)
+- [When to use it](#when-to-use-it)
 - [Setup](#setup)
-- [Configuration](#configuration)
-- [Complete Example](#complete-example)
-- [Imperative API](#imperative-api)
-- [LoadableCache Pattern](#loadablecache-pattern)
-- [Metrics](#metrics)
+- [Configuration keys](#configuration-keys)
+- [Telemetry](#telemetry)
+- [The CaffeineCache contract](#the-caffeinecache-contract)
+- [LoadableCache](#loadablecache)
+- [Customising the factory](#customising-the-factory)
 - [Testing](#testing)
 - [Troubleshooting](#troubleshooting)
 
 ---
 
-## When to Use Caffeine
+## When to use it
 
-**Use Caffeine when:**
-- Single-instance application (no shared state needed)
-- Cache warm-up is acceptable after restart
-- Lowest latency is critical (in-process access)
-- Data fits in heap memory
+Use Caffeine when the cache is per-process: small hot data, single instance, or an L1 in front of a
+shared L2. Do not use it alone when several pods must agree on the cached value, or when the cache
+must survive a restart — that is Redis' job.
 
-**Don't use Caffeine when:**
-- Multi-pod/stateless deployment (use Redis)
-- Cache must survive restarts
-- Cache size exceeds heap capacity
+The library version is pinned by the BOM (Caffeine `3.2.4` in the 2.0 line); do not add
+`com.github.ben-manes.caffeine:caffeine` yourself.
 
 ---
 
 ## Setup
 
-### 1. Add Dependency
-
 ```groovy
-implementation "ru.tinkoff.kora:cache-caffeine"
+dependencies {
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+    annotationProcessor "io.koraframework:annotation-processors"
+    implementation "io.koraframework:cache-caffeine"
+    implementation "io.koraframework:config-hocon"
+}
 ```
-
-### 2. Enable Module
 
 ```java
 @KoraApp
-public interface Application extends CaffeineCacheModule {}
+public interface Application extends HoconConfigModule, LogbackModule, CaffeineCacheModule {
+
+    static void main(String[] args) {
+        KoraApplication.run(ApplicationGraph::graph);
+    }
+}
 ```
 
-### 3. Declare Typed Cache
-
 ```java
-@Cache("orders.cache.config")
+@Cache("orders.cache")
 public interface OrderCache extends CaffeineCache<UUID, OrderDto> {}
 ```
 
-Kora generates the implementation and registers it as a component.
+```kotlin
+@Cache("orders.cache")
+interface OrderCache : CaffeineCache<UUID, OrderDto>
+```
+
+`CaffeineCacheModule` supplies a `@DefaultComponent CaffeineCacheFactory` and a
+`@DefaultComponent CaffeineCacheTelemetryFactory`, and it inherits `CacheCommonModule` (which
+publishes the `@Tag(CacheMode.class) Executor` used by `CacheMode.ASYNC`). The per-cache
+`$OrderCache_Impl` and `$OrderCache_Module` are generated from the `@Cache` interface and picked up
+automatically.
 
 ---
 
-## Configuration
+## Configuration keys
 
-### HOCON Config
+The path comes from `@Cache("…")`. Dotted (`cache.caffeine.users`) and hyphenated (`pet-cache`)
+paths both work; the migrated examples use both.
 
 ```hocon
-orders.cache.config {
-  expireAfterWrite  = "10m"     # delete entry 10m after write (optional)
-  expireAfterAccess = "5m"      # delete entry 5m after last read (optional)
-  initialSize       = 100       # pre-allocate capacity (optional)
-  maximumSize       = 10000     # eviction threshold (default: 100000)
+orders.cache {
+  maximumSize       = 10000     # default 100000
+  initialSize       = 100       # optional, Caffeine initialCapacity
+  expireAfterWrite  = "10m"     # optional
+  expireAfterAccess = "5m"      # optional
+  enabled           = true      # default true
+
+  telemetry {
+    logging.enabled = false     # default false
+    metrics.enabled = false     # default false
+    tracing.enabled = true      # default true
+  }
 }
 ```
 
-### Parameters
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | boolean | `true` | `false` turns the cache into a pass-through: `get` returns null, `computeIfAbsent` calls the loader every time, writes and evictions are no-ops |
+| `maximumSize` | long | `100000` | always applied — there is no "unbounded" setting |
+| `initialSize` | int | *unset* | Caffeine `initialCapacity` |
+| `expireAfterWrite` | Duration | *unset* | |
+| `expireAfterAccess` | Duration | *unset* | |
+| `telemetry.logging.enabled` | boolean | `false` | |
+| `telemetry.metrics.enabled` | boolean | `false` | |
+| `telemetry.metrics.tags` | map | `{}` | extra tags, also applied to the Caffeine binder |
+| `telemetry.metrics.slo` | Duration[] | Kora default SLO buckets | |
+| `telemetry.tracing.enabled` | boolean | `true` | |
 
-| Parameter | Description | Default | Required |
-|-----------|-------------|---------|----------|
-| `expireAfterWrite` | Delete entry after time since write | — | No |
-| `expireAfterAccess` | Delete entry after time since last access | — | No |
-| `initialSize` | Pre-allocate capacity | — | No |
-| `maximumSize` | Max entries before LRU eviction | 100000 | No |
+There is **no** `refreshAfterWrite`, `weakKeys`, `softValues`, `recordStats` or `evictionListener`
+key — `CaffeineCacheConfig` exposes exactly the fields above.
 
-**Duration format:** `"10m"`, `"1h"`, `"30s"`, `"1d"`
+Durations use the HOCON duration syntax (`"10m"`, `10s`, `"1h"`, `"250ms"`).
+
+`enabled = false` is the clean way to switch a cache off in one environment. `maximumSize = 0` is
+the trick the `kora-java-crud` integration test uses to make a Caffeine cache never retain anything.
 
 ---
 
-## Complete Example
+## Telemetry
 
-```java
-package com.example.app.cache;
-
-import com.example.app.dto.OrderDto;
-import ru.tinkoff.kora.cache.annotation.Cache;
-import ru.tinkoff.kora.cache.annotation.Cacheable;
-import ru.tinkoff.kora.cache.caffeine.CaffeineCache;
-import ru.tinkoff.kora.common.Component;
-import java.util.UUID;
-
-// 1. Typed cache interface
-@Cache("orders.cache.config")
-public interface OrderCache extends CaffeineCache<UUID, OrderDto> {}
-
-// 2. Service with caching
-@Component
-public class OrdersService {
-    
-    private final OrderCache cache;
-    private final OrdersRepository repository;
-    
-    public OrdersService(OrderCache cache, OrdersRepository repository) {
-        this.cache = cache;
-        this.repository = repository;
-    }
-    
-    @Cacheable(OrderCache.class)
-    public OrderDto get(UUID id) {
-        return repository.find(id);
-    }
-}
-```
-
-### application.conf
+Defaults are **logging off, metrics off, tracing on** — the same defaults as every other Kora 2.0
+component. A dashboard that shows nothing is almost always this.
 
 ```hocon
-orders.cache.config {
-  maximumSize = 10000
-  expireAfterWrite = "10m"
+orders.cache.telemetry {
+  logging.enabled = true
+  metrics.enabled = true
 }
 ```
 
+Caffeine metrics come from Micrometer's Caffeine instrumentation, not from Kora's own timers:
+`CaffeineFactory` registers a `CaffeineStatsCounter` plus the `CaffeineCacheMetrics` binder under
+the cache's config path, with `telemetry.metrics.tags` added — and only when
+`telemetry.metrics.enabled = true` **and** a `MeterRegistry` is in the graph. Kora's
+`cache.operation.duration` / `cache.ratio` series are deliberately not emitted for Caffeine (the
+Caffeine metrics reporter is an empty implementation); they exist for Redis. See
+`kora-telemetry-metrics` for the metrics module itself.
+
+Tracing spans and logs carry `system.config` (the config path), `system.name.simple` and
+`system.name.canonical` (the generated cache implementation), plus `operation`
+(`GET`, `GET_MANY`, `GET_ALL`, `PUT`, `PUT_MANY`, `COMPUTE_IF_ABSENT`, `COMPUTE_IF_ABSENT_MANY`,
+`INVALIDATE`, `INVALIDATE_MANY`, `INVALIDATE_ALL`).
+
 ---
 
-## Imperative API
+## The `CaffeineCache` contract
 
-Inject the typed cache for manual control:
+`CaffeineCache<K, V>` adds one method to `Cache<K, V>`:
 
 ```java
-@Component
-public class OrdersService {
-    private final OrderCache cache;
-    
-    public OrdersService(OrderCache cache) {
-        this.cache = cache;
-    }
-    
-    public OrderDto getOrCreate(UUID id) {
-        var cached = cache.get(id);
-        if (cached != null) {
-            return cached;
-        }
-        var loaded = repository.find(id);
-        cache.put(id, loaded);
-        return loaded;
-    }
-}
+Map<K, V> getAll();     // every live entry, unmodifiable view
 ```
 
-**Operations:**
-- `get(key)` — retrieve value (returns `null` on miss)
-- `put(key, value)` — store value
-- `invalidate(key)` — evict key
-- `invalidateAll()` — clear cache
-- `asLoadable(loader)` — wrap as `LoadableCache`
+Everything else — `get`, `get(Collection)`, `put`, `put(Map)`, `computeIfAbsent`, `invalidate`,
+`invalidate(Collection)`, `invalidateAll`, `asLoadable*` — comes from `Cache<K, V>`; see
+[imperative-cache-reference.md](imperative-cache-reference.md).
+
+Behaviour worth knowing:
+
+- `get(key)` returns `null` on a miss and on a `null` key.
+- `put(key, value)` **silently skips** null keys and null values; nothing is thrown.
+- `computeIfAbsent` delegates to Caffeine's `Cache#get(key, mappingFunction)`, so the loader runs
+  once per key under Caffeine's own lock; returning `null` from the loader stores nothing.
+- Exceptions from Caffeine propagate to the caller (unlike the Redis cache, which swallows them).
 
 ---
 
-## LoadableCache Pattern
+## `LoadableCache`
 
-Get-or-load without aspects:
+`LoadableCache<K, V>` is a read-only get-or-load view over a `Cache`:
+
+```java
+@Nullable V get(K key);
+Map<K, V> get(Collection<K> keys);
+```
+
+Build it from any cache — note the two factory methods have different loader shapes:
+
+```java
+Cache<K, V>.asLoadableSimple(Function<K, V> loader)                  // one key at a time
+Cache<K, V>.asLoadable(Function<Collection<K>, Map<K, V>> loader)    // bulk loader
+```
+
+`asLoadable` is the bulk form; passing a single-key method reference to it does not compile. Expose
+it as a module component:
 
 ```java
 @KoraApp
-public interface Application extends CaffeineCacheModule {
-    
-    @Cache("orders.cache.config")
-    interface OrderCache extends CaffeineCache<UUID, OrderDto> {}
-    
-    @Root
-    default LoadableCache<UUID, OrderDto> orderLoadableCache(
-        OrderCache cache,
-        OrdersRepository repository
-    ) {
-        return cache.asLoadable(repository::find);
+public interface Application extends HoconConfigModule, CaffeineCacheModule {
+
+    default LoadableCache<UUID, OrderDto> orderLoadableCache(OrderCache cache, OrderRepository repository) {
+        return cache.asLoadableSimple(repository::find);
     }
 }
+```
 
+```java
 @Component
-public class OrdersService {
+public class OrderService {
+
     private final LoadableCache<UUID, OrderDto> cache;
-    
-    public OrdersService(LoadableCache<UUID, OrderDto> cache) {
-        this.cache = cache;
-    }
-    
+
+    public OrderService(LoadableCache<UUID, OrderDto> cache) { this.cache = cache; }
+
     public OrderDto get(UUID id) {
-        return cache.get(id);  // loads via repository::find on miss
+        return cache.get(id);           // loads through repository::find on a miss
     }
 }
 ```
 
+No `@Root` is needed when something injects it; `@Root` is only for components nothing depends on.
+
 ---
 
-## Metrics
+## Customising the factory
 
-With the Micrometer metrics module enabled, the cache module emits:
+`CaffeineCacheFactory` is a `@DefaultComponent`, so your own `@Component` replaces it for every
+Caffeine cache in the graph:
 
-- `cache.duration` — operation duration (tags: `cache`, `operation`, `origin`, `status`)
-- `cache.ratio` — hit/miss counter (tags: `cache`, `origin`, `type`)
+```java
+public interface CaffeineCacheFactory {
+    <K, V> com.github.benmanes.caffeine.cache.Cache<K, V> build(String name, CaffeineCacheConfig config);
+}
+```
 
-Caffeine additionally registers the standard Micrometer cache metrics:
-
-- `cache.gets` — number of cache requests
-- `cache.puts` — number of cache writes
-- `cache.evictions` — number of cache evictions
-- `cache.size` — current cache size
-
-See `.kora-agent/kora-docs/mkdocs/docs/en/documentation/metrics.md#cache` for the full table.
+This is the hook for Caffeine features Kora's config does not expose (weak keys, removal listeners,
+a custom `Ticker`). Read the config fields you still want to honour — `expireAfterWrite`,
+`expireAfterAccess`, `initialSize`, `maximumSize` — because the default implementation is bypassed
+entirely.
 
 ---
 
 ## Testing
 
-### Component Test with In-Memory Cache
-
 ```java
 @KoraAppTest(Application.class)
-class OrdersServiceTest {
+class OrderServiceTests {
 
     @TestComponent
-    private OrdersService service;
+    private OrderService service;
     @TestComponent
     private OrderCache cache;
 
@@ -240,33 +246,47 @@ class OrdersServiceTest {
     }
 
     @Test
-    void shouldCacheResult() {
+    void servesSecondCallFromCache() {
         var id = UUID.randomUUID();
         var first = service.get(id);
-        var second = service.get(id);  // served from cache
-        assertEquals(first, second);
+        assertEquals(first, service.get(id));
+    }
+
+    @Test
+    void reloadsAfterInvalidate() {
+        var id = UUID.randomUUID();
+        var first = service.get(id);
+        service.delete(id);
+        assertNotEquals(first, service.get(id));
     }
 }
 ```
 
-`@KoraAppTest` and `@TestComponent` come from `ru.tinkoff.kora:test-junit5`.
+Add `testImplementation "io.koraframework:test-junit5"`. `@KoraAppTest` and `@TestComponent` live in
+`io.koraframework.test.extension.junit5`; the extension performs field injection, so no `@Inject`.
+To disable a cache for one test class, override its config with `KoraAppTestConfigModifier` and
+either `enabled = false` or `maximumSize = 0`.
 
 ---
 
 ## Troubleshooting
 
-| Problem | Solution |
-|---------|----------|
-| **Class is final** | AOP requires non-final class in Java |
-| **Cache not triggering** | Check: method called from outside the bean (self-invocation bypass) |
-| **Wrong config path** | `@Cache("path")` must match HOCON config path exactly |
-| **Null pointer on get()** | `cache.get(key)` returns `null` on miss—handle explicitly |
+| Symptom | Cause |
+|---|---|
+| `No component found for dependency: OrderCache (no tags)` | the annotation processor / KSP is not on the build, or the `@Cache` interface is not compiled |
+| `@Cache interface '…' does not implement a supported cache contract.` | extend `CaffeineCache<K, V>` (or `RedisCache<K, V>`), not `Cache<K, V>` |
+| `AOP aspect cannot be applied to class '…' because the class is final.` | Java target class is `final` |
+| `AOP aspect cannot be applied to class '…' because the class is not open.` | Kotlin class (and its annotated functions) must be `open` |
+| aspect generated, cache never consulted | self-invocation — the call must arrive through the injected proxy |
+| everything is a miss | `enabled = false`, or `maximumSize = 0`, in that cache's config section |
+| no metrics | `telemetry.metrics.enabled` defaults to `false` |
+| `ConfigValueException: … at path: 'ROOT.orders.cache…'` | the `@Cache` path and the config section disagree |
 
 ---
 
-## See Also
+## See also
 
-- [cacheable-reference.md](cacheable-reference.md) — `@Cacheable`, `@CachePut`, `@CacheInvalidate`
-- [cache-key-mapper-reference.md](cache-key-mapper-reference.md) — `CacheKeyMapper`, composite keys
-- [cache-redis-reference.md](cache-redis-reference.md) — Redis/Lettuce configuration
-- [multi-level-cache-reference.md](multi-level-cache-reference.md) — L1+L2 patterns
+- [cacheable-reference.md](cacheable-reference.md) — the operation annotations
+- [cache-redis-reference.md](cache-redis-reference.md) — the distributed backend
+- [multi-level-cache-reference.md](multi-level-cache-reference.md) — Caffeine as L1 in front of Redis
+- [imperative-cache-reference.md](imperative-cache-reference.md) — the `Cache<K, V>` API

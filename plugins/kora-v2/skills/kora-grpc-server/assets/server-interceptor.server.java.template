@@ -1,25 +1,52 @@
 package ${package};
 
-import io.grpc.*;
-import ru.tinkoff.kora.common.Component;
+import io.grpc.Metadata;
+import io.grpc.ServerCall;
+import io.grpc.ServerCallHandler;
+import io.grpc.ServerInterceptor;
+import io.koraframework.common.annotation.Component;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
- * Server interceptor for gRPC services.
- * Use for logging, metrics, authentication, or exception handling.
+ * gRPC {@link ServerInterceptor} for cross-cutting concerns: authentication, auditing,
+ * request enrichment, centralised exception mapping.
+ *
+ * <p>Registration: GrpcServerFactoryModule collects interceptors with an UNTAGGED
+ * {@code All<ValueOf<ServerInterceptor>>} claim, so an untagged {@code @Component} is picked up
+ * automatically. Adding {@code @Tag(...)} to this class removes it from that collection — the
+ * build still succeeds and the app still starts, the interceptor simply never runs.
+ *
+ * <p>Every interceptor is global. To scope one to a single proto service, compare against the
+ * generated {@code SERVICE_NAME} constant and pass everything else straight through.
+ *
+ * <p>Do NOT write metrics, request/response logging, tracing or MDC interceptors here — the module
+ * already provides all four through {@code grpcServer.telemetry} (metrics and logging default to
+ * false and must be enabled explicitly).
  */
 @Component
-public class GrpcLoggingInterceptor implements ServerInterceptor {
+public final class ${service_name}ServerInterceptor implements ServerInterceptor {
+
+    private static final Logger logger = LoggerFactory.getLogger(${service_name}ServerInterceptor.class);
 
     @Override
     public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
-        ServerCall<ReqT, RespT> serverCall,
-        Metadata metadata,
-        ServerCallHandler<ReqT, RespT> serverCallHandler
-    ) {
-        // Add custom logic here (logging, auth validation, metrics, etc.)
-        // Example: log method name
-        // System.out.println("gRPC call: " + serverCall.getMethodDescriptor().getFullMethodName());
+            ServerCall<ReqT, RespT> call,
+            Metadata headers,
+            ServerCallHandler<ReqT, RespT> next) {
 
-        return serverCallHandler.startCall(serverCall, metadata);
+        // Scope to one service (remove to intercept every service on this server):
+        // if (!${service_name}Grpc.SERVICE_NAME.equals(call.getMethodDescriptor().getServiceName())) {
+        //     return next.startCall(call, headers);
+        // }
+
+        logger.info("Incoming gRPC request: method={}", call.getMethodDescriptor().getFullMethodName());
+
+        // To reject a call, close it AND return an empty listener — doing only one of the two
+        // either hangs the client or raises "call already closed":
+        // call.close(Status.UNAUTHENTICATED.withDescription("Invalid API key"), new Metadata());
+        // return new ServerCall.Listener<>() {};
+
+        return next.startCall(call, headers);
     }
 }

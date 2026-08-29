@@ -1,78 +1,145 @@
 package com.example.client
 
-import ru.tinkoff.kora.http.client.common.annotation.HttpClient
-import ru.tinkoff.kora.http.common.HttpMethod
-import ru.tinkoff.kora.http.common.HttpResponseEntity
-import ru.tinkoff.kora.http.common.annotation.HttpRoute
-import ru.tinkoff.kora.http.common.annotation.Path
-import ru.tinkoff.kora.http.common.annotation.Query
-import ru.tinkoff.kora.json.common.annotation.Json
+import io.koraframework.common.annotation.Component
+import io.koraframework.http.client.common.annotation.HttpClient
+import io.koraframework.http.client.common.response.HttpClientResponse
+import io.koraframework.http.client.common.response.HttpClientResponseMapper
+import io.koraframework.http.common.HttpMethod
+import io.koraframework.http.common.HttpResponseEntity
+import io.koraframework.http.common.annotation.Cookie
+import io.koraframework.http.common.annotation.Header
+import io.koraframework.http.common.annotation.HttpRoute
+import io.koraframework.http.common.annotation.Path
+import io.koraframework.http.common.annotation.Query
+import io.koraframework.json.common.annotation.Json
 
 /**
- * Base declarative HTTP client for a User API (Kotlin).
+ * Declarative Kora 2.0 HTTP client for a User API (Kotlin / KSP).
  *
- * Required configuration (application.conf):
+ * Build (gradle.properties: koraVersion=2.0.0.RC1):
+ * ```
+ * implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+ * ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
+ * implementation("io.koraframework:http-client-ok")
+ * implementation("io.koraframework:json-common")
+ * implementation("io.koraframework:config-hocon")
+ * ```
+ *
+ * The @KoraApp interface must extend OkHttpClientModule and JsonModule.
+ *
+ * Configuration (application.conf) — the path matches the @HttpClient value:
  * ```
  * httpClient {
  *   userApi {
  *     url = "http://localhost:8080"
- *     requestTimeout = "10s"
+ *     url = ${?USER_API_URL}
+ *     requestTimeout = 10s
+ *
+ *     telemetry.logging.enabled = true
+ *     telemetry.metrics.enabled = true   # both default to false in Kora 2.0
+ *
+ *     getUser { requestTimeout = 3s }    # per-method override, keyed by method name
  *   }
  * }
  * ```
+ *
+ * Client methods must NOT be `suspend` — KSP rejects them outright. Do not add a
+ * `suspend fun get(...) = withContext(Dispatchers.IO) { getBlocking(...) }` wrapper either: it is
+ * still a public coroutine API over a synchronous contract, and Dispatchers.IO is pure overhead on
+ * virtual threads. Nullable Kotlin types (`Int?`) replace Java's @Nullable on parameters.
  */
-@HttpClient(configPath = "httpClient.userApi")
+@HttpClient("httpClient.userApi")
 interface UserApiClient {
 
-    /** Get a user by id. GET /users/{id} */
-    @HttpRoute(method = HttpMethod.GET, path = "/users/{id}")
+    /** GET /users/{userId} — 2xx decodes, anything else throws HttpClientResponseException. */
+    @HttpRoute(method = HttpMethod.GET, path = "/users/{userId}")
     @Json
-    fun getUser(@Path id: String): UserResponse
+    fun getUser(@Path userId: String): UserResponse
 
-    /** List users with pagination. GET /users?page={page}&size={size} */
+    /** GET /users — null parameters are omitted from the query string. */
     @HttpRoute(method = HttpMethod.GET, path = "/users")
     @Json
     fun listUsers(
-        @Query("page") page: Int,
-        @Query("size") size: Int
+        @Query("page") page: Int?,
+        @Query("size") size: Int?,
+        @Query("sort") sort: String?
     ): List<UserResponse>
 
-    /** Create a user. POST /users (returns status + body via HttpResponseEntity). */
+    /** POST /users — HttpResponseEntity exposes code() and headers() next to the body. */
     @HttpRoute(method = HttpMethod.POST, path = "/users")
     @Json
-    fun createUser(@Json request: CreateUserRequest): HttpResponseEntity<UserResponse>
+    fun createUser(
+        @Json request: CreateUserRequest,
+        @Header("X-Request-ID") requestId: String?,
+        @Cookie("sessionId") sessionId: String?
+    ): HttpResponseEntity<UserResponse>
 
-    /** Update a user. PUT /users/{id} */
-    @HttpRoute(method = HttpMethod.PUT, path = "/users/{id}")
+    /** PUT /users/{userId} */
+    @HttpRoute(method = HttpMethod.PUT, path = "/users/{userId}")
     @Json
-    fun updateUser(@Path id: String, @Json request: UpdateUserRequest): UserResponse
+    fun updateUser(@Path userId: String, @Json request: UpdateUserRequest): UserResponse
 
-    /** Delete a user. DELETE /users/{id} */
-    @HttpRoute(method = HttpMethod.DELETE, path = "/users/{id}")
-    fun deleteUser(@Path id: String)
+    /**
+     * Kora 2.0 ships concrete response mappers for String, ByteArray, ByteBuffer and HttpBodyInput
+     * only; HttpResponseEntity<T> is a template that needs a mapper for the payload T. Without this
+     * component the graph fails with:
+     *
+     *   No component found for dependency: HttpClientResponseMapper<java.lang.Void> (no tags)
+     *
+     * The framework wraps this mapper into the entity itself, so it is declared as a component and
+     * never referenced with @Mapping — with @Mapping it would have to produce the whole
+     * HttpResponseEntity<Void>.
+     *
+     * The return type must be `Void?`: Kora contracts are @NullMarked and apply() is @Nullable, so
+     * a non-null `Void` cannot return null. Getting this wrong reports "'apply' overrides nothing",
+     * which never mentions nullability.
+     */
+    @Component
+    class VoidResponseMapper : HttpClientResponseMapper<Void> {
+
+        override fun apply(response: HttpClientResponse): Void? {
+            response.body().use { body ->
+                body.asInputStream().readAllBytes()
+            }
+            return null
+        }
+    }
+
+    /** DELETE /users/{userId} — status only. Return Unit instead if the code is not needed. */
+    @HttpRoute(method = HttpMethod.DELETE, path = "/users/{userId}")
+    fun deleteUser(@Path userId: String): HttpResponseEntity<Void>
 
     // ====================================
-    // DTO classes (replace with your own)
+    // DTOs — replace with your own. @Json on the type is what generates the reader/writer.
     // ====================================
 
     @Json
-    data class UserResponse(
-        val id: String,
-        val email: String,
-        val name: String,
-        val createdAt: String
-    )
+    data class UserResponse(val id: String, val email: String, val name: String, val createdAt: String)
 
     @Json
-    data class CreateUserRequest(
-        val email: String,
-        val name: String,
-        val password: String
-    )
+    data class CreateUserRequest(val email: String, val name: String, val password: String)
 
     @Json
-    data class UpdateUserRequest(
-        val email: String,
-        val name: String
-    )
+    data class UpdateUserRequest(val email: String, val name: String)
+
+    // ====================================
+    // Usage
+    // ====================================
+    //
+    // @Component
+    // class UserService(private val client: UserApiClient) {
+    //
+    //     fun getUser(id: String): UserResponse =
+    //         try {
+    //             client.getUser(id)
+    //         } catch (e: HttpClientResponseException) {
+    //             // getCode() surfaces in Kotlin as the `code` property
+    //             if (e.code == 404) throw UserNotFoundException(id) else throw e
+    //         }
+    //
+    //     fun createUser(request: CreateUserRequest): String? =
+    //         client.createUser(request, UUID.randomUUID().toString(), null)
+    //             .headers()
+    //             .getFirst("location")
+    // }
 }

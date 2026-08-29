@@ -1,331 +1,225 @@
 # @DefaultComponent Reference
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/container.md`
+**Applies to:** Kora 2.x (`io.koraframework`)
 
 ## Contents
 
 - [Overview](#overview)
-- [Override Priority](#override-priority)
-- [Basic Usage](#basic-usage)
-- [Use Cases](#use-cases)
-- [Common Patterns](#common-patterns)
-- [When to Use @DefaultComponent](#when-to-use-defaultcomponent)
+- [Resolution Precedence](#resolution-precedence)
+- [Library Default + Application Override](#library-default--application-override)
+- [Overriding by Signature with @Override](#overriding-by-signature-with-override)
+- [@DefaultComponent on a Class](#defaultcomponent-on-a-class)
+- [Interaction with @Tag](#interaction-with-tag)
+- [Interaction with All&lt;T&gt;](#interaction-with-allt)
 - [Common Mistakes](#common-mistakes)
+- [Related References](#related-references)
 
 ## Overview
 
-`@DefaultComponent` marks factory methods that provide **default implementations** which can be overridden by the application. This is essential for library authors providing sensible defaults while allowing customization.
+`@DefaultComponent` (`io.koraframework.common.annotation.DefaultComponent`) marks a provider as a
+**fallback**: it is used only when nothing else of that type and tag is available. It is how a
+library ships a working default that an application can replace without forking the module.
 
-## Override Priority
+Its `@Target` is `{METHOD, TYPE}` — it works on a module provider method **and** on a `@Component`
+class.
 
-Kora uses this priority order when multiple components of the same type exist:
+## Resolution Precedence
 
-| Priority | Source | Example |
-|----------|--------|---------|
-| **1 (Highest)** | Explicit factory in application | `default ObjectMapper objectMapper()` |
-| **2** | `@DefaultComponent` factory | `@DefaultComponent default ObjectMapper objectMapper()` |
-| **3 (Lowest)** | Auto-created `@Component` | `@Component class ObjectMapper { }` |
+When the processor resolves one dependency claim it collects every non-template declaration whose
+type and tag match, then:
 
-## Basic Usage
+1. **exactly one candidate** → use it, `@DefaultComponent` or not;
+2. **more than one** → discard every `@DefaultComponent` candidate;
+   - exactly one non-default remains → use it;
+   - still ambiguous → unless *all* remaining candidates are `@Conditional`, fail with
+     `Multiple components match dependency`.
 
-### Library Module with Default
+So the ordering is simply: **any non-default provider beats every `@DefaultComponent` provider**, and
+two non-default providers of the same type+tag are an error. `@DefaultComponent` never wins a fight
+with a plain provider, and never breaks a tie with another `@DefaultComponent` — give exactly one of
+them a distinct `@Tag`, or drop `@DefaultComponent` from the one that should win.
+
+## Library Default + Application Override
+
+The library declares the default:
 
 ```java
-package ru.tinkoff.kora.json.module;
+package com.example.sms;
 
-import ru.tinkoff.kora.common.Module;
-import ru.tinkoff.kora.common.DefaultComponent;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import io.koraframework.common.annotation.DefaultComponent;
 
-@Module
-public interface JsonModule {
-    
+public interface SmsCellularModule {
+
     @DefaultComponent
-    default ObjectMapper objectMapper() {
-        ObjectMapper mapper = new ObjectMapper();
-        // Default configuration
-        mapper.enable(com.fasterxml.jackson.databind.SerializationFeature.INDENT_OUTPUT);
-        return mapper;
+    default SmsCellularProvider smsCellularProvider() {
+        return () -> "1";
     }
 }
 ```
 
-### Application Override
+The application supplies its own provider of the same type; nothing else is required:
 
 ```java
-package com.example;
-
-import ru.tinkoff.kora.common.Module;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
-
-@Module
-public interface CustomJsonModule {
-    
-    // Overrides @DefaultComponent from JsonModule
-    default ObjectMapper objectMapper() {
-        ObjectMapper mapper = new ObjectMapper();
-        // Custom configuration
-        mapper.registerModule(new JavaTimeModule());
-        mapper.disable(com.fasterxml.jackson.databind.SerializationFeature.INDENT_OUTPUT);
-        return mapper;
-    }
-}
-
 @KoraApp
-public interface Application extends JsonModule, CustomJsonModule {
-    static void main(String[] args) {
-        KoraApplication.run(ApplicationGraph::graph);
+public interface Application extends HoconConfigModule, SmsCellularModule {
+
+    static void main(String[] args) { KoraApplication.run(ApplicationGraph::graph); }
+
+    default SmsCellularProvider smsCellularProvider(SmsConfig config) {
+        return config::countryCode;
     }
 }
 ```
 
-## Use Cases
+Note that the override is free to take different parameters — precedence is decided by type and tag,
+not by signature.
 
-### 1. Library Default Components
+## Overriding by Signature with `@Override`
 
-Libraries provide sensible defaults:
-
-```java
-@Module
-public interface DatabaseModule {
-    
-    @DefaultComponent
-    default DataSource dataSource(Config config) {
-        HikariConfig hikariConfig = new HikariConfig();
-        hikariConfig.setJdbcUrl(config.getString("database.url"));
-        hikariConfig.setUsername(config.getString("database.username"));
-        hikariConfig.setPassword(config.getString("database.password"));
-        hikariConfig.setMaximumPoolSize(10);  // Default pool size
-        return new HikariDataSource(hikariConfig);
-    }
-}
-```
-
-Application can override for specific needs:
+When the override has the **same signature** as the default, mark it `@Override` (Java) /
+`override` (Kotlin). The processor resolves the overridden method and removes that declaration from
+the graph entirely, rather than relying on precedence:
 
 ```java
-@Module
-public interface ProductionDatabaseModule {
-    
-    // Override with production settings
-    default DataSource dataSource(Config config) {
-        HikariConfig hikariConfig = new HikariConfig();
-        hikariConfig.setJdbcUrl(config.getString("database.url"));
-        hikariConfig.setUsername(config.getString("database.username"));
-        hikariConfig.setPassword(config.getString("database.password"));
-        hikariConfig.setMaximumPoolSize(50);  // Production pool size
-        hikariConfig.setMinimumIdle(10);
-        return new HikariDataSource(hikariConfig);
-    }
-}
-```
-
-### 2. Test Overrides
-
-Override defaults for testing:
-
-```java
-// Main module
-@Module
-public interface HttpClientModule {
-    
-    @DefaultComponent
-    default HttpClient httpClient() {
-        return new RealHttpClient();
-    }
-}
-
-// Test module
-@Module
-public interface TestHttpClientModule {
-    
-    // Override for tests
-    default HttpClient httpClient() {
-        return new MockHttpClient();
-    }
-}
-
-// Test application
 @KoraApp
-public interface TestApplication extends TestHttpClientModule {
-    static void main(String[] args) {
-        KoraApplication.run(ApplicationGraph::graph);
+public interface Application extends HoconConfigModule, LogbackModule, EmailModule {
+
+    static void main(String[] args) { KoraApplication.run(ApplicationGraph::graph); }
+
+    @Tag(EmailModule.EmailTag.class)
+    @Override
+    default Supplier<String> emailNotifierHeaderSupplier() {
+        return () -> "[EMAIL OVERRIDDEN] ";
     }
 }
 ```
 
-### 3. Environment-Specific Configuration
+```kotlin
+@KoraApp
+interface Application : HoconConfigModule, LogbackModule, EmailModule {
 
-Different implementations per environment:
+    @Tag(EmailModule.EmailTag::class)
+    override fun emailNotifierHeaderSupplier(): Supplier<String> = Supplier { "[EMAIL OVERRIDDEN] " }
+}
+```
+
+Two things to keep in mind:
+
+- **Re-declare the `@Tag`.** Tags are read from the method you compile, so an override that omits it
+  publishes the component untagged and the tagged claim then finds nothing.
+- `@Override` is only usable when the signature matches. For a different signature, rely on
+  precedence as shown in the previous section.
+
+## `@DefaultComponent` on a Class
 
 ```java
-// Base module
+@DefaultComponent
+@Component
+public final class InMemoryEventStore implements EventStore { }
+
+// an application-supplied provider wins
+@Module
+public interface EventStoreModule {
+    default EventStore eventStore(JdbcConnectionFactory factory) {
+        return new JdbcEventStore(factory);
+    }
+}
+```
+
+This is a real 2.0 capability: the processor reads `@DefaultComponent` off the class element as well
+as off provider methods.
+
+## Interaction with `@Tag`
+
+Precedence is evaluated **per (type, tag) pair**. A `@DefaultComponent` under `@Tag(A.class)` and a
+plain provider under `@Tag(B.class)` never compete — they are different claims.
+
+```java
 @Module
 public interface CacheModule {
-    
-    @DefaultComponent
-    default Cache cache() {
-        return new CaffeineCache();  // Default: local cache
-    }
+
+    @Tag(L1.class) @DefaultComponent
+    default Cache l1() { return new CaffeineCache(); }
+
+    @Tag(L2.class) @DefaultComponent
+    default Cache l2() { return new NoopCache(); }
 }
 
-// Production module
-@Module
-public interface ProductionCacheModule {
-    
-    // Override for production
-    default Cache cache() {
-        return new RedisCache();  // Production: distributed cache
-    }
+// replaces only L2
+@KoraApp
+public interface Application extends CacheModule {
+    @Tag(L2.class)
+    default Cache redisL2(RedisClient client) { return new RedisCache(client); }
 }
 ```
 
-## Common Patterns
+## Interaction with `All<T>`
 
-### Pattern 1: Conditional Default
-
-```java
-@Module
-public interface ConfigModule {
-    
-    @DefaultComponent
-    default ConfigSource configSource(Config config) {
-        String env = config.getString("environment");
-        return switch (env) {
-            case "production" -> new ProductionConfigSource();
-            case "staging" -> new StagingConfigSource();
-            default -> new DefaultConfigSource();
-        };
-    }
-}
-```
-
-### Pattern 2: Decorator Pattern
-
-```java
-@Module
-public interface LoggingModule {
-    
-    @DefaultComponent
-    default Logger logger() {
-        return new LoggingDecorator(new BaseLogger());
-    }
-}
-```
-
-### Pattern 3: Composite Pattern
-
-```java
-@Module
-public interface NotificationModule {
-    
-    @DefaultComponent
-    default NotificationService notificationService(
-        All<NotificationProvider> providers
-    ) {
-        return new CompositeNotificationService(providers);
-    }
-}
-```
-
-## When to Use @DefaultComponent
-
-| Scenario | Use @DefaultComponent |
-|----------|----------------------|
-| **Library defaults** | Yes — allow app customization |
-| **Test overrides** | Yes — mock implementations |
-| **Environment-specific** | Yes — different per env |
-| **Application-specific** | No — use regular factory |
-| **Unique component** | No — no override needed |
+`All<T>` collects matching components, but a `@DefaultComponent` is skipped when other candidates
+exist — the point of a default is to be unnecessary once a real implementation is present. With no
+other candidate, the default is collected like anything else.
 
 ## Common Mistakes
 
-### Mistake 1: @DefaultComponent Without Module
+### Importing from the wrong package
 
 ```java
-// BAD - @DefaultComponent on class
-@DefaultComponent  // Error!
-@Component
-public final class DefaultLogger implements Logger { }
+// BAD
+import io.koraframework.common.DefaultComponent;
 
-// GOOD - @DefaultComponent on factory method
-@Module
-public interface LoggerModule {
-    
-    @DefaultComponent
-    default Logger logger() {
-        return new DefaultLogger();
-    }
-}
+// GOOD
+import io.koraframework.common.annotation.DefaultComponent;
 ```
 
-### Mistake 2: Multiple @DefaultComponent for Same Type
+### Two `@DefaultComponent` providers for the same type and tag
 
 ```java
-// BAD - Two @DefaultComponent for same type
-@Module
-public interface ModuleA {
-    @DefaultComponent
-    default Logger logger() { return new LoggerA(); }
-}
+// BAD — neither can win by precedence
+@Module interface A { @DefaultComponent default Logger logger() { return new LoggerA(); } }
+@Module interface B { @DefaultComponent default Logger logger() { return new LoggerB(); } }
 
-@Module
-public interface ModuleB {
-    @DefaultComponent
-    default Logger logger() { return new LoggerB(); }  // Ambiguous!
-}
-
-// GOOD - Only one @DefaultComponent
-@Module
-public interface ModuleA {
-    @DefaultComponent
-    default Logger logger() { return new LoggerA(); }
-}
-
-@Module
-public interface ModuleB {
-    // No @DefaultComponent - explicit override
-    default Logger logger() { return new LoggerB(); }
-}
+// GOOD — exactly one default; the other is a plain provider or carries a distinct @Tag
+@Module interface A { @DefaultComponent default Logger logger() { return new LoggerA(); } }
+@Module interface B { default Logger logger() { return new LoggerB(); } }
 ```
 
-### Mistake 3: Forgetting extends in Application
+### Assuming `@DefaultComponent` is only for modules
+
+It is valid on a `@Component` class too — see above. What it is *not* valid on is a constructor
+parameter or a field.
+
+### Override module not connected
 
 ```java
-// BAD - Override module not connected
-@Module
-public interface CustomLoggerModule {
-    default Logger logger() { return new CustomLogger(); }
-}
-
+// BAD — the override lives in a module nobody extends and nothing compiles it into the graph
+// (a library module in another Gradle subproject)
 @KoraApp
-public interface Application {
-    // CustomLoggerModule NOT connected - override won't work!
-}
+public interface Application extends LibraryModule { }
 
 // GOOD
 @KoraApp
-public interface Application extends CustomLoggerModule { }
+public interface Application extends LibraryModule, CustomLoggerModule { }
 ```
 
-## Comparison Table
+A `@Module` compiled in the same Gradle module needs no `extends` — see
+[Module Auto-Discovery Reference](module-auto-discovery-reference.md).
 
-| Annotation | Location | Override Priority | Use Case |
-|------------|----------|-------------------|----------|
-| **@DefaultComponent** | Factory method | Medium | Library defaults |
-| *(none)* | Factory method | High | Application override |
-| **@Component** | Class | Low | Auto-created components |
+### Dropping the tag when overriding
 
-## When to Read This Reference
+```java
+// BAD — publishes an untagged component; the @Tag(EmailTag.class) claim still finds only the default
+@Override
+default Supplier<String> emailNotifierHeaderSupplier() { return () -> "…"; }
 
-- **Creating reusable modules** — Provide overridable defaults
-- **Test configuration** — Mock components for tests
-- **Environment-specific components** — Different implementations per env
-- **Library development** — Allow app customization
+// GOOD
+@Tag(EmailModule.EmailTag.class)
+@Override
+default Supplier<String> emailNotifierHeaderSupplier() { return () -> "…"; }
+```
 
 ## Related References
 
-- [Component Registration Reference](component-registration-reference.md) — 5 registration methods
-- [Module Auto-Discovery Reference](module-auto-discovery-reference.md) — When extends needed
-- [Component Factories Reference](component-factories-reference.md) — Advanced factory patterns
+- [Component Registration Reference](component-registration-reference.md) — the full resolution order
+- [Component Factories Reference](component-factories-reference.md) — provider forms
+- [Tags & Collections Reference](tags-collections-reference.md) — how tag matching works
+- [Conditional Components Reference](conditional-components-reference.md) — gating instead of defaulting

@@ -1,103 +1,247 @@
 {
   "evals": [
     {
-      "id": "kora-telemetry-metrics-basic-setup",
+      "id": "kora-telemetry-metrics-basic-setup-java",
       "skills": ["kora-telemetry-metrics"],
-      "query": "Add Micrometer metrics to my Kora service and expose them for Prometheus scraping.",
+      "query": "Add Micrometer metrics to my Kora 2.0 Java service and expose them for Prometheus scraping.",
       "expected_behavior": [
-        "Adds the ru.tinkoff.kora:micrometer-module dependency and the Kora annotation processor (annotation-processors for Java or symbol-processors for Kotlin)",
-        "Extends MetricsModule on the @KoraApp interface alongside the HTTP server module",
-        "Configures httpServer.privateApiHttpMetricsPath = \"/metrics\" on the private port (privateApiHttpPort), not the public port",
-        "Does not add a separate io.micrometer:micrometer-registry-prometheus dependency, since micrometer-module already registers PrometheusMeterRegistry",
-        "Does not use external actuator frameworks or field injection; relies on constructor injection and the @KoraApp graph"
+        "Adds io.koraframework:micrometer-module and io.koraframework:http-server-undertow with the io.koraframework:kora-bom BOM at koraVersion=2.0.0.RC1 from mavenCentral(), plus annotationProcessor \"io.koraframework:annotation-processors\"",
+        "Extends MetricsModule (io.koraframework.micrometer.module) on the @KoraApp interface alongside UndertowPublicHttpServerModule",
+        "Sets httpServer.telemetry.metrics.enabled = true in application.conf and explains that TelemetryConfig.MetricsConfig.enabled() defaults to false in Kora 2.0, so without it no http_server_* metric is ever recorded",
+        "Configures the scrape endpoint under httpServer.system (system.port, system.metricsPath), not on the public port",
+        "Does not add io.micrometer:micrometer-registry-prometheus separately, since micrometer-module already brings it",
+        "Uses no ru.tinkoff.kora coordinates, no kora-parent BOM, no UndertowHttpServerModule, and no privateApiHttpPort / privateApiHttpMetricsPath keys"
       ],
-      "tags": ["setup", "basic"]
+      "tags": ["setup", "basic", "java"]
     },
     {
-      "id": "kora-telemetry-metrics-custom-business",
+      "id": "kora-telemetry-metrics-basic-setup-kotlin",
       "skills": ["kora-telemetry-metrics"],
-      "query": "Create a service that records how long user creation takes and counts created users by email provider (gmail.com, ...).",
+      "query": "Set up Prometheus metrics in my Kora 2.0 Kotlin service.",
       "expected_behavior": [
-        "Injects MeterRegistry through the constructor of a @Component",
-        "Registers a Timer once in the constructor with serviceLevelObjectives(...) buckets",
-        "Caches Counter instances per email provider with ConcurrentHashMap.computeIfAbsent to keep the email.provider tag bounded",
-        "Falls back to a value like \"unknown\" for emails without a domain",
-        "Does not use field injection or @Autowired"
+        "Uses ksp(\"io.koraframework:symbol-processors\") rather than an annotation processor, with the io.koraframework:kora-bom platform at koraVersion=2.0.0.RC1",
+        "Extends MetricsModule and UndertowPublicHttpServerModule on the @KoraApp interface, entry point KoraApplication.run(ApplicationGraph::graph)",
+        "Sets httpServer.telemetry.metrics.enabled = true and explains the false default",
+        "Injects MeterRegistry through the constructor of a @Component (io.koraframework.common.annotation.Component)",
+        "Uses no suspend functions, Mono/Flux or CompletionStage — Kora 2.0 contracts are synchronous"
       ],
-      "tags": ["custom-metrics", "advanced"]
+      "tags": ["setup", "basic", "kotlin"]
+    },
+    {
+      "id": "kora-telemetry-metrics-regression-defaults-off",
+      "skills": ["kora-telemetry-metrics"],
+      "query": "I added MetricsModule and my Kora 2.0 service starts fine. GET http://localhost:8085/metrics returns 200 and I can see jvm_memory_used_bytes and kora_up, but there is no http_server_request_duration at all. Is metrics collection broken?",
+      "expected_behavior": [
+        "Identifies the cause immediately: TelemetryConfig.MetricsConfig.enabled() defaults to false in Kora 2.0, so component metrics are off even though the registry is bound",
+        "Fixes it with httpServer { telemetry.metrics.enabled = true } and notes the same flag is needed per component (httpClient.<name>, jdbc, grpcServer, scheduling.telemetry, resilient.telemetry, cache/Kafka config paths)",
+        "Explains that this fails silently — no warning is logged, the endpoint still answers 200, and JVM meters still appear, which is exactly why it looks like it is working",
+        "Does not suggest that metrics are enabled by default, and does not suggest a global metrics { } config section",
+        "Does not recommend adding a separate registry dependency or an external actuator framework"
+      ],
+      "tags": ["regression", "defaults", "silent-failure"]
+    },
+    {
+      "id": "kora-telemetry-metrics-regression-no-meter-registry",
+      "skills": ["kora-telemetry-metrics"],
+      "query": "My Kora 2.0 application.conf has httpServer.telemetry.metrics.enabled = true and jdbc.telemetry.metrics.enabled = true, but /metrics answers 200 with the single line '# Metric Scraper disabled'. The config key is definitely set.",
+      "expected_behavior": [
+        "Recognises '# Metric Scraper disabled' as MetricsHandler's response when no MetricsScraper is present in the graph, which means MetricsModule is not on the @KoraApp interface",
+        "Explains the second gate: every telemetry factory computes metricEnabled = meterRegistry != null && config.metrics().enabled(), and MeterRegistry is injected as @Nullable, so the config flag alone is inert",
+        "Fixes it by adding MetricsModule (and the io.koraframework:micrometer-module dependency) — not by changing the config",
+        "Notes that a 200 from /metrics proves nothing, because MetricsHandler returns 200 in every branch",
+        "Does not claim the endpoint is missing or return a 404 diagnosis"
+      ],
+      "tags": ["regression", "graph", "silent-failure"]
+    },
+    {
+      "id": "kora-telemetry-metrics-regression-public-port",
+      "skills": ["kora-telemetry-metrics"],
+      "query": "My Prometheus scrape config points at http://order-service:8080/metrics and gets a 404. My Kora 2.0 application.conf has httpServer.privateApiHttpPort = 9090 and httpServer.privateApiHttpMetricsPath = \"/metrics\". Why is the endpoint missing?",
+      "expected_behavior": [
+        "Explains that /metrics is served by MetricsHandler on the SYSTEM server, never on the public one — the public port only serves @HttpController routes",
+        "Identifies privateApiHttpPort and privateApiHttpMetricsPath as removed Kora 1.x keys that are unrecognised HOCON keys in 2.0, ignored without any warning",
+        "Renames them to httpServer.system.port and httpServer.system.metricsPath",
+        "Points out the consequence of the silent fallback: the system server actually came up on its default 8085, not on the configured 9090, so the scrape target is wrong too",
+        "Points the scrape target at httpServer.system.port",
+        "Does not invent a config key that moves /metrics onto the public port"
+      ],
+      "tags": ["regression", "config", "endpoint"]
+    },
+    {
+      "id": "kora-telemetry-metrics-regression-200-proves-nothing",
+      "skills": ["kora-telemetry-metrics"],
+      "query": "Write an integration test for my Kora 2.0 service that verifies metrics are actually being collected.",
+      "expected_behavior": [
+        "Asserts on the /metrics response BODY, not only on the 200 status code, and says why: MetricsHandler returns 200 in every branch, including when no MetricsScraper exists",
+        "Drives real traffic through the public port first, then asserts the body contains http_server_request_duration or http_server_active_requests",
+        "Asserts the body does not contain '# Metric Scraper disabled'",
+        "Uses the system port (httpServer.system.port, default 8085) for the /metrics request and the public port for the traffic",
+        "Enables telemetry.metrics.enabled = true in the test configuration, including inside any KoraConfigModification.ofString(...) HOCON block",
+        "Does not treat the presence of jvm_* or kora_up as evidence that component metrics work"
+      ],
+      "tags": ["regression", "testing", "silent-failure"]
+    },
+    {
+      "id": "kora-telemetry-metrics-regression-system-tracing-default",
+      "skills": ["kora-telemetry-metrics"],
+      "query": "Tracing is enabled by default in Kora 2.0, so my /metrics and /system/readiness calls should be producing spans — but I see none for them. Everything else is traced.",
+      "expected_behavior": [
+        "Explains that the tracing default of true does NOT hold under httpServer.system: SystemHttpServerConfig.SystemHttpServerTelemetryConfig.SystemHttpServerTracingConfig overrides enabled() to false",
+        "Notes this is deliberate — scrapes and probes would otherwise flood the trace backend with one span per interval",
+        "Shows httpServer.system.telemetry.tracing.enabled = true as the explicit opt-in if it is genuinely wanted",
+        "Correctly states that metrics and logging default to false everywhere, including the system server, while tracing defaults to true everywhere else",
+        "Does not claim tracing is globally disabled or that a tracing exporter is missing"
+      ],
+      "tags": ["regression", "defaults", "system-server"]
+    },
+    {
+      "id": "kora-telemetry-metrics-custom-business-java",
+      "skills": ["kora-telemetry-metrics"],
+      "query": "Create a Kora 2.0 Java service that records how long user creation takes and counts created users by email provider.",
+      "expected_behavior": [
+        "Injects MeterRegistry through the constructor of an io.koraframework.common.annotation.Component",
+        "Registers the Timer once in the constructor with serviceLevelObjectives(Duration...) buckets",
+        "Caches Counter instances per provider with ConcurrentHashMap.computeIfAbsent so the email.provider tag stays bounded",
+        "Maps the raw email domain onto a bounded set with a safe fallback such as \"unknown\" or \"other\", rather than tagging with the raw domain",
+        "States that custom meters need MetricsModule only and are not gated by telemetry.metrics.enabled — that flag governs Kora's own component instrumentation",
+        "Does not use field injection, @Autowired, or ru.tinkoff.kora imports"
+      ],
+      "tags": ["custom-metrics", "java"]
+    },
+    {
+      "id": "kora-telemetry-metrics-custom-business-kotlin",
+      "skills": ["kora-telemetry-metrics"],
+      "query": "Add a business metric to my Kora 2.0 Kotlin service that measures order processing latency and counts orders by payment provider.",
+      "expected_behavior": [
+        "Uses io.koraframework.common.annotation.Component with constructor injection of MeterRegistry",
+        "Builds the meters in property initialisers or init, not on every call",
+        "Caches meters per bounded tag value with ConcurrentHashMap.computeIfAbsent",
+        "Handles the Kotlin specifics: DistributionSummary.record takes a Double, and Timer.record needs a disambiguated overload (Supplier { } or recordCallable) when the lambda returns a value",
+        "Writes a plain synchronous function — no suspend, Flow, Mono or CompletionStage"
+      ],
+      "tags": ["custom-metrics", "kotlin"]
     },
     {
       "id": "kora-telemetry-metrics-common-tags",
       "skills": ["kora-telemetry-metrics"],
-      "query": "Attach common tags (service, environment, version) to every metric in my Kora app.",
+      "query": "Attach common tags (service, environment, version) to every metric in my Kora 2.0 app.",
       "expected_behavior": [
-        "Adds a PrometheusMeterRegistryInitializer as a default method of a @Module",
+        "Adds a PrometheusMeterRegistryInitializer (io.koraframework.micrometer.module) as a default method of an io.koraframework.common.annotation.Module interface",
         "Calls registry.config().commonTags(...) inside the initializer",
-        "Returns the registry from the initializer because it is a Function<PrometheusMeterRegistry, PrometheusMeterRegistry>",
-        "Does not invent a @Default annotation or any external MeterRegistry customizer type; uses only PrometheusMeterRegistryInitializer"
+        "Returns the registry, because the type extends Function<PrometheusMeterRegistry, PrometheusMeterRegistry>",
+        "Mentions that MetricsModule collects them with All<PrometheusMeterRegistryInitializer> and applies them before the JVM binders and kora.up are registered",
+        "May contrast it with the per-component telemetry.metrics.tags config key",
+        "Does not invent a MeterRegistryCustomizer, @Default annotation or any external customizer type"
       ],
       "tags": ["config", "basic"]
     },
     {
-      "id": "kora-telemetry-metrics-cardinality",
+      "id": "kora-telemetry-metrics-builtin-metric-names",
       "skills": ["kora-telemetry-metrics"],
-      "query": "Review this metrics code that adds userId and requestId as tags on a counter and tell me what is wrong.",
+      "query": "Which metric and labels does Kora 2.0 emit for HTTP server request latency, and how do I query the error rate in Prometheus?",
       "expected_behavior": [
-        "Identifies userId and requestId as unbounded high-cardinality tags that cause unbounded time series growth and a memory leak",
-        "Recommends bounded tag values (such as method, http.response.status_code, http.route template, provider, status)",
-        "Suggests aggregating to a bounded dimension or dropping the tag, optionally caching meters per bounded value with computeIfAbsent",
-        "Does not recommend an external tracing/actuator framework; keeps the fix within Kora's MeterRegistry"
+        "Names http.server.request.duration as a Timer registered by DefaultHttpServerMetricsFactory, plus http.server.active_requests as a Gauge",
+        "Lists the real 2.0 tags: server.name, server.port, http.request.method, http.route, url.scheme, server.address, error.type",
+        "States explicitly that there is NO status-code tag on the 2.0 server duration timer, so a query filtering http_response_status_code=~\"5..\" matches nothing",
+        "Writes the error-rate query against error_type!=\"\" on the _count series",
+        "Notes that the HTTP client timer (http.client.request.duration) does carry http.response.status_code",
+        "Does not invent http.server.requests, labels named status or route, or the 1.x metrics.opentelemetrySpec switch"
       ],
-      "tags": ["cardinality", "review"]
+      "tags": ["builtin", "promql"]
+    },
+    {
+      "id": "kora-telemetry-metrics-renamed-meters",
+      "skills": ["kora-telemetry-metrics"],
+      "query": "I am porting a Grafana dashboard from Kora 1.x to Kora 2.0. It uses db_client_request_duration, cache_duration, messaging_receive_duration for Kafka and s3_client_duration. Which of these still work?",
+      "expected_behavior": [
+        "Says none of the four are correct for Kora 2.0 and gives the current meters: db.client.operation.duration, cache.operation.duration, messaging.process.duration (Kafka consumer), rpc.client.duration with rpc.system = s3-aws or s3",
+        "Notes that messaging.receive.duration does still exist, but for JMS rather than Kafka",
+        "Flags the database tag renames: db.client.connection.pool.name, db.system.name, db.query.text, db.operation.name",
+        "Warns that the three S3/SOAP flavours share the meter name rpc.client.duration and must be separated by the rpc_system label",
+        "Mentions that rpc.*.requests_per_rpc and responses_per_rpc no longer exist in 2.0",
+        "Tells the user to read the exact exported series names from a running /metrics rather than assuming the suffix"
+      ],
+      "tags": ["builtin", "migration"]
     },
     {
       "id": "kora-telemetry-metrics-slo-buckets",
       "skills": ["kora-telemetry-metrics"],
-      "query": "Configure latency histogram buckets so I can compute p95 and p99 for my API timer.",
+      "query": "Configure latency histogram buckets in Kora 2.0 so I can compute p95 and p99 for the HTTP server and for my own API timer.",
       "expected_behavior": [
-        "Uses Timer.builder(...).serviceLevelObjectives(Duration.ofMillis(...), ...) on the custom meter",
-        "Mentions the per-module config equivalent telemetry.metrics.slo as a millisecond array for built-in module metrics",
-        "Explains that buckets let Prometheus estimate percentiles via histogram_quantile, and notes publishPercentiles adds overhead",
-        "Does not put the metrics endpoint on the public port"
+        "For Kora's own meters, sets httpServer.telemetry.metrics.slo as an array and notes that bare numbers are milliseconds while strings accept \"250ms\" / \"1s\"",
+        "Notes that slo has a 14-entry default (MetricsConfig.DEFAULT_SLO, 1 ms to 90 s) and that setting enabled = true is still required for the buckets to be produced at all",
+        "For custom meters, uses Timer.builder(...).serviceLevelObjectives(Duration.ofMillis(...), ...)",
+        "Explains that buckets let Prometheus compute quantiles with histogram_quantile, while publishPercentiles computes them in-process, costs CPU and does not aggregate across instances",
+        "Mentions that each bucket boundary multiplies the series count per tag combination",
+        "Keeps the metrics endpoint on the system port"
       ],
-      "tags": ["histogram", "advanced"]
+      "tags": ["histogram", "config"]
     },
     {
-      "id": "kora-telemetry-metrics-opentelemetry-spec",
+      "id": "kora-telemetry-metrics-removed-opentelemetry-spec",
       "skills": ["kora-telemetry-metrics"],
-      "query": "How do I switch my Kora metrics to the newer OpenTelemetry naming convention?",
+      "query": "How do I switch my Kora metrics to the newer OpenTelemetry naming convention? I currently have metrics { opentelemetrySpec = \"V120\" } in my config.",
       "expected_behavior": [
-        "Sets metrics.opentelemetrySpec = \"V123\" in the configuration (described by MetricsConfig)",
-        "Explains V120 is the original default and V123 is available since Kora 1.1.0",
-        "Notes the setting changes metric/tag naming only, not the export transport",
-        "Does not introduce configuration keys from other frameworks; uses only the Kora metrics block"
+        "States that metrics.opentelemetrySpec does not exist in Kora 2.0 and that there is no global metrics { } config section at all — nothing reads that path",
+        "Explains that 2.0 emits one fixed naming scheme, corresponding to what 1.x called V123, so the switch has no purpose",
+        "Tells the user to delete the key, warning that as an unrecognised HOCON key it is ignored without a warning and gives a false sense that it is doing something",
+        "Notes that several meter names changed on top of that scheme, so the 1.x V123 metric list still cannot be reused verbatim",
+        "Does not invent a replacement key or a semantic-convention version setting"
       ],
-      "tags": ["config", "opentelemetry"]
+      "tags": ["regression", "config", "removed"]
     },
     {
       "id": "kora-telemetry-metrics-export-model",
       "skills": ["kora-telemetry-metrics"],
-      "query": "Can I push Kora metrics directly to Datadog or an OTLP endpoint from the app?",
+      "query": "Can I push Kora 2.0 metrics directly to Datadog or an OTLP endpoint from the application?",
       "expected_behavior": [
-        "Explains that Kora's micrometer-module is Prometheus pull-only and serves /metrics on the private HTTP port",
-        "States there is no Kora config to swap the registry to a push exporter from the application",
-        "Recommends scraping /metrics with an agent (Prometheus, OpenTelemetry Collector, vmagent) and forwarding from there",
-        "Distinguishes metric export from tracing export handled by the separate tracing modules",
-        "Does not fabricate micrometer.statsd or micrometer.otlp Kora config keys"
+        "Explains that micrometer-module is Prometheus pull-only and serves /metrics on the system HTTP server",
+        "States there is no Kora configuration to swap the registry for a push exporter",
+        "Recommends scraping /metrics with an agent (Prometheus, OpenTelemetry Collector prometheus receiver, vmagent, Datadog OpenMetrics check) and forwarding from there",
+        "Distinguishes metric export from trace export, which is configured separately under tracing.exporter by opentelemetry-tracing-exporter-grpc/-http",
+        "May mention that the registry and the MetricsScraper are @DefaultComponent and can be replaced by a @Component, and that a non-Prometheus registry without a matching MetricsScraper yields a 200 with an empty body",
+        "Does not fabricate micrometer.statsd, micrometer.otlp or metrics.export.* config keys"
       ],
       "tags": ["export", "advanced"]
     },
     {
-      "id": "kora-telemetry-metrics-builtin-metrics",
+      "id": "kora-telemetry-metrics-hikari-pool-metrics",
       "skills": ["kora-telemetry-metrics"],
-      "query": "Which metric and labels does Kora emit for HTTP server request latency, and how do I query the error rate in Prometheus?",
+      "query": "My Kora 2.0 service has jdbc.telemetry.metrics.driverMetrics = true but no hikaricp_ series show up in /metrics. driverMetrics defaults to true anyway, so what is wrong?",
       "expected_behavior": [
-        "Names http.server.request.duration (Prometheus http_server_request_duration_milliseconds) as a DistributionSummary",
-        "Lists the real OpenTelemetry tags http.request.method, http.response.status_code, http.route",
-        "Writes a Prometheus error-rate query using http_response_status_code=~\"5..\" on the _count series",
-        "Does not invent metric names like http.server.requests or labels like status/route"
+        "Identifies the missing jdbc.telemetry.metrics.enabled = true",
+        "Explains the mechanism: with enabled = false the factory returns NoopDatabaseTelemetry, whose meterRegistry() is the NoopMeterRegistry, and JdbcDataSource passes exactly that registry to dataSource.setMetricRegistry(...) — so Hikari records into a registry that discards everything",
+        "Confirms driverMetrics does default to true for JDBC and Cassandra, but false for Kafka consumers and publishers",
+        "Does not suggest adding a Hikari or Micrometer dependency"
       ],
-      "tags": ["builtin", "advanced"]
+      "tags": ["regression", "database", "silent-failure"]
+    },
+    {
+      "id": "kora-telemetry-metrics-cardinality-review",
+      "skills": ["kora-telemetry-metrics"],
+      "query": "Review this Kora metrics code that adds userId and requestId as tags on a counter and tell me what is wrong.",
+      "expected_behavior": [
+        "Identifies userId and requestId as unbounded high-cardinality tags that grow the registry without limit and leak memory",
+        "Recommends bounded values instead: http.request.method, the http.route template, error.type, or an aggregated dimension such as a user tier",
+        "Suggests caching meters per bounded value with computeIfAbsent, while warning that caching an unbounded key only moves the leak",
+        "May note that per-request attribution belongs in logs or traces, not in metrics, since every label combination is retained forever",
+        "May reference Kora's own approach: route templates with an UNKNOWN_ROUTE fallback, query ids instead of SQL text, and exception classes instead of messages",
+        "Does not recommend an external actuator or tracing framework as the fix"
+      ],
+      "tags": ["cardinality", "review"]
+    },
+    {
+      "id": "kora-telemetry-metrics-probes",
+      "skills": ["kora-telemetry-metrics"],
+      "query": "Add a readiness probe to my Kora 2.0 service that reports not-ready while the reference-data cache is warming up, and wire the Kubernetes probes.",
+      "expected_behavior": [
+        "Implements io.koraframework.common.readiness.ReadinessProbe with @Nullable ReadinessProbeFailure probe(), returning null when ready and new ReadinessProbeFailure(\"...\") when not",
+        "Registers it as an io.koraframework.common.annotation.Component so All<PromiseOf<ReadinessProbe>> collects it",
+        "Points the Kubernetes probes at httpServer.system.port with paths /system/liveness and /system/readiness",
+        "Does not use the 1.x API: no ru.tinkoff.kora.http.server.common.ReadinessProbe, no check() method, no Result.success() / Result.failure(...)",
+        "May note that the failure message is returned in the 503 response body, that a 30 s aggregate cap applies, and that JDBC already ships a readiness probe behind jdbc.readinessProbe (default false)"
+      ],
+      "tags": ["probes", "kubernetes"]
     }
   ]
 }

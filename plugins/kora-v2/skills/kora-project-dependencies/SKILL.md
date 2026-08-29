@@ -1,41 +1,64 @@
 ---
 name: kora-project-dependencies
-description: "Kora Gradle artifacts + project generator — kora-parent BOM, annotation-processors/symbol-processors, koraBom, real module names, externally-versioned deps. Use when wiring build.gradle, choosing modules, or fixing \"dependency not found\"/version conflicts."
+description: "Kora 2.0 Gradle artifacts + project generator — io.koraframework:kora-bom, annotation-processors/symbol-processors, the koraBom configuration (Java) vs BOM-on-implementation (Kotlin), real module names (json-common, cache-redis-lettuce, http-client-apache), externally-versioned deps. Use when wiring build.gradle, choosing modules, or fixing \"dependency not found\"/version conflicts/1.x coordinates."
+license: Apache-2.0
+metadata:
+  kora-version: "2.x"
 ---
 
 # Kora Project Dependencies — Module Catalog
 
-> **Kora sub-skill — obey the [kora-v1 meta rules](../../SKILL.md) on every task:** **R0** ensure `.kora-agent/` docs+examples are cloned · **R1** read this sub-skill before writing code · **R2** Kora APIs only — no Spring/Micronaut/Quarkus, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
+> **Kora sub-skill — obey the [kora-v2 meta rules](../../SKILL.md) on every task:** **R0** ground the workspace on Kora 2.0 refs before starting (framework source at tag `2.0.0.RC1` + `kora-examples` at `migration/2.0`; `kora-docs` is 1.x only) · **R1** read this sub-skill before writing code · **R2** Kora 2.0 APIs only — no Spring/Micronaut/Quarkus, no Kora 1.x APIs, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
 
-**BOM:** `ru.tinkoff.kora:kora-parent` (pin the version once; every Kora artifact inherits it)
-**Java:** 21+ (examples build on JDK 21) | **Kotlin:** 1.9.25 | **KSP:** 1.9.25-1.0.20 | **Gradle:** 9+
+**Group:** `io.koraframework` — except the `experimental/` tree, which is `io.koraframework.experimental`
+**BOM:** `io.koraframework:kora-bom:2.0.0.RC1` — on Maven Central, the only `2.0.x` there
+**JDK:** bytecode floor **25** | **Kotlin:** 2.4.10 | **KSP:** 2.3.11 | **Gradle:** 9.5.1
 
-> **Critical:** Always import the `kora-parent` BOM. It aligns every Kora module to one version and pins transitive libraries (Jackson, OkHttp, Undertow, Micrometer, OpenTelemetry, HikariCP, Kafka client, gRPC, Caffeine, Resilience4j). **Never put a version on a `ru.tinkoff.kora:*` artifact** — the BOM does it.
+> **Critical:** always import the `kora-bom` platform, and **never put a version on an
+> `io.koraframework:*` artifact** — the BOM does it. The one deliberate exception is the Kotlin
+> `ksp("io.koraframework:symbol-processors:$koraVersion")` line, because the BOM is not applied to
+> the `ksp` configuration.
 
 Read this first when:
+
 - Selecting which Kora modules to include in a build
-- Setting up the BOM and the `koraBom` configuration in `build.gradle` / `build.gradle.kts`
+- Setting up the BOM in `build.gradle` / `build.gradle.kts`
 - Configuring annotation processors (Java) or KSP (Kotlin)
 - Resolving "Required dependency not found" or transitive version conflicts
-- Scaffolding a new project (see Project Generator below)
+- Translating 1.x coordinates (`ru.tinkoff.kora:kora-parent`, `json-module`, `cache-redis`, …)
+- Scaffolding a new project (see [Project Generator](#project-generator))
 
-**NOT when:** writing DI code (→ `kora-di-compile`), HTTP controllers (→ `kora-http-server`), repositories (→ `kora-database-jdbc`), or Kafka handlers (→ `kora-kafka-consumer`).
+**NOT when:** writing DI code (→ [`kora-di-compile`](../kora-di-compile/SKILL.md)), HTTP controllers
+(→ [`kora-http-server`](../kora-http-server/SKILL.md)), repositories
+(→ [`kora-database-jdbc`](../kora-database-jdbc/SKILL.md)), or Kafka handlers
+(→ [`kora-kafka-consumer`](../kora-kafka-consumer/SKILL.md)).
 
 ---
 
 ## Quick Start — BOM Setup
 
-Pin the BOM version in `gradle.properties` and reference it via `$koraVersion`.
-
-### gradle.properties
+Pin the version in `gradle.properties` and resolve from Maven Central:
 
 ```properties
-koraVersion=1.2.19
+koraVersion=2.0.0.RC1
 ```
 
-### Java (build.gradle)
+```groovy
+repositories {
+    mavenCentral()
+}
+```
 
-The `koraBom` configuration must feed `annotationProcessor`, `compileOnly`, `implementation` (and `api`/`testImplementation`/`testAnnotationProcessor` if used) via `extendsFrom`, otherwise the BOM does not apply to the processor classpath.
+`2.0.0.RC1` is published on Central and is the only `2.0.x` release of `kora-bom` there, so nothing
+else is needed. `2.0.0-SNAPSHOT` is the `master` development line — never pin it in a new project;
+tracking it deliberately also requires
+`maven { url = "https://central.sonatype.com/repository/maven-snapshots" }`.
+
+### Java (build.gradle) — the `koraBom` configuration
+
+A `platform` on `implementation` does not reach Java's `annotationProcessor` classpath, so Java
+declares a `koraBom` configuration and wires it with `extendsFrom`. Miss that and
+`annotation-processors` fails to resolve.
 
 ```groovy
 plugins {
@@ -43,9 +66,13 @@ plugins {
     id "application"
 }
 
+repositories {
+    mavenCentral()
+}
+
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
+        languageVersion = JavaLanguageVersion.of(25)
         vendor = JvmVendorSpec.ADOPTIUM
     }
 }
@@ -61,82 +88,108 @@ configurations {
 }
 
 dependencies {
-    koraBom platform("ru.tinkoff.kora:kora-parent:$koraVersion")
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+    annotationProcessor "io.koraframework:annotation-processors"
 
-    implementation "ru.tinkoff.kora:http-server-undertow"
-    implementation "ru.tinkoff.kora:json-module"
-    implementation "ru.tinkoff.kora:config-hocon"
-    implementation "ru.tinkoff.kora:logging-logback"
+    implementation "io.koraframework:http-server-undertow"
+    implementation "io.koraframework:json-common"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
 
-    testImplementation "ru.tinkoff.kora:test-junit5"
+    testAnnotationProcessor "io.koraframework:annotation-processors"
+    testImplementation "io.koraframework:test-junit5"
 }
 ```
 
-### Kotlin (build.gradle.kts)
+### Kotlin (build.gradle.kts) — BOM straight on `implementation`
 
-Kotlin uses the KSP plugin and the `symbol-processors` artifact instead of `annotationProcessor`.
+Kotlin does **not** create a `koraBom` configuration and does **not** use `extendsFrom`. The
+processor carries an explicit version instead.
 
 ```kotlin
 plugins {
-    application
-    kotlin("jvm") version "1.9.25"
-    id("com.google.devtools.ksp") version "1.9.25-1.0.20"
+    id("application")
+    kotlin("jvm") version "2.4.10"
+    id("com.google.devtools.ksp") version "2.3.11"
 }
 
-val koraBom: Configuration by configurations.creating
-configurations {
-    ksp.get().extendsFrom(koraBom)
-    compileOnly.get().extendsFrom(koraBom)
-    api.get().extendsFrom(koraBom)
-    implementation.get().extendsFrom(koraBom)
+repositories {
+    mavenCentral()
 }
 
-val koraVersion: String by project
 dependencies {
-    koraBom(platform("ru.tinkoff.kora:kora-parent:$koraVersion"))
-    ksp("ru.tinkoff.kora:symbol-processors")
+    implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+    ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
 
-    implementation("ru.tinkoff.kora:http-server-undertow")
-    implementation("ru.tinkoff.kora:json-module")
-    implementation("ru.tinkoff.kora:config-hocon")
-    implementation("ru.tinkoff.kora:logging-logback")
+    implementation("io.koraframework:http-server-undertow")
+    implementation("io.koraframework:json-common")
+    implementation("io.koraframework:config-hocon")
+    implementation("io.koraframework:logging-logback")
 
-    testImplementation("ru.tinkoff.kora:test-junit5")
+    testImplementation("io.koraframework:test-junit5")
 }
 
 kotlin {
     jvmToolchain {
-        languageVersion.set(JavaLanguageVersion.of(21))
+        languageVersion.set(JavaLanguageVersion.of(25))
         vendor.set(JvmVendorSpec.ADOPTIUM)
     }
 }
 ```
 
-**Depth:** [`references/bom-usage-reference.md`](references/bom-usage-reference.md), [`references/annotation-processors-reference.md`](references/annotation-processors-reference.md)
+Both shapes are deliberate. Do not port one into the other's language.
+
+**Depth:** [`references/bom-usage-reference.md`](references/bom-usage-reference.md),
+[`references/annotation-processors-reference.md`](references/annotation-processors-reference.md)
+
+---
+
+## JDK — two separate requirements
+
+1. **Toolchain (compiles your code):** Kora 2.0 artifacts are built at JVM 25 and `kora-bom` declares
+   `java.version = 25`, so **25 is the floor**. The reference examples use exactly 25.
+2. **The JVM running Gradle:** `io.koraframework:openapi-generator` lands on the **buildscript**
+   classpath, which Gradle resolves with its own JVM — the toolchain has no say. Below 25 the build
+   dies during configuration with
+   `Dependency requires at least JVM runtime version 25. This build uses a Java 21 JVM.`
+   Check with `JAVA_HOME=<jdk> ./gradlew projects`.
+
+**Which number:** 25 is the hard floor; the migration guides recommend the **latest GA feature
+release** instead of a frozen number — check <https://openjdk.org/projects/jdk/> on the day and
+re-derive. `--enable-preview` is not a Kora requirement; add it only if your own code uses a preview
+API.
 
 ---
 
 ## Project Generator
 
-`scripts/generate_project.py` scaffolds a compile-ready project (build script, `@KoraApp`, HOCON config, sample controller/repository/Kafka handlers) for a chosen set of modules.
+`scripts/generate_project.py` scaffolds a compile-ready 2.0 project (build script, `@KoraApp`, HOCON
+config, sample controller/repository/Kafka handlers) for a chosen set of modules.
 
 ```bash
 # List available module keys
-python scripts/generate_project.py --list-modules
+python3 scripts/generate_project.py --list-modules
+
+# Preview without writing anything
+python3 scripts/generate_project.py --name my-service --package com.example \
+  --lang java --modules http-server,jdbc-postgres,metrics --dry-run
 
 # Java REST API + PostgreSQL
-python scripts/generate_project.py \
+python3 scripts/generate_project.py \
   --name my-service --package com.example --lang java \
   --modules http-server,jdbc-postgres,metrics
 
 # Kotlin Kafka service
-python scripts/generate_project.py \
+python3 scripts/generate_project.py \
   --name kafka-service --package com.example --lang kotlin \
   --modules kafka,metrics
 ```
 
-The generator emits real Kora APIs only: `@KoraApp` from `ru.tinkoff.kora.common`, `@HttpController` + `@HttpRoute`, `@Repository` + `extends JdbcRepository`, `@KafkaListener`/`@KafkaPublisher`, and a `httpServer { ... }` / `db { ... }` HOCON config.
+Output is 2.0-native: `io.koraframework` coordinates, the `kora-bom` platform, the Java vs Kotlin BOM
+shapes above, `@KoraApp` from `io.koraframework.common.annotation`, `UndertowPublicHttpServerModule`,
+`@Repository extends JdbcRepository` with `io.koraframework.database.jdbc.annotation.EntityJdbc`, and
+a config using `httpServer.port` / `httpServer.system.port` / `jdbc { … }` with telemetry explicitly
+enabled. Re-running over an existing directory rewrites the generated files in place.
 
 **Details:** [`scripts/generate_project.py`](scripts/generate_project.py)
 
@@ -145,12 +198,12 @@ The generator emits real Kora APIs only: `@KoraApp` from `ru.tinkoff.kora.common
 ## Core Modules (almost every service)
 
 | Artifact | Module interface | Purpose |
-|----------|------------------|---------|
-| `ru.tinkoff.kora:config-hocon` | `HoconConfigModule` | HOCON config (or `config-yaml` → `YamlConfigModule`) |
-| `ru.tinkoff.kora:json-module` | `JsonModule` | JSON (de)serialization for DTOs, HTTP, Kafka |
-| `ru.tinkoff.kora:logging-logback` | `LogbackModule` | SLF4J via Logback |
-| `ru.tinkoff.kora:annotation-processors` | — | Java annotation processor (mandatory, Java) |
-| `ru.tinkoff.kora:symbol-processors` | — | KSP symbol processor (mandatory, Kotlin) |
+|---|---|---|
+| `io.koraframework:config-hocon` | `HoconConfigModule` | HOCON config (or `config-yaml` → `YamlConfigModule`) |
+| `io.koraframework:json-common` | `JsonModule` | JSON (de)serialization for DTOs, HTTP, Kafka |
+| `io.koraframework:logging-logback` | `LogbackModule` | SLF4J via Logback |
+| `io.koraframework:annotation-processors` | — | Java annotation processor (mandatory, Java) |
+| `io.koraframework:symbol-processors` | — | KSP symbol processor (mandatory, Kotlin) |
 
 **Depth:** [`references/core-modules-reference.md`](references/core-modules-reference.md)
 
@@ -158,162 +211,209 @@ The generator emits real Kora APIs only: `@KoraApp` from `ru.tinkoff.kora.common
 
 ## Module Catalog
 
-Artifact names below are the **real** ones verified against the Kora docs and example apps. Note the group is `ru.tinkoff.kora` except for **experimental** modules (S3, Camunda), which use `ru.tinkoff.kora.experimental`.
+Every artifact below is published from the Kora 2.0 `settings.gradle`. The complete list — including
+the per-domain processors and the internal, unpublished modules — is in
+[`references/artifact-catalog.md`](references/artifact-catalog.md). **Do not invent a coordinate:
+if it is not in that file, it does not exist.**
 
 ### HTTP
 
 | Artifact | Module interface | Notes |
-|----------|------------------|-------|
-| `http-server-undertow` | `UndertowHttpServerModule` | Undertow-backed HTTP server |
+|---|---|---|
+| `http-server-undertow` | `UndertowPublicHttpServerModule` | Public server on `httpServer`; extends the system server module, so `httpServer.system` (metrics, readiness, liveness) comes with it |
 | `http-client-ok` | `OkHttpClientModule` | OkHttp transport |
-| `http-client-async` | `AsyncHttpClientModule` | Async (Netty) transport |
 | `http-client-jdk` | `JdkHttpClientModule` | JDK `HttpClient` transport |
+| `http-client-apache` | `ApacheHttpClientModule` | Apache HttpClient 5 transport |
 
-HTTP-server/client auth (BasicAuth, Bearer, API key) ships inside these artifacts as `BasicAuthModule`, `BearerAuthModule`, `ApiKeyAuthModule`. Authorization is configured in code, not via a separate auth artifact.
+No separate auth artifact: server auth is `HttpServerPrincipalExtractor` (`http-server-common`),
+client auth is `HttpClientTokenProvider` (`http-client-common`). There is no `ProbesModule` — probes
+are system-server endpoints. `http-client-async` was **removed** with no replacement.
 
-**Skills:** [`kora-http-server`](../kora-http-server/SKILL.md), [`kora-http-client`](../kora-http-client/SKILL.md)
+**Skills:** [`kora-http-server`](../kora-http-server/SKILL.md), [`kora-http-client`](../kora-http-client/SKILL.md), [`kora-http-server-auth`](../kora-http-server-auth/SKILL.md), [`kora-http-client-auth`](../kora-http-client-auth/SKILL.md)
 
 ### Database
 
 | Artifact | Module interface | Notes |
-|----------|------------------|-------|
-| `database-jdbc` | `JdbcDatabaseModule` | JDBC repositories (recommended path) |
-| `database-cassandra` | `CassandraDatabaseModule` | Cassandra CQL |
-| `database-flyway` | `FlywayJdbcDatabaseModule` | Flyway SQL migrations |
-| `database-liquibase` | `LiquibaseJdbcDatabaseModule` | Liquibase SQL migrations |
-| `database-r2dbc` | — | R2DBC (not recommended; prefer JDBC) |
-| `database-vertx` | — | Vert.x SQL (not recommended; prefer JDBC) |
+|---|---|---|
+| `database-jdbc` | `JdbcDatabaseModule` | JDBC repositories; config section is **`jdbc`** (was `db`) |
+| `database-cassandra` | `CassandraDatabaseModule` | Ships `org.apache.cassandra:java-driver-core` |
+| `database-flyway` | `FlywayJdbcDatabaseModule` | Ships `flyway-core` **only** — add your dialect artifact |
+| `database-liquibase` | `LiquibaseJdbcDatabaseModule` | Liquibase migrations |
 
-JDBC drivers are **not** in the BOM — version them yourself (see Externally Versioned Dependencies).
+JDBC drivers are **not** in the BOM. `database-r2dbc` and `database-vertx` were **removed** —
+repository contracts are synchronous, there is no reactive replacement.
 
 **Skills:** [`kora-database-jdbc`](../kora-database-jdbc/SKILL.md), [`kora-database-cassandra`](../kora-database-cassandra/SKILL.md), [`kora-database-migration`](../kora-database-migration/SKILL.md)
 
-### Messaging (Kafka)
+### Messaging
 
 | Artifact | Module interface | Notes |
-|----------|------------------|-------|
-| `kafka` | `KafkaModule` | Producers (`@KafkaPublisher`) and consumers (`@KafkaListener`) |
+|---|---|---|
+| `kafka` | `KafkaModule` | One artifact for `@KafkaPublisher` and `@KafkaListener` |
+| `jms` | `JmsConsumerModule` | JMS consumers; the JMS provider is your own dependency |
 
-There is a single `kafka` artifact — there are no separate `kafka-producer`/`kafka-consumer` artifacts.
+There are no `kafka-producer` / `kafka-consumer` artifacts.
 
 **Skills:** [`kora-kafka-producer`](../kora-kafka-producer/SKILL.md), [`kora-kafka-consumer`](../kora-kafka-consumer/SKILL.md)
 
 ### Telemetry
 
 | Artifact | Module interface | Notes |
-|----------|------------------|-------|
-| `micrometer-module` | `MetricsModule` | Micrometer metrics; Prometheus scrape served on the **private** HTTP port |
+|---|---|---|
+| `micrometer-module` | `MetricsModule` | Micrometer metrics; Prometheus scrape on the **system** server (`/metrics`) |
 | `opentelemetry-tracing-exporter-grpc` | `OpentelemetryGrpcExporterModule` | OTLP/gRPC trace exporter |
 | `opentelemetry-tracing-exporter-http` | `OpentelemetryHttpExporterModule` | OTLP/HTTP trace exporter |
 
-Probes (`ProbesModule`, readiness/liveness on the private port) and metrics both require an HTTP server module. There is no standalone `probes` artifact in the BOM; probes come with the HTTP server.
+**Adding the artifact is not enough.** `telemetry.metrics.enabled` and `telemetry.logging.enabled`
+default to `false` in 2.0 — turn them on per component (`httpServer { telemetry.metrics.enabled = true }`).
 
 **Skills:** [`kora-telemetry-metrics`](../kora-telemetry-metrics/SKILL.md), [`kora-telemetry-tracing`](../kora-telemetry-tracing/SKILL.md), [`kora-telemetry-logging`](../kora-telemetry-logging/SKILL.md)
 
-### gRPC
+### gRPC and SOAP
 
 | Artifact | Module interface |
-|----------|------------------|
+|---|---|
 | `grpc-server` | `GrpcServerModule` |
 | `grpc-client` | `GrpcClientModule` |
+| `soap-client` | `SoapClientModule` |
 
-**Skills:** [`kora-grpc-server`](../kora-grpc-server/SKILL.md), [`kora-grpc-client`](../kora-grpc-client/SKILL.md)
+gRPC test transports are your own dependency and must match the gRPC version the module brings
+(`1.83.1`) or server construction fails with `AbstractMethodError`.
+
+**Skills:** [`kora-grpc-server`](../kora-grpc-server/SKILL.md), [`kora-grpc-client`](../kora-grpc-client/SKILL.md), [`kora-soap-client`](../kora-soap-client/SKILL.md)
 
 ### OpenAPI
 
-| Artifact | Module interface | Notes |
-|----------|------------------|-------|
-| `openapi-generator` | — | OpenAPI codegen (Gradle plugin `org.openapi.generator`, `generatorName = "kora"`) |
-| `openapi-management` | `OpenApiManagementModule` | Swagger UI / RapiDoc, spec publishing |
+| Artifact | Where | Notes |
+|---|---|---|
+| `openapi-generator` | `buildscript { dependencies { classpath … } }` | Codegen for the `org.openapi.generator` plugin, `generatorName = "kora"`. Forces the Gradle JVM to 25+ |
+| `openapi-management` | `implementation` | `OpenApiManagementModule` — spec + Swagger UI / **Scalar** |
+
+Only four modes remain: `java-client`, `java-server`, `kotlin-client`, `kotlin-server`.
 
 **Skills:** [`kora-openapi-generator-server`](../kora-openapi-generator-server/SKILL.md), [`kora-openapi-generator-client`](../kora-openapi-generator-client/SKILL.md), [`kora-openapi-management`](../kora-openapi-management/SKILL.md)
 
 ### AOP
 
 | Artifact | Module interface | Annotations |
-|----------|------------------|-------------|
-| `resilient-kora` | `ResilientModule` | `@Retry`, `@CircuitBreaker`, `@Timeout`, `@Fallback` |
-| `cache-caffeine` | `CaffeineCacheModule` | `@Cacheable`, `@CachePut`, `@CacheInvalidate` (in-memory) |
-| `cache-redis` | `RedisCacheModule` | same annotations over Lettuce/Redis |
-| `scheduling-jdk` | `SchedulingJdkModule` | `@ScheduleAtFixedRate`, `@ScheduleWithCron` |
-| `scheduling-quartz` | `QuartzModule` | Quartz-backed cron |
-| `validation-module` | `ValidationModule` | `@Valid`, `@Validate` (JSR-380-style) |
+|---|---|---|
+| `resilient-kora` | `ResilientModule` | `@CircuitBreakable`, `@Retryable`, `@Timeout`, `@RateLimited`, `@Fallback` — all take a **spec interface**, not a string |
+| `cache-caffeine` | `CaffeineCacheModule` | `@Cacheable`, `@CachePut`, `@CacheInvalidate`, `@CacheInvalidateAll` (in-process) |
+| `cache-redis-lettuce` | `LettuceRedisCacheModule` | Same annotations over Lettuce/Redis |
+| `cache-redis-common` | `RedisCacheModule` | Transport-neutral — supplies **no** client; on its own the graph fails to build |
+| `scheduling-jdk` | `SchedulingJdkModule` | `@ScheduleAtFixedRate`, `@ScheduleWithFixedDelay`, `@ScheduleOnce` |
+| `scheduling-quartz` | `QuartzModule` | `@ScheduleWithCron`, `@ScheduleWithTrigger` |
+| `validation-module` | `ValidationModule` | `@Valid`, `@Validate` (Kora's own constraints, not Jakarta) |
 
-The `@Log` / `@Mdc` logging aspect lives in the logging modules (`logging-logback`/`logging-common`), not a separate AOP artifact.
+`cache-redis` does not exist in 2.0. Resilience is Kora's own — no Resilience4j on the classpath.
+`@Log` / `@Mdc` live in the logging modules, not a separate AOP artifact.
 
 **Skills:** [`kora-aop-resilient`](../kora-aop-resilient/SKILL.md), [`kora-aop-caching`](../kora-aop-caching/SKILL.md), [`kora-aop-scheduling-jdk`](../kora-aop-scheduling-jdk/SKILL.md), [`kora-aop-scheduling-quartz`](../kora-aop-scheduling-quartz/SKILL.md), [`kora-aop-validation`](../kora-aop-validation/SKILL.md), [`kora-aop-logging`](../kora-aop-logging/SKILL.md)
 
-### Other
+### S3 and Camunda
 
-| Artifact | Module interface | Notes |
-|----------|------------------|-------|
-| `ru.tinkoff.kora.experimental:s3-client-aws` | `AwsS3ClientModule` | S3 over AWS SDK (`@S3.Client`) |
-| `ru.tinkoff.kora.experimental:s3-client-minio` | `MinioS3ClientModule` | S3 over MinIO |
-| `ru.tinkoff.kora.experimental:camunda-engine-bpmn` | `CamundaEngineBpmnModule` | Camunda 7 embedded BPMN |
-| `ru.tinkoff.kora.experimental:camunda-zeebe-worker` | `Camunda8WorkerModule` | Camunda 8 Zeebe worker |
-| `soap-client` | `SoapClientModule` | SOAP client |
+| Artifact | Group | Notes |
+|---|---|---|
+| `s3-client-aws` | **`io.koraframework`** | `AwsS3ClientModule` — AWS SDK wrapper. **No `@S3`, no models** |
+| `s3-client-kora` | **`io.koraframework.experimental`** | `KoraS3ClientModule` + the declarative `@S3` client |
+| `camunda-engine-bpmn` | `io.koraframework.experimental` | Camunda 7 embedded BPMN |
+| `camunda-rest-undertow` | `io.koraframework.experimental` | Camunda 7 REST API |
+| `camunda-zeebe-worker` | `io.koraframework.experimental` | Camunda 8 Zeebe worker (`ZeebeWorkerModule`) |
 
-MapStruct integration (`MapStructModule`) uses the upstream `org.mapstruct:mapstruct` + `org.mapstruct:mapstruct-processor` artifacts plus the Kora annotation processor; there is no `ru.tinkoff.kora:mapper-mapstruct` artifact. GraalVM native image is a build-plugin concern (`org.graalvm.buildtools.native`), not a Kora artifact.
+The S3 group split is the classic trap: `s3-client-aws` is **not** experimental, `s3-client-kora`
+is. They are alternatives, not a pair, and each needs an HTTP client transport module alongside it.
+`s3-client-minio` does not exist in 2.0.
+
+**Skill:** [`kora-s3`](../kora-s3/SKILL.md)
+
+### Mapping
+
+MapStruct and Konvert discovery already ships **inside** the aggregate processors
+(`mapstruct-java-extension` in `annotation-processors`; `mapstruct-ksp-extension` and
+`konvert-ksp-extension` in `symbol-processors`). Do not list them yourself — add only the third-party
+halves (`org.mapstruct:mapstruct` + its processor, or `io.mcarle:konvert-api` + `ksp("io.mcarle:konvert")`).
+`mapstruct-extension` is a 1.x name and does not exist. Kotlin needs no `kapt` in 2.0.
 
 **Skill:** [`kora-mapstruct`](../kora-mapstruct/SKILL.md)
 
 ### Testing
 
 | Artifact | Purpose |
-|----------|---------|
-| `test-junit5` | `@KoraAppTest` JUnit 5 extension (component tests) |
+|---|---|
+| `test-junit5` | `@KoraAppTest` JUnit 5 extension; brings JUnit 5 |
 
-Black-box / E2E tests use `test-junit5` together with Testcontainers — there is no separate `test-blackbox` artifact.
+Mockito, MockK and `kotlin-reflect` are `compileOnly` in `test-junit5` — add your own. Black-box
+tests are `test-junit5` plus Testcontainers; there is no `test-blackbox` artifact.
 
 **Skills:** [`kora-testing-junit-java`](../kora-testing-junit-java/SKILL.md), [`kora-testing-junit-kotlin`](../kora-testing-junit-kotlin/SKILL.md), [`kora-testing-blackbox`](../kora-testing-blackbox/SKILL.md)
 
 ---
 
-## Externally Versioned Dependencies (not in the BOM)
+## Coming from Kora 1.x
 
-These are not Kora artifacts; pin their versions explicitly.
+| 1.x | 2.0 |
+|---|---|
+| `ru.tinkoff.kora:*` | `io.koraframework:*` |
+| `ru.tinkoff.kora.experimental:*` | `io.koraframework.experimental:*` — **except** `s3-client-aws`, now plain `io.koraframework` |
+| `kora-parent` | `kora-bom` |
+| `json-module` | `json-common` |
+| `cache-redis` | `cache-redis-lettuce` |
+| `mapstruct-extension` | `mapstruct-java-extension` / `mapstruct-ksp-extension` (already inside the aggregate processors) |
+| `http-client-async` | **removed** — use `http-client-jdk` / `-ok` / `-apache` |
+| `database-r2dbc`, `database-vertx` | **removed** — no replacement |
+| `s3-client-minio` | **removed** — `s3-client-aws` or `s3-client-kora` |
+| `UndertowHttpServerModule` | `UndertowPublicHttpServerModule` |
 
-```groovy
-dependencies {
-    // JDBC drivers
-    implementation "org.postgresql:postgresql:42.7.7"
-    runtimeOnly    "com.mysql:mysql-connector-j:8.3.0"
+Those artifacts still have **directories** on Maven Central, along with other 1.x/alpha leftovers
+(`declarative-logging-annotation-processor`, `declarative-logging-symbol-processor`,
+`scheduling-ksp`, `experimental/s3-client`). The listing is cumulative; none of them is in the
+`2.0.0.RC1` BOM.
 
-    // Testing
-    testImplementation "ru.tinkoff.kora:test-junit5"
-    testImplementation "org.testcontainers:junit-jupiter:1.21.4"
-    testImplementation "org.mockito:mockito-core:5.14.2"   // Java mocks
-    testImplementation "io.mockk:mockk:1.13.13"            // Kotlin mocks
-}
-```
+Worse, `io.koraframework:kora-parent` and `io.koraframework:cache-redis` are **published** at
+`2.0.0.alpha5`/`2.0.0.alpha6`. A blind `ru.tinkoff.kora` → `io.koraframework` replace that keeps the
+old artifact id can therefore *resolve* — silently pinning a pre-release BOM instead of failing.
+Rename the **artifact**, not just the group, and never take "the build resolved" as proof.
+
+A rename is not the whole migration: config keys moved too (`db` → `jdbc`,
+`publicApiHttpPort` → `port`, `privateApiHttpPort` → `system.port`) and telemetry now defaults to
+off. See [`references/core-modules-reference.md`](references/core-modules-reference.md#config-sections-that-changed-in-20).
 
 ---
 
-## Versions the BOM Owns (do not override)
+## Externally Versioned Dependencies (not in the BOM)
 
-| Library | Purpose |
-|---------|---------|
-| Jackson | JSON (de)serialization (`json-module`) |
-| OkHttp | HTTP client transport (`http-client-ok`) |
-| Undertow | HTTP server (`http-server-undertow`) |
-| Micrometer | Metrics (`micrometer-module`) |
-| OpenTelemetry | Tracing exporters |
-| Logback | SLF4J logging (`logging-logback`) |
-| HikariCP | JDBC connection pool (`database-jdbc`) |
-| Kafka client | Messaging (`kafka`) |
-| gRPC | gRPC modules |
-| Caffeine | In-memory cache (`cache-caffeine`) |
-| Resilience4j | Resilience (`resilient-kora`) |
+Pin these yourself. Every one of them fails at **runtime**, not at compile time.
 
 ```groovy
-// WRONG — fights the BOM, can break Kora at runtime
-implementation "com.fasterxml.jackson.core:jackson-databind:2.16.0"
+dependencies {
+    // JDBC driver — database-jdbc ships Hikari, never a driver
+    implementation "org.postgresql:postgresql:42.7.7"
 
-// RIGHT — let the BOM pin Jackson
-implementation "ru.tinkoff.kora:json-module"
+    // Flyway dialect — database-flyway ships flyway-core only
+    implementation "org.flywaydb:flyway-database-postgresql:13.1.0"
+
+    testImplementation "io.koraframework:test-junit5"
+    testImplementation "org.testcontainers:junit-jupiter:1.21.4"
+
+    // test-junit5 declares these compileOnly — bring your own, new enough for Java 25 Byte Buddy
+    testImplementation "org.mockito:mockito-core:5.23.0"   // Java
+    testImplementation "io.mockk:mockk:1.14.11"            // Kotlin
+
+    // gRPC test transports must match the gRPC version grpc-server brings
+    testImplementation "io.grpc:grpc-inprocess:1.83.1"
+}
 ```
 
-If you truly must change a transitive version, use `resolutionStrategy { force "..." }` rather than declaring a raw version.
+Two coordinate moves that silently orphan a pinned version: Jackson is now
+**`tools.jackson.core`** (Jackson 3), and the Cassandra driver is
+**`org.apache.cassandra:java-driver-core`**.
+
+**Testcontainers 2.x renamed its modules** — `postgresql` → `testcontainers-postgresql`,
+`kafka` → `testcontainers-kafka`, `cassandra` → `testcontainers-cassandra`. Kora does not constrain
+Testcontainers; the reference examples stay on `1.21.4` with the old names. A 2.x version with 1.x
+module names does not resolve.
+
+**Depth:** [`references/compatibility-matrix.md`](references/compatibility-matrix.md)
 
 ---
 
@@ -323,14 +423,14 @@ If you truly must change a transitive version, use `resolutionStrategy { force "
 
 ```groovy
 dependencies {
-    koraBom platform("ru.tinkoff.kora:kora-parent:$koraVersion")
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+    annotationProcessor "io.koraframework:annotation-processors"
 
-    implementation "ru.tinkoff.kora:http-server-undertow"
-    implementation "ru.tinkoff.kora:json-module"
-    implementation "ru.tinkoff.kora:micrometer-module"
-    implementation "ru.tinkoff.kora:logging-logback"
-    implementation "ru.tinkoff.kora:config-hocon"
+    implementation "io.koraframework:http-server-undertow"
+    implementation "io.koraframework:json-common"
+    implementation "io.koraframework:micrometer-module"
+    implementation "io.koraframework:logging-logback"
+    implementation "io.koraframework:config-hocon"
 }
 ```
 
@@ -338,17 +438,18 @@ dependencies {
 
 ```groovy
 dependencies {
-    koraBom platform("ru.tinkoff.kora:kora-parent:$koraVersion")
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+    annotationProcessor "io.koraframework:annotation-processors"
 
-    implementation "ru.tinkoff.kora:database-jdbc"
-    implementation "ru.tinkoff.kora:database-flyway"
+    implementation "io.koraframework:database-jdbc"
+    implementation "io.koraframework:database-flyway"
     implementation "org.postgresql:postgresql:42.7.7"
+    implementation "org.flywaydb:flyway-database-postgresql:13.1.0"
 
-    implementation "ru.tinkoff.kora:logging-logback"
-    implementation "ru.tinkoff.kora:config-hocon"
+    implementation "io.koraframework:logging-logback"
+    implementation "io.koraframework:config-hocon"
 
-    testImplementation "ru.tinkoff.kora:test-junit5"
+    testImplementation "io.koraframework:test-junit5"
 }
 ```
 
@@ -356,14 +457,14 @@ dependencies {
 
 ```groovy
 dependencies {
-    koraBom platform("ru.tinkoff.kora:kora-parent:$koraVersion")
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+    annotationProcessor "io.koraframework:annotation-processors"
 
-    implementation "ru.tinkoff.kora:kafka"
-    implementation "ru.tinkoff.kora:json-module"
+    implementation "io.koraframework:kafka"
+    implementation "io.koraframework:json-common"
 
-    implementation "ru.tinkoff.kora:logging-logback"
-    implementation "ru.tinkoff.kora:config-hocon"
+    implementation "io.koraframework:logging-logback"
+    implementation "io.koraframework:config-hocon"
 }
 ```
 
@@ -374,24 +475,38 @@ Full multi-module example: [`assets/build.gradle-full.template`](assets/build.gr
 ## Common Pitfalls
 
 | Symptom | Cause | Fix |
-|---------|-------|-----|
-| "Required dependency not found" for a generated impl | Processor not on the classpath | Add `annotation-processors` (Java) or `symbol-processors` (Kotlin); ensure `koraBom` is `extendsFrom` the processor configuration |
-| Generated `*ComponentImpl`/`*RepositoryImpl` missing | Processor never ran | `./gradlew clean classes` — annotation processors run before normal compile |
-| Version conflict on Jackson/OkHttp/Undertow | A raw version was declared | Remove the explicit version; let the BOM own it (or use `resolutionStrategy.force`) |
-| Module not picked up at runtime | Artifact added but interface not extended | `extends`/implement the matching `*Module` on the `@KoraApp` interface |
-| Wrong artifact name (e.g. `http-client-okhttp`, `resilient`, `validation`) | Guessed name | Use the verified names: `http-client-ok`, `resilient-kora`, `validation-module` |
-| KSP fails after Kotlin upgrade | KSP/Kotlin mismatch | KSP version must match the Kotlin version (e.g. `1.9.25-1.0.20`) |
+|---|---|---|
+| `annotation-processors` fails to resolve (Java) | `koraBom` not `extendsFrom` `annotationProcessor` | Wire the configuration — a `platform` on `implementation` does not reach the processor classpath |
+| `symbol-processors` fails to resolve (Kotlin) | Versionless `ksp("io.koraframework:symbol-processors")` | The BOM does not apply to `ksp` — give the dependency an explicit version |
+| `Cannot resolve external dependency … because no repositories are defined` | The build has no `repositories` block | Add `repositories { mavenCentral() }` — RC1 resolves from Central alone |
+| `Could not find io.koraframework:…:2.0.0-SNAPSHOT` | Snapshot line without the snapshot repo | Pin `2.0.0.RC1` instead, or add `maven { url = "https://central.sonatype.com/repository/maven-snapshots" }` |
+| "`cache-redis`/`kora-parent` must still work — I can see the directory on Maven Central" | The Central listing is cumulative and full of 1.x/alpha leftovers | Check what `kora-bom:2.0.0.RC1` constrains, or the artifact's `maven-metadata.xml`, not the directory |
+| A group-only rename builds fine, but modules resolve oddly | `io.koraframework:kora-parent` **resolves** at `2.0.0.alpha5`/`alpha6` — the build silently pinned a pre-release BOM | Rename the artifact too: `kora-bom`. "It resolved" is not evidence the coordinate is right |
+| `Could not find ru.tinkoff.kora:…` | 1.x coordinate | See [Coming from Kora 1.x](#coming-from-kora-1x) |
+| `Could not find io.koraframework:json-module` / `cache-redis` / `kora-parent` | Artifact does not exist in 2.0 | `json-common` / `cache-redis-lettuce` / `kora-bom` |
+| `Could not find io.koraframework.experimental:s3-client-aws` | Wrong group | `s3-client-aws` is plain `io.koraframework`; only `s3-client-kora` is experimental |
+| `Dependency requires at least JVM runtime version 25` at configuration time | Gradle itself runs on an older JDK | Run Gradle on JDK 25+; the toolchain alone does not fix it |
+| `FlywayException: Unsupported Database: PostgreSQL 16.x` | `database-flyway` ships `flyway-core` only | Add `org.flywaydb:flyway-database-postgresql` at the resolved `flyway-core` version |
+| `AbstractMethodError … buildClientTransportServers` in tests | gRPC test transport pinned to an older version | Align `grpc-inprocess`/`grpc-netty` with `1.83.1` |
+| `Java 25 (69) is not supported by the current version of Byte Buddy` | Old Mockito/MockK; often hidden inside `Application graph failed to initialize with N errors` | Raise `mockito-core` / `mockk`; pin `mockito-core` next to `mockito-kotlin` |
+| `Could not find org.testcontainers:postgresql` | Testcontainers 2.x with 1.x module names | `testcontainers-postgresql` etc., or stay on 1.21.4 |
+| Hundreds of `package ru.tinkoff.kora… does not exist` in `build/generated/` | Stale generator output after the group rename | `./gradlew clean` then build with `--no-build-cache`; never edit generated code |
+| Metrics missing though `micrometer-module` is present | `telemetry.metrics.enabled` defaults to `false` | Enable it per component |
+| Service starts green but probes/metrics/LB hit nothing | Stale `publicApiHttpPort`/`privateApiHttpPort` — unrecognised keys are ignored, so each server uses its own default (8080 public, **8085** system) | `httpServer.port` / `httpServer.system.port`. `SystemHttpServerConfig` overrides `port()` to 8085, so the servers do **not** collide on 8080 |
+| Module added but nothing wired | `*Module` interface not extended | Extend it on the `@KoraApp` interface |
+| `KspTask` no longer compiles | KSP 2 removed the type | `tasks.matching { it.name.startsWith("ksp") }` |
 
 ---
 
 ## References
 
 | Document | Description |
-|----------|-------------|
-| [`references/bom-usage-reference.md`](references/bom-usage-reference.md) | BOM setup, `koraBom` configuration, multi-module, version verification |
-| [`references/annotation-processors-reference.md`](references/annotation-processors-reference.md) | Java annotation processors + Kotlin KSP setup, generated-code locations |
-| [`references/core-modules-reference.md`](references/core-modules-reference.md) | Core modules (config, JSON, logging) and a minimal `@KoraApp` |
-| [`references/compatibility-matrix.md`](references/compatibility-matrix.md) | Java / Kotlin / KSP / Gradle compatibility |
+|---|---|
+| [`references/artifact-catalog.md`](references/artifact-catalog.md) | **Every published artifact**, by group, plus renames/removals |
+| [`references/bom-usage-reference.md`](references/bom-usage-reference.md) | BOM setup for Java and Kotlin, multi-module, version verification |
+| [`references/annotation-processors-reference.md`](references/annotation-processors-reference.md) | Processors + KSP 2, aggregate vs per-domain, generated-code locations |
+| [`references/compatibility-matrix.md`](references/compatibility-matrix.md) | JDK derivation, Kotlin/KSP/Gradle, third-party and externally-versioned deps |
+| [`references/core-modules-reference.md`](references/core-modules-reference.md) | Core modules, 2.0 config keys, a minimal `@KoraApp` |
 
 ## See Also
 

@@ -1,14 +1,16 @@
 # Annotation Processors & KSP Reference
 
-Setting up compile-time code generation for Java (annotation processors) and Kotlin (KSP).
+Compile-time code generation for Kora 2.0: Java annotation processors and Kotlin KSP.
 
 ## Contents
 
 - [Overview](#overview)
 - [Java projects](#java-projects)
 - [Kotlin projects](#kotlin-projects)
-- [KSP version matrix](#ksp-version-matrix)
+- [What the aggregate processors contain](#what-the-aggregate-processors-contain)
+- [Per-domain processors](#per-domain-processors)
 - [Multi-module projects](#multi-module-projects)
+- [KSP 2 differences](#ksp-2-differences)
 - [Troubleshooting](#troubleshooting)
 - [Generated code locations](#generated-code-locations)
 
@@ -18,13 +20,16 @@ Setting up compile-time code generation for Java (annotation processors) and Kot
 
 Kora generates code at build time instead of using reflection or runtime proxies:
 
-- DI container → `*ComponentImpl` / `ApplicationGraph`
-- HTTP routes → `*Module`-generated routers
+- DI container → `ApplicationGraph`
+- HTTP routes → generated controller modules
 - JSON → `*JsonReader` / `*JsonWriter`
 - Repositories → `*RepositoryImpl`
 - AOP aspects → `*_AopProxy`
+- Config → `*_ConfigValueMapper` / generated `*Module`
 
-Without the processor, none of this is generated and the build fails with missing-dependency errors. The processor is mandatory: Java uses `annotation-processors`, Kotlin uses KSP with `symbol-processors`.
+Without the processor none of this exists and the build fails with missing-dependency errors. The
+processor is mandatory: Java uses `io.koraframework:annotation-processors`, Kotlin uses KSP with
+`io.koraframework:symbol-processors`.
 
 ---
 
@@ -36,6 +41,10 @@ plugins {
     id "application"
 }
 
+repositories {
+    mavenCentral()
+}
+
 configurations {
     koraBom
     annotationProcessor.extendsFrom(koraBom)
@@ -44,15 +53,16 @@ configurations {
 }
 
 dependencies {
-    koraBom platform("ru.tinkoff.kora:kora-parent:$koraVersion")
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+    annotationProcessor "io.koraframework:annotation-processors"
 
-    implementation "ru.tinkoff.kora:json-module"
-    implementation "ru.tinkoff.kora:http-server-undertow"
+    implementation "io.koraframework:json-common"
+    implementation "io.koraframework:http-server-undertow"
 }
 ```
 
-If component tests generate code (for example a `@KoraAppTest` test application), also wire the test processor:
+Test sources that generate Kora code of their own — a test `@KoraApp`, a `@ConfigSource` declared in
+`src/test`, a test-only `@Component` — need the processor on the test classpath too:
 
 ```groovy
 configurations {
@@ -60,11 +70,11 @@ configurations {
 }
 
 dependencies {
-    testAnnotationProcessor "ru.tinkoff.kora:annotation-processors"
+    testAnnotationProcessor "io.koraframework:annotation-processors"
 }
 ```
 
-Recommended compile options:
+Compile options used by the reference examples:
 
 ```groovy
 compileJava {
@@ -74,59 +84,93 @@ compileJava {
 }
 ```
 
+To let integration tests reach the generated graph as a submodule, the reference `crud` example adds
+the processor option `-Akora.app.submodule.enabled=true`:
+
+```groovy
+compileJava {
+    options.compilerArgs += ["-Akora.app.submodule.enabled=true"]
+}
+```
+
 ---
 
 ## Kotlin projects
 
-KSP replaces the Java `annotationProcessor`. Apply the KSP Gradle plugin and add `symbol-processors`.
+KSP replaces `annotationProcessor`. Note the shape: **no `koraBom` configuration, no `extendsFrom`,
+and an explicit version on the `ksp` dependency** — the BOM does not constrain the `ksp` configuration.
 
 ```kotlin
 plugins {
-    application
-    kotlin("jvm") version "1.9.25"
-    id("com.google.devtools.ksp") version "1.9.25-1.0.20"
+    id("application")
+    kotlin("jvm") version "2.4.10"
+    id("com.google.devtools.ksp") version "2.3.11"
 }
 
-val koraBom: Configuration by configurations.creating
-configurations {
-    ksp.get().extendsFrom(koraBom)
-    compileOnly.get().extendsFrom(koraBom)
-    implementation.get().extendsFrom(koraBom)
+repositories {
+    mavenCentral()
 }
 
 dependencies {
-    koraBom(platform("ru.tinkoff.kora:kora-parent:$koraVersion"))
-    ksp("ru.tinkoff.kora:symbol-processors")
+    implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+    ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
 
-    implementation("ru.tinkoff.kora:json-module")
-    implementation("ru.tinkoff.kora:http-server-undertow")
+    implementation("io.koraframework:json-common")
+    implementation("io.koraframework:http-server-undertow")
+}
+
+kotlin {
+    jvmToolchain {
+        languageVersion.set(JavaLanguageVersion.of(25))
+        vendor.set(JvmVendorSpec.ADOPTIUM)
+    }
 }
 ```
 
-Register the KSP output directory so the IDE and compiler see the generated Kotlin:
+`kspTest(...)` goes in only when test sources really generate a graph. The KSP Gradle plugin already
+registers its output directories as source roots — an explicit `kotlin.srcDir("build/generated/ksp/...")`
+is not needed.
+
+Processor options go through the `ksp` extension:
 
 ```kotlin
-kotlin {
-    jvmToolchain {
-        languageVersion.set(JavaLanguageVersion.of(21))
-        vendor.set(JvmVendorSpec.ADOPTIUM)
-    }
-    sourceSets.main { kotlin.srcDir("build/generated/ksp/main/kotlin") }
-    sourceSets.test { kotlin.srcDir("build/generated/ksp/test/kotlin") }
+ksp {
+    arg("kora.app.submodule.enabled", "true")
 }
 ```
 
 ---
 
-## KSP version matrix
+## What the aggregate processors contain
 
-The KSP plugin version must match the Kotlin version exactly (the suffix `-1.0.x` is the KSP release).
+`annotation-processors` (Java) aggregates: `kora-app-`, `aop-`, `config-`, `json-`, `http-server-`,
+`http-client-`, `soap-client-`, `database-`, `kafka-`, `scheduling-`, `resilient-`, `cache-`,
+`validation-`, `logging-`, `grpc-client-`, `s3-client-` and `camunda-zeebe-worker-`
+`-annotation-processor`, **plus `mapstruct-java-extension`**.
 
-| Kotlin | KSP | Status |
-|--------|-----|--------|
-| 1.9.25 | 1.9.25-1.0.20 | Recommended |
-| 1.9.24 | 1.9.24-1.0.20 | Supported |
-| 1.9.23 | 1.9.23-1.0.20 | Supported |
+`symbol-processors` (Kotlin) aggregates the same domains in `-symbol-processor` form, **plus
+`mapstruct-ksp-extension` and `konvert-ksp-extension`**.
+
+Consequences worth knowing:
+
+- MapStruct and Konvert discovery is already on the processor classpath. Do not add
+  `mapstruct-java-extension` / `mapstruct-ksp-extension` / `konvert-ksp-extension` by hand.
+- You still add the third-party halves yourself: `org.mapstruct:mapstruct` plus its processor, or
+  `io.mcarle:konvert-api` plus `ksp("io.mcarle:konvert")`.
+
+---
+
+## Per-domain processors
+
+Every domain also publishes its processor separately (`config-annotation-processor`,
+`json-symbol-processor`, `database-annotation-processor`, …). A service does not need them — the
+aggregate covers everything.
+
+Use a single per-domain processor when a library module generates code for exactly one domain and you
+want a minimal processor classpath. The most common real case is a library module that only declares
+config interfaces: `@ConfigSource` / `@ConfigMapper` are processed at compile time, so the **library**
+must apply the processor. If it does not, the failure surfaces in the **consumer** as a missing
+generated `*Module`, which points at the wrong module entirely.
 
 ---
 
@@ -145,8 +189,8 @@ subprojects {
     }
 
     dependencies {
-        koraBom platform("ru.tinkoff.kora:kora-parent:$koraVersion")
-        annotationProcessor "ru.tinkoff.kora:annotation-processors"
+        koraBom platform("io.koraframework:kora-bom:$koraVersion")
+        annotationProcessor "io.koraframework:annotation-processors"
     }
 }
 ```
@@ -157,23 +201,46 @@ subprojects {
 // submodule/build.gradle.kts
 plugins {
     kotlin("jvm")
-    id("com.google.devtools.ksp") version "1.9.25-1.0.20"
-}
-
-val koraBom: Configuration by configurations.creating
-configurations {
-    ksp.get().extendsFrom(koraBom)
-    implementation.get().extendsFrom(koraBom)
+    id("com.google.devtools.ksp") version "2.3.11"
 }
 
 dependencies {
-    koraBom(platform("ru.tinkoff.kora:kora-parent:$koraVersion"))
-    ksp("ru.tinkoff.kora:symbol-processors")
+    implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+    ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
     implementation(project(":common"))
 }
 ```
 
-When a submodule contributes components to a `@KoraApp` in another module, mark its boundary with `@KoraSubmodule` so its components are exported.
+A submodule that contributes components to a `@KoraApp` in another module marks its boundary with
+`@KoraSubmodule` so its components are exported.
+
+---
+
+## KSP 2 differences
+
+Kotlin 2.4.10 / KSP 2.3.11 replace the 1.9.x pair, and KSP 2 **no longer exports the `KspTask`
+Gradle type**. Build logic that used it stops compiling:
+
+```kotlin
+// Broken under KSP 2 — the type is gone
+import com.google.devtools.ksp.gradle.KspTask
+tasks.withType<KspTask>().configureEach { /* ... */ }
+```
+
+Match tasks by name instead:
+
+```kotlin
+tasks.matching { it.name.startsWith("ksp") }.configureEach {
+    dependsOn(openApiGenerateHttpServer)
+}
+// or, for one known task:
+tasks.named("kspKotlin") { /* ... */ }
+```
+
+This matters most when a code generator (OpenAPI, protobuf) must run before KSP.
+
+Kora 2.0 has no `kapt` requirement: MapStruct for Kotlin goes through `mapstruct-ksp-extension`
+inside `symbol-processors`, so KSP alone is enough.
 
 ---
 
@@ -188,9 +255,11 @@ ls -la build/generated/ksp/                            # Kotlin
 ```
 
 Checklist:
+
 - `annotation-processors` (Java) or `symbol-processors` (Kotlin) is on the processor classpath.
-- `koraBom` is `extendsFrom` the `annotationProcessor`/`ksp` configuration.
-- The `@KoraApp` interface `extends`/implements every required `*Module`.
+- Java only: `koraBom` is `extendsFrom` the `annotationProcessor` configuration.
+- Kotlin only: the `ksp(...)` dependency carries an explicit version.
+- The `@KoraApp` interface extends every required `*Module`.
 
 ### KSP does not run
 
@@ -199,7 +268,32 @@ Checklist:
 ```
 
 - The `com.google.devtools.ksp` plugin is applied.
-- The KSP version matches the Kotlin version.
+- The KSP plugin version matches the Kotlin version (2.4.10 → 2.3.11).
+
+### `SQL query placeholder has no matching method parameter: :id`
+
+Available parameters are reported as `:arg0`, `:arg1`. The source is fine — an incremental build let
+the database processor read the repository interface from a class file with synthetic parameter
+names. Rerun the module clean:
+
+```bash
+./gradlew :module:compileJava --rerun-tasks
+```
+
+Any strange processor failure is worth retrying from a clean build before you start editing code.
+
+### Phantom `package ru.tinkoff.kora... does not exist`
+
+The failing files are under `build/generated/`, not in your sources. Generator tasks (OpenAPI,
+protobuf, `wsdl2java`) do not delete previous output and the build-cache key does not account for a
+changed `apiPackage`, so old 1.x-package files sit next to new ones.
+
+```bash
+./gradlew clean --continue
+./gradlew classes testClasses --continue --no-build-cache
+```
+
+Never fix this by editing generated code.
 
 ### Stale generated classes after a refactor
 
@@ -213,18 +307,19 @@ rm -rf build/generated/
 ## Generated code locations
 
 | Processor | Output directory |
-|-----------|------------------|
+|---|---|
 | Java annotation processing | `build/generated/sources/annotationProcessor/` |
 | Kotlin KSP | `build/generated/ksp/` |
 | OpenAPI generator | `build/generated/openapi/` |
-| gRPC / protobuf | `build/generated/proto/` |
+| gRPC / protobuf | `build/generated/source/proto/` |
 
 ---
 
 ## See Also
 
-- [SKILL.md](../SKILL.md) — Quick start
-- [compatibility-matrix.md](compatibility-matrix.md) — Version matrix
-- [bom-usage-reference.md](bom-usage-reference.md) — BOM setup
+- [SKILL.md](../SKILL.md) — quick start
+- [artifact-catalog.md](artifact-catalog.md) — every published artifact, including per-domain processors
+- [bom-usage-reference.md](bom-usage-reference.md) — BOM wiring for both languages
+- [compatibility-matrix.md](compatibility-matrix.md) — JDK / Kotlin / KSP / Gradle versions
 - [`kora-project-setup-java/SKILL.md`](../../kora-project-setup-java/SKILL.md) — Java project setup
 - [`kora-project-setup-kotlin/SKILL.md`](../../kora-project-setup-kotlin/SKILL.md) — Kotlin project setup

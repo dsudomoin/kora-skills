@@ -1,33 +1,34 @@
-package `${package}`
+package ${package}
 
-import ru.tinkoff.kora.database.cassandra.annotation.EntityCassandra
-import ru.tinkoff.kora.database.common.annotation.Column
-import ru.tinkoff.kora.database.common.annotation.Embedded
-import ru.tinkoff.kora.database.common.annotation.Id
-import ru.tinkoff.kora.database.common.annotation.Table
+import io.koraframework.database.cassandra.annotation.EntityCassandra
+import io.koraframework.database.common.annotation.Column
+import io.koraframework.database.common.annotation.Embedded
+import io.koraframework.database.common.annotation.Id
+import io.koraframework.database.common.annotation.Table
 
-/**
- * Entity with composite ID (two-field key) for Cassandra.
- * Composite ID is implemented as a nested data class.
+/*
+ * TEMPLATE NOTES — delete this block after copying.
  *
- * Key patterns:
- * - Nested data class for composite key (ID)
- * - @field:Id @field:Embedded flattens the nested key into the composite primary key
- * - ID types: Use ${id1_type} and ${id2_type} (UUID, String, Long, etc.)
+ * @field:Embedded flattens the nested ID class into the owning entity's columns; @field:Id marks
+ * the whole group as the primary key for the %{entity#where = @id} macro.
+ *
+ * Binding always uses the full path: :entity.id.${id1_field}, not :entity.${id1_field}.
+ * @field:Embedded("prefix_") prefixes every flattened column name.
+ *
+ * The ID class is NOT annotated — @EntityCassandra belongs on the owner only.
+ * CQL: PRIMARY KEY ((${id1_field}), ${id2_field}) or ((${id1_field}, ${id2_field})).
  */
 @EntityCassandra
-@Table("`${table_name}`")
+@Table("${table_name}")
 data class ${entity_name}(
     @field:Id @field:Embedded val id: ID,
     @field:Column("name") val name: String,
     @field:Column("field1") val field1: String,
-    @field:Column("field2") val field2: String? = null
+    @field:Column("field2") val field2: String?
 ) {
-    /**
-     * Composite ID class with two fields.
-     */
+
     data class ID(
-        val `${id1_field}`: `${id1_type}`,
-        val `${id2_field}`: `${id2_type}`
+        val ${id1_field}: ${id1_type},
+        val ${id2_field}: ${id2_type}
     )
 }

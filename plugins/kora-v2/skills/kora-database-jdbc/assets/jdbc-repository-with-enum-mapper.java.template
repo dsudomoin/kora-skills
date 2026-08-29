@@ -1,53 +1,76 @@
 package ${package};
 
-import jakarta.annotation.Nullable;
+import io.koraframework.common.annotation.Mapping;
+import io.koraframework.database.common.UpdateCount;
+import io.koraframework.database.common.annotation.Column;
+import io.koraframework.database.common.annotation.Id;
+import io.koraframework.database.common.annotation.Query;
+import io.koraframework.database.common.annotation.Repository;
+import io.koraframework.database.common.annotation.Table;
+import io.koraframework.database.jdbc.JdbcRepository;
+import io.koraframework.database.jdbc.annotation.EntityJdbc;
+import io.koraframework.database.jdbc.mapper.parameter.JdbcParameterColumnMapper;
+import io.koraframework.database.jdbc.mapper.result.JdbcResultColumnMapper;
+import org.jspecify.annotations.Nullable;
+
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
 import java.util.List;
-import ru.tinkoff.kora.common.Mapping;
-import ru.tinkoff.kora.database.common.UpdateCount;
-import ru.tinkoff.kora.database.common.annotation.Column;
-import ru.tinkoff.kora.database.common.annotation.Id;
-import ru.tinkoff.kora.database.common.annotation.Query;
-import ru.tinkoff.kora.database.common.annotation.Repository;
-import ru.tinkoff.kora.database.common.annotation.Table;
-import ru.tinkoff.kora.database.jdbc.EntityJdbc;
-import ru.tinkoff.kora.database.jdbc.JdbcRepository;
-import ru.tinkoff.kora.database.jdbc.mapper.parameter.JdbcParameterColumnMapper;
-import ru.tinkoff.kora.database.jdbc.mapper.result.JdbcResultColumnMapper;
 
 /**
- * Repository example with custom mappers for an enum stored as an integer code.
+ * Entity whose enum field is stored as an integer code, with both column mappers.
  *
- * When an entity has an enum field, supply a JdbcResultColumnMapper (read) and a
- * JdbcParameterColumnMapper (write); select both by repeating @Mapping on the field.
+ * Enums are not a natively supported column type, so each direction needs its own mapper:
+ * - JdbcResultColumnMapper<T>    reads:  @Nullable T apply(ResultSet rs, int index)
+ * - JdbcParameterColumnMapper<T> writes: void set(PreparedStatement stmt, int index, @Nullable T value)
  *
- * Database schema example:
- *   CREATE TABLE tasks (
+ * Selection: @Mapping is @Repeatable, so both mappers go on the same field, one annotation each.
+ * There is no `value = { ... }` array form.
+ *
+ * @Component is deliberately absent. Both mappers are `final` with a public no-arg constructor and
+ * carry no @Tag, so the generated repository instantiates them itself
+ * (`private static final ... = new StatusResultMapper()`). Adding @Component would put an unused
+ * node in the graph and make a by-type lookup ambiguous the moment a second Status mapper appears.
+ * A mapper that is non-final, has constructor dependencies, or is tagged is injected instead and
+ * then MUST be a @Component.
+ *
+ * The alternative to @Mapping is by-type discovery: declare each mapper as a top-level @Component
+ * and drop every @Mapping — the generated code then resolves them from the graph by type, which
+ * also covers query parameters of that type.
+ *
+ * LAYOUT — this is a single-file sample: Java allows one public top-level type per file, so only
+ * the entity is public and the file must be named ${entity_name}.java. In a real project put the
+ * repository in its own file and make it public. A package-private repository only works while
+ * @KoraApp sits in the same package — the generated <App>Graph has to name the repository type,
+ * and cannot reach it from elsewhere. (The mappers here are nested in the public record, so they
+ * are reachable either way.)
+ *
+ * Matching DDL:
+ *   CREATE TABLE ${table_name} (
  *       id     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
  *       title  VARCHAR(255) NOT NULL,
- *       status INT NOT NULL,
- *       created_at TIMESTAMP NOT NULL DEFAULT NOW()
+ *       status INTEGER NOT NULL
  *   );
  */
 @EntityJdbc
-@Table("tasks")
+@Table("${table_name}")
 public record ${entity_name}(
-    @Id @Column("id") Long id,
-    @Column("title") String title,
-    @Mapping(${entity_name}.StatusResultMapper.class)
-    @Mapping(${entity_name}.StatusParameterMapper.class)
-    @Column("status") Status status
-) {
+        @Id Long id,
+        String title,
+        @Mapping(${entity_name}.StatusResultMapper.class)
+        @Mapping(${entity_name}.StatusParameterMapper.class)
+        Status status) {
 
+    /** Constructor for inserts where the database assigns the id. */
     public ${entity_name}(String title, Status status) {
         this(null, title, status);
     }
 
-    /** Enum stored as an integer code in the database. */
+    /** Enum persisted as its integer code rather than its name. */
     public enum Status {
+
         UNKNOWN(-10),
         PENDING(0),
         IN_PROGRESS(10),
@@ -64,15 +87,15 @@ public record ${entity_name}(
         }
     }
 
-    /** Reads the integer column into a Status. */
+    /** Reads the integer column into a Status, falling back to UNKNOWN for unknown codes. */
     public static final class StatusResultMapper implements JdbcResultColumnMapper<Status> {
 
         private static final Status[] ALL = Status.values();
 
         @Override
         public Status apply(ResultSet rs, int index) throws SQLException {
-            int code = rs.getInt(index);
-            for (Status status : ALL) {
+            var code = rs.getInt(index);
+            for (var status : ALL) {
                 if (status.code() == code) {
                     return status;
                 }
@@ -86,18 +109,15 @@ public record ${entity_name}(
 
         @Override
         public void set(PreparedStatement stmt, int index, @Nullable Status value) throws SQLException {
-            if (value != null) {
-                stmt.setInt(index, value.code());
-            } else {
+            if (value == null) {
                 stmt.setNull(index, Types.INTEGER);
+            } else {
+                stmt.setInt(index, value.code());
             }
         }
     }
 }
 
-/**
- * Repository using the enum-mapped entity.
- */
 @Repository
 interface ${entity_name}Repository extends JdbcRepository {
 
@@ -108,14 +128,25 @@ interface ${entity_name}Repository extends JdbcRepository {
     @Query("SELECT %{return#selects} FROM %{return#table}")
     List<${entity_name}> findAll();
 
-    // Enum query parameters need their own @Mapping (the field-level mappers apply to the entity only)
+    /**
+     * A query parameter needs its own @Mapping: the field-level mappers above describe the entity,
+     * not loose arguments. Making the mapper a @Component instead would remove the need for this.
+     */
     @Query("SELECT %{return#selects} FROM %{return#table} WHERE status = :status")
-    List<${entity_name}> findByStatus(@Mapping(${entity_name}.StatusParameterMapper.class) ${entity_name}.Status status);
+    List<${entity_name}> findByStatus(
+            @Mapping(${entity_name}.StatusParameterMapper.class) ${entity_name}.Status status);
 
-    @Query("INSERT INTO %{entity#inserts-= @id}")
+    /**
+     * The macro target is the parameter name, so it must be called `entity` for %{entity#...}.
+     * @Id on the method returns the database-generated key.
+     */
+    @Query("INSERT INTO %{entity#inserts -= @id}")
     @Id
-    Long insert(${entity_name} task);
+    Long insert(${entity_name} entity);
 
     @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
-    UpdateCount update(${entity_name} task);
+    UpdateCount update(${entity_name} entity);
+
+    @Query("DELETE FROM ${table_name} WHERE id = :id")
+    UpdateCount deleteById(Long id);
 }

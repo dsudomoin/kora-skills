@@ -1,31 +1,36 @@
 package com.example.controller;
 
-import jakarta.annotation.Nullable;
+import io.koraframework.common.annotation.Component;
+import io.koraframework.http.common.HttpMethod;
+import io.koraframework.http.common.HttpResponseEntity;
+import io.koraframework.http.common.annotation.HttpRoute;
+import io.koraframework.http.common.annotation.Path;
+import io.koraframework.http.common.annotation.Query;
+import io.koraframework.http.common.header.HttpHeaders;
+import io.koraframework.http.server.common.annotation.HttpController;
+import io.koraframework.http.server.common.response.HttpServerResponse;
+import io.koraframework.http.server.common.response.HttpServerResponseException;
+import io.koraframework.json.common.annotation.Json;
+import org.jspecify.annotations.Nullable;
+
 import java.util.List;
 import java.util.Optional;
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.http.common.HttpMethod;
-import ru.tinkoff.kora.http.common.HttpResponseEntity;
-import ru.tinkoff.kora.http.common.annotation.HttpRoute;
-import ru.tinkoff.kora.http.common.annotation.Path;
-import ru.tinkoff.kora.http.common.annotation.Query;
-import ru.tinkoff.kora.http.common.body.HttpBody;
-import ru.tinkoff.kora.http.common.header.HttpHeaders;
-import ru.tinkoff.kora.http.server.common.HttpServerResponse;
-import ru.tinkoff.kora.http.server.common.HttpServerResponseException;
-import ru.tinkoff.kora.http.server.common.annotation.HttpController;
-import ru.tinkoff.kora.json.common.annotation.Json;
 
 /**
- * CRUD controller template.
+ * CRUD controller template — Kora 2.0.
  *
  * Demonstrates:
- * - @HttpController (no base path; the prefix lives on each @HttpRoute path)
- * - @HttpRoute with HttpMethod + path
- * - @Path / @Query parameter binding (@Nullable for optional)
- * - @Json for request and response bodies
- * - HttpResponseEntity / HttpServerResponse for status and headers
- * - HttpServerResponseException for error short-circuit
+ * - @HttpController with no prefix; each @HttpRoute carries its full path
+ *   (@HttpController("/users") would prepend a shared prefix instead)
+ * - @HttpRoute with an HttpMethod constant and a path
+ * - @Path / @Query binding, with JSpecify @Nullable + a boxed type for optional values
+ * - @Json on the method and on the body parameter
+ * - HttpResponseEntity for a body with a custom status and headers
+ * - void for an empty 200, HttpServerResponse for an explicit 204
+ * - HttpServerResponseException to short-circuit with a status code
+ *
+ * Requires: io.koraframework:http-server-undertow, io.koraframework:json-common,
+ * and the @KoraApp interface extending UndertowPublicHttpServerModule + JsonModule.
  */
 @Component
 @HttpController
@@ -46,11 +51,9 @@ public final class UserController {
 
     @HttpRoute(method = HttpMethod.GET, path = "/users")
     @Json
-    public List<UserResponse> listUsers(@Nullable @Query("page") Integer page,
-                                        @Nullable @Query("size") Integer size) {
-        int pageNum = page == null ? 0 : page;
-        int pageSize = size == null ? 10 : size;
-        return userService.findAll(pageNum, pageSize);
+    public List<UserResponse> listUsers(@Nullable @Query Integer page,
+                                        @Nullable @Query Integer size) {
+        return userService.findAll(page == null ? 0 : page, size == null ? 10 : size);
     }
 
     @HttpRoute(method = HttpMethod.POST, path = "/users")
@@ -70,7 +73,7 @@ public final class UserController {
     @HttpRoute(method = HttpMethod.DELETE, path = "/users/{userId}")
     public HttpServerResponse deleteUser(@Path String userId) {
         userService.delete(userId);
-        return HttpServerResponse.of(204, HttpBody.empty());
+        return HttpServerResponse.of(204);
     }
 
     // DTOs (typically in separate files)

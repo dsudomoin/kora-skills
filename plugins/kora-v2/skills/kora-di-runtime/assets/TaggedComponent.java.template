@@ -1,97 +1,71 @@
 package ${packagePath};
 
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.common.Tag;
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Tag;
 
 /**
- * Component with tag for disambiguation.
+ * One of several implementations of {@code ${InterfaceName}}, selected by tag.
  *
- * Usage:
- * - Multiple implementations of the same interface
- * - Strategy pattern with runtime selection
- * - Multi-tenant components (different databases, caches)
- * - Environment-specific implementations (prod vs dev)
- *
- * Tag classes should be simple marker classes, NOT custom annotations.
- *
- * Good:
- *   public final class RedisTag {}
- *   public final class PrimaryTag {}
- *
- * Bad (unnecessary complexity):
- *   @Target({...})
- *   @Retention(RetentionPolicy.RUNTIME)
- *   @Tag(RedisTag.class)
- *   public @interface RedisCache {}
+ * <p>Import {@code Tag} from <b>io.koraframework.common.annotation</b> — {@code io.koraframework.common}
+ * holds {@code Configurer}, {@code Either}, {@code Principal} and {@code PromisedProxy}, not the DI
+ * annotations.
  */
 @Tag(${TagClass}.class)
 @Component
 public final class ${ComponentName} implements ${InterfaceName} {
 
-    // TODO: Add implementation-specific fields
+    private final ${DependencyType} ${dependencyName};
 
-    public ${ComponentName}(/* Dependencies */) {
-        // TODO: Initialize implementation-specific resources
+    public ${ComponentName}(${DependencyType} ${dependencyName}) {
+        this.${dependencyName} = ${dependencyName};
     }
 
     @Override
-    public void doSomething() {
-        // TODO: Implementation-specific logic
-        System.out.println("${ComponentName} doing something (tagged with ${TagClass})");
+    public void ${methodName}() {
+        // implementation
     }
 }
 
-// ============================================================================
-// EXAMPLE USAGE
-// ============================================================================
+// ---------------------------------------------------------------------------
+// Consuming tagged components
+// ---------------------------------------------------------------------------
 //
-// // Tag classes (simple marker classes)
-// public final class RedisTag {}
-// public final class CaffeineTag {}
+// Pick specific implementations:
 //
-// // Tagged implementations
-// @Tag(RedisTag.class)
-// @Component
-// public final class RedisCache implements Cache { ... }
-//
-// @Tag(CaffeineTag.class)
-// @Component
-// public final class CaffeineCache implements Cache { ... }
-//
-// // Tagged injection
 // @Component
 // public final class UserService {
-//     private final Cache redisCache;
-//     private final Cache localCache;
 //
-//     public UserService(
-//         @Tag(RedisTag.class) Cache redisCache,
-//         @Tag(CaffeineTag.class) Cache localCache
-//     ) {
-//         this.redisCache = redisCache;
-//         this.localCache = localCache;
+//     private final Cache remote;
+//     private final Cache local;
+//
+//     public UserService(@Tag(RedisTag.class) Cache remote,
+//                        @Tag(LocalTag.class) Cache local) {
+//         this.remote = remote;
+//         this.local = local;
 //     }
 // }
 //
-// // Collect ALL caches (including tagged)
+// Collect every implementation, tagged or not — All<T> is an Iterable, not a List:
+//
 // @Component
-// public final class CacheManager {
-//     private final List<Cache> allCaches;
+// public final class CacheAdmin {
 //
-//     public CacheManager(@Tag(Tag.Any.class) List<Cache> allCaches) {
-//         this.allCaches = allCaches;
+//     private final All<Cache> caches;
+//
+//     public CacheAdmin(@Tag(Tag.Any.class) All<Cache> caches) {
+//         this.caches = caches;
+//     }
+//
+//     public void invalidateAll() {
+//         for (var cache : caches) {
+//             cache.invalidate();
+//         }
 //     }
 // }
 //
-// // Collect only Redis caches
-// @Component
-// public final class RedisCacheManager {
-//     private final List<Cache> redisCaches;
+// Collect only one tag's implementations:
 //
-//     public RedisCacheManager(
-//         @Tag(RedisTag.class)
-//         All<Cache> redisCaches
-//     ) {
-//         this.redisCaches = redisCaches;
-//     }
-// }
+//     public RedisCacheAdmin(@Tag(RedisTag.class) All<Cache> redisCaches) { … }
+//
+// Overriding a module method inside @KoraApp: repeat the @Tag, or the override registers an
+// untagged component and every tagged consumer stops seeing it.
