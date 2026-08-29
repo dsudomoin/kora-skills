@@ -1,133 +1,190 @@
-# OpenAPI Validation Reference
+# OpenAPI Validation Reference — Kora 2.x
 
-**Kora Validation:** `ru.tinkoff.kora.validation.common.annotation.*` — Kora's own validation annotations, NOT Jakarta/JSR-380.
+`configOptions.enableServerValidation` turns OpenAPI schema constraints into Kora validation
+annotations on the generated models and controller parameters. Kora validation is **not**
+Jakarta Bean Validation — the annotations live in
+`io.koraframework.validation.common.annotation` and are processed at compile time.
+
+## Contents
+
+- [1. Turning it on](#1-turning-it-on)
+- [2. What gets generated](#2-what-gets-generated)
+- [3. Constraint mapping](#3-constraint-mapping)
+- [4. One annotation per property — the precedence chain](#4-one-annotation-per-property--the-precedence-chain)
+- [5. The failure path and `enableServerValidationInterceptor`](#5-the-failure-path-and-enableservervalidationinterceptor)
+- [6. Customising the error response](#6-customising-the-error-response)
+- [7. `validation-module` and `http-server-common`](#7-validation-module-and-http-server-common)
+- [8. Pitfalls](#8-pitfalls)
 
 ---
 
-## 1. Overview
+## 1. Turning it on
 
-Kora OpenAPI Generator can produce Kora Validation annotations from OpenAPI schema constraints when `enableServerValidation: "true"` is set.
-
-**Enable with:**
 ```groovy
 configOptions = [
-    mode: "java-server",
+    mode                  : "java-server",
     enableServerValidation: "true",
-    enableServerValidationInterceptor: "true"  // Auto 400 mapping
 ]
 ```
 
-**Important:** Kora uses its own validation library (`ru.tinkoff.kora:validation-module`), NOT Jakarta Bean Validation or Hibernate Validator.
-
----
-
-## 2. Generated Validation Annotations
-
-### OpenAPI Constraints → Kora Validation Annotations
-
-| OpenAPI Constraint | Generated Annotation |
-|-------------------|---------------------|
-| `required: true` | `@NotNull` |
-| `minLength: N` | `@Size(min = N)` |
-| `maxLength: N` | `@Size(max = N)` |
-| `minimum: N` | `@Range(from = N)` |
-| `maximum: N` | `@Range(to = N)` |
-| `pattern: "..."` | `@Pattern("...")` |
-| `format: email` | `@Pattern(regexp = "^[^@\\\\s]+@[^@\\\\s]+$")` |
-| `format: uuid` | `@Pattern(regexp = "^[0-9a-fA-F]{8}-...$")` |
-| `format: date-time` | `@PastOrPresent` / `@FutureOrPresent` |
-| `nullable: true` | No annotation (allows null) |
-
-### Example: OpenAPI Schema
-
-```yaml
-components:
-  schemas:
-    UserRequestTO:
-      type: object
-      required: [name, email]
-      properties:
-        name:
-          type: string
-          minLength: 1
-          maxLength: 100
-        email:
-          type: string
-          format: email
-        age:
-          type: integer
-          minimum: 18
-          maximum: 120
-        status:
-          type: string
-          enum: [ACTIVE, INACTIVE, PENDING]
-        tags:
-          type: array
-          items:
-            type: string
-          minItems: 1
-          maxItems: 10
-```
-
-### Generated DTO
-
-```java
-package com.example.userapi.model;
-
-import ru.tinkoff.kora.validation.common.annotation.*;
-import java.util.List;
-
-@Valid
-public record UserRequestTO(
-    
-    @NotNull
-    @Size(min = 1, max = 100)
-    String name,
-    
-    @NotNull
-    @Pattern(regexp = "^[^@\\\\s]+@[^@\\\\s]+$")
-    String email,
-    
-    @Range(from = 18, to = 120)
-    Integer age,
-    
-    @Pattern(regexp = "^(ACTIVE|INACTIVE|PENDING)$")
-    String status,
-    
-    @Size(min = 1, max = 10)
-    List<String> tags
-) {}
-```
-
----
-
-## 3. ViolationException Handling
-
-When validation fails on a handler, Kora throws a `ViolationException`
-(`ru.tinkoff.kora.validation.common.ViolationException`).
-
-Provide a `ViolationExceptionHttpServerResponseMapper`
-(`ru.tinkoff.kora.validation.module.http.server.ViolationExceptionHttpServerResponseMapper`)
-in the application graph to control the HTTP response. This matches the example app:
-
-```java
-import ru.tinkoff.kora.http.server.common.HttpServerResponseException;
-import ru.tinkoff.kora.validation.module.http.server.ViolationExceptionHttpServerResponseMapper;
-
-default ViolationExceptionHttpServerResponseMapper customViolationExceptionHttpServerResponseMapper() {
-    return (request, exception) -> HttpServerResponseException.of(400, exception.getMessage());
+```groovy
+dependencies {
+    implementation "io.koraframework:validation-module"
 }
 ```
 
-Setting `enableServerValidationInterceptor: "true"` adds a generated interceptor
-that routes validation failures through this mapper. See
-[kora-aop-validation](../../kora-aop-validation/SKILL.md) for the full validation
-annotation set and `@Validate` patterns.
+```java
+@KoraApp
+public interface Application extends
+        HoconConfigModule, LogbackModule, JsonModule,
+        ValidationModule,                       // io.koraframework.validation.module.ValidationModule
+        UndertowPublicHttpServerModule { … }
+```
 
----
+`enableServerValidation` is read **only** in a server mode; on a client task it is a silent
+no-op. Without `ValidationModule` in the graph the build fails on the missing
+`ValidationHttpServerInterceptor` / `Validator<T>` components.
 
-## 4. Related
+## 2. What gets generated
 
-- [kora-aop-validation](../../kora-aop-validation/SKILL.md) — Kora Validation annotations, @Validate, ViolationException
-- [OpenAPI Delegates Reference](openapi-delegates-reference.md) — Using DTOs in delegates
-- [OpenAPI Controllers Reference](openapi-controllers-reference.md) — Controllers, interceptors
+On the controller method:
+
+```java
+@InterceptWith(ValidationHttpServerInterceptor.class)   // see section 5
+@Validate
+public PetsApiResponses.ListPetsApiResponse listPets(
+    @Query("filter") @Pattern(".*") String filter,
+    @Query("limit") @Range(from = 1.0, to = 100.0, boundary = Range.Boundary.INCLUSIVE_INCLUSIVE)
+    @Nullable Integer limit) throws Exception { … }
+
+@InterceptWith(ValidationHttpServerInterceptor.class)
+@Validate
+public PetApiResponses.AddPetApiResponse addPet(@Json @Valid PetCreateTO petCreateTO) throws Exception { … }
+```
+
+On models: `@Valid` on the type, and one constraint annotation per constrained field. The
+`*ApiDelegate` interface itself carries **no** validation annotations — validation runs in the
+controller, before your delegate is called, so a delegate method only ever sees valid input.
+
+## 3. Constraint mapping
+
+| OpenAPI schema | Generated annotation |
+|---|---|
+| `minimum: 1` (integer/long, no `maximum`) | `@Min(1L)` |
+| `minimum: 0` (integer/long, no `maximum`) | `@PositiveOrZero` |
+| `minimum: 0, exclusiveMinimum: true` | `@Positive` |
+| `maximum: 100` (integer/long, no `minimum`) | `@Max(100L)` |
+| `maximum: 0` (integer/long) | `@NegativeOrZero` |
+| `maximum: 0, exclusiveMaximum: true` | `@Negative` |
+| `minimum` **and** `maximum`, or a non-integral numeric type | `@Range(from = …, to = …, boundary = Range.Boundary.INCLUSIVE_INCLUSIVE)` |
+| `exclusiveMinimum` / `exclusiveMaximum` on a range | `boundary = Range.Boundary.EXCLUSIVE_INCLUSIVE` etc. |
+| `minLength` / `maxLength` | `@Size(min = …, max = …)` (`max` defaults to `Integer.MAX_VALUE`) |
+| `minItems` / `maxItems` | `@Size(min = …, max = …)` |
+| `pattern: "^[a-z]+$"` | `@Pattern("^[a-z]+$")` |
+| a `$ref` to another model | `@Valid` (cascades) |
+
+A missing `minimum` in a `@Range` is filled with the type's floor (`Long.MIN_VALUE`,
+`Integer.MIN_VALUE`, `Double.MIN_VALUE`, `Float.MIN_VALUE`) and likewise for `maximum`.
+
+`required` is **not** a validation annotation — it is expressed as non-nullability in the
+generated signature and enforced by the request parser, which answers `400` before validation
+runs.
+
+## 4. One annotation per property — the precedence chain
+
+The generator returns **at most one** constraint annotation per property, from a first-match
+chain in this order:
+
+1. `minimum` / `maximum`
+2. `minLength` / `maxLength`
+3. `minItems` / `maxItems`
+4. `pattern`
+5. `$ref` to a model → `@Valid`
+
+So a string schema declaring **both** `maxLength` and `pattern` generates only `@Size` — the
+`pattern` is silently not enforced. If you need both, validate the second constraint in the
+delegate and return the contract's `400`, or split the schema. Do not add the annotation to
+generated code.
+
+## 5. The failure path and `enableServerValidationInterceptor`
+
+`@Validate` makes the aspect throw
+`io.koraframework.validation.common.ViolationException` when a constraint fails.
+`ValidationHttpServerInterceptor` catches it and converts it to a response:
+
+```java
+try {
+    return chain.process(request);
+} catch (ViolationException e) {
+    // custom mapper if one is in the graph, else:
+    return HttpServerResponseException.of(400, e.getMessage());
+}
+```
+
+`enableServerValidationInterceptor` defaults to **`true`**, which is why the interceptor
+annotation appears on every validated method. Set it to `"false"` when you handle
+`ViolationException` yourself — for instance in a global interceptor registered under
+`@Tag(HttpServer.class)`, or when the contract requires an error body the default 400 cannot
+produce. With it off, an unmapped `ViolationException` propagates as a 500.
+
+## 6. Customising the error response
+
+Supply a `ViolationExceptionHttpServerResponseMapper` and keep the interceptor. The framework
+injects it as `@Nullable`, so it is genuinely optional; returning `null` from it falls back to the
+plain 400.
+
+```java
+@KoraApp
+public interface Application extends … {
+
+    default ViolationExceptionHttpServerResponseMapper customViolationExceptionHttpServerResponseMapper() {
+        return (request, exception) -> HttpServerResponseException.of(400, exception.getMessage());
+    }
+}
+```
+
+```kotlin
+@KoraApp
+interface Application : … {
+
+    fun customViolationExceptionHttpServerResponseMapper(): ViolationExceptionHttpServerResponseMapper =
+        ViolationExceptionHttpServerResponseMapper { _, exception ->
+            HttpServerResponseException.of(400, exception.message)
+        }
+}
+```
+
+Both are `io.koraframework.validation.module.http.server.*`. A method on the `@KoraApp`
+interface is a module factory method, so no `@Component` is needed — and adding one would create
+a second candidate.
+
+## 7. `validation-module` and `http-server-common`
+
+`ValidationModule`'s only default method returns a `ValidationHttpServerInterceptor`, which
+implements `io.koraframework.http.server.common.interceptor.HttpServerInterceptor`. But
+`validation-module` declares `http-server-common` as **`compileOnly`**, so that dependency is
+not transitive: the consuming project must put the HTTP server on the classpath itself.
+
+For an OpenAPI server this is automatic — `io.koraframework:http-server-undertow` brings
+`http-server-common` with it. It only bites a project that wants Kora validation *without* an
+HTTP server; there `ValidationModule` fails to resolve `HttpServerInterceptor`. In that case use
+`io.koraframework.validation.common.constraint.ValidatorModule` (which `ValidationModule`
+extends) instead.
+
+## 8. Pitfalls
+
+| Symptom | Cause and fix |
+|---|---|
+| No validation annotations in the output | `enableServerValidation` not `"true"`, or it was set on a client-mode task. |
+| Graph build fails on `ValidationHttpServerInterceptor` | `ValidationModule` missing from `@KoraApp`, or `io.koraframework:validation-module` missing from dependencies. |
+| `pattern` never enforced | The property also declares `minLength`/`maxLength`; only one constraint is generated (section 4). |
+| Constraint violation returns 500 | `enableServerValidationInterceptor: "false"` and nothing catches `ViolationException`. |
+| Two `ViolationExceptionHttpServerResponseMapper`s | One as a `@KoraApp` default method and one as a `@Component` — keep exactly one. |
+| Controller is `final` and aspects fail | Cannot happen through the generator: it emits the controller non-`final` (Java) / `open` (Kotlin) exactly when validation or extension annotations are on. If you see it, generated output is stale — `clean` and regenerate. |
+| Jakarta annotations do nothing | Kora validation is its own annotation set; `jakarta.validation.*` is ignored. |
+
+## Related
+
+- [Controllers Reference](openapi-controllers-reference.md) — where the annotations land
+- [Models Reference](openapi-models-reference.md) — field-level constraints
+- `kora-aop-validation` skill — `@Valid`, `@Validate`, custom constraints

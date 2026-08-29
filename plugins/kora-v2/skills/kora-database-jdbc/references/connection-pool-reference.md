@@ -1,15 +1,20 @@
 # Connection Pool Reference (HikariCP)
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/database-jdbc.md` ("Configuration")
-**Module:** `ru.tinkoff.kora:database-jdbc` (HikariCP is bundled with the module)
+**Applies to:** Kora 2.x (`io.koraframework:database-jdbc`, HikariCP `7.1.0` transitively)
 
-The pool is configured through the `db` section of `JdbcDatabaseConfig`. Time values are HOCON durations (`"10s"`), never millisecond integers. For the complete key list see [database-jdbc-config-reference.md](database-jdbc-config-reference.md).
+The pool is `JdbcDataSource`, a `Lifecycle` component that wraps a `HikariDataSource` and also
+implements `JdbcExecutor`. It is configured through the **`jdbc`** section of `JdbcDatabaseConfig`
+(renamed from `db` in 1.x). Durations are HOCON strings (`"10s"`), never millisecond integers. Full
+key list: [database-jdbc-config-reference.md](database-jdbc-config-reference.md).
 
 ## Contents
 
 - [Pool keys](#pool-keys)
+- [Startup behaviour](#startup-behaviour)
 - [Tuning by workload](#tuning-by-workload)
 - [Leak detection](#leak-detection)
+- [Pool metrics](#pool-metrics)
+- [Settings Kora does not expose](#settings-kora-does-not-expose)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -18,43 +23,131 @@ The pool is configured through the `db` section of `JdbcDatabaseConfig`. Time va
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `maxPoolSize` | 10 | maximum connections in the pool |
-| `minIdle` | 0 | minimum ready idle connections |
+| `maxPoolSize` | `10` | maximum connections in the pool |
+| `minIdle` | `0` | minimum ready idle connections |
 | `connectionTimeout` | `10s` | max wait to acquire a connection |
 | `validationTimeout` | `5s` | max wait to validate a connection |
 | `idleTimeout` | `10m` | idle time before a connection is retired |
-| `maxLifetime` | `15m` | max connection lifetime |
-| `leakDetectionThreshold` | `0s` | warn if a connection is held this long (`0s` = off) |
-| `initializationFailTimeout` | `0s` | max wait for pool initialization at startup |
+| `maxLifetime` | `15m` | maximum connection lifetime |
+| `leakDetectionThreshold` | `0s` | warn when a connection is held this long; `0s` = off |
+| `initializationFailTimeout` | *(unset)* | when set, validate one connection at startup within this budget |
+| `readinessProbe` | `false` | include the pool in the readiness probe |
+| `schema` | *(unset)* | connection schema |
+| `dsProperties` | `{}` | passthrough driver `dataSourceProperties` |
 
-These are Kora config keys, not raw Hikari property names.
+These are Kora config keys, not raw Hikari property names — `JdbcDatabaseConfig.toHikariConfig`
+translates them.
+
+---
+
+## Startup behaviour
+
+`JdbcDataSource` always sets Hikari's own `initializationFailTimeout` to `-1`, i.e. Hikari never
+blocks on startup by itself. Kora's `initializationFailTimeout` key drives a separate check in
+`init()`:
+
+- **Set** — one connection is opened and `isValid(...)` is called within the budget. Failure aborts
+  graph initialisation with
+  `IllegalStateException: JdbcDataSource pool '<name>' failed to start due to: …; check database
+  availability, credentials, JDBC URL, and driver configuration`.
+- **Unset** (the default) — the check is skipped entirely and the log line says so at DEBUG. The
+  service comes up green with an unreachable database and fails on the first query instead.
+
+Set it for anything with a deployment health gate. `readinessProbe = true` additionally keeps the
+pool's health in `/system/readiness`.
+
+Shutdown closes the pool in `release()`, logging how long it took.
 
 ---
 
 ## Tuning by workload
 
-Right-size `maxPoolSize` to the database's connection budget, not to request concurrency — a small pool of busy connections beats a large idle one.
+Size `maxPoolSize` against the database's connection budget, not against request concurrency. On
+virtual threads the number of in-flight requests is no longer bounded by a thread pool, so the
+JDBC pool becomes the real concurrency limit for database work — that is the point, not a problem
+to configure away. A small pool of busy connections beats a large idle one.
 
 ```hocon
 # Low traffic (dev / internal tools)
-db { maxPoolSize = 5,  minIdle = 1, idleTimeout = "5m",  maxLifetime = "20m" }
+jdbc { maxPoolSize = 5,  minIdle = 1,  idleTimeout = "5m",  maxLifetime = "20m" }
 
 # Medium traffic (production microservice)
-db { maxPoolSize = 20, minIdle = 5, idleTimeout = "10m", maxLifetime = "30m" }
+jdbc { maxPoolSize = 20, minIdle = 5,  idleTimeout = "10m", maxLifetime = "30m" }
 
 # High traffic
-db { maxPoolSize = 50, minIdle = 10, idleTimeout = "15m", maxLifetime = "30m" }
+jdbc { maxPoolSize = 50, minIdle = 10, idleTimeout = "15m", maxLifetime = "30m" }
 ```
+
+Keep `maxLifetime` comfortably below any connection age limit enforced by the database or a proxy
+(PgBouncer, RDS Proxy), so Hikari retires connections before they are cut.
+
+Sum `maxPoolSize` across every replica **and** every pool when a service has more than one — the
+database sees the total.
+
+**Never set `maxPoolSize = 1` when in-app migrations are enabled.** Flyway takes *two* connections
+— one for the migration, one for schema management — so a single-connection pool starves the
+interceptor during graph initialisation: startup stalls until `connectionTimeout` elapses and then
+fails there, pointing at the pool rather than at the migration. Kora's own interceptor test pins
+`maxPoolSize = 2` for exactly this reason. Two is the floor whenever `database-flyway` is on the
+graph, even for a strictly single-threaded service.
 
 ---
 
 ## Leak detection
 
-Set `leakDetectionThreshold` to a non-zero duration to log a stack trace when a connection is held longer than expected. In Kora you rarely manage connections by hand — `@Query` methods and `inTx()` release them automatically — so leaks usually come from manual `Connection` use that skips try-with-resources.
+```hocon
+jdbc.leakDetectionThreshold = "30s"
+```
+
+A non-zero value makes Hikari log a stack trace when a connection is held longer than the
+threshold. In Kora, `@Query` methods and `inTx(...)` return connections for you, so a leak almost
+always traces back to `executor().acquireConnection()` used without try-with-resources — that
+method hands over ownership. `withConnection` / `withContext` / `inTx` do not.
+
+Long transactions look like leaks at first: a slow `inTx` block that calls an external service
+holds its connection the whole time. Move remote I/O outside the transaction before raising the
+threshold.
+
+---
+
+## Pool metrics
+
+`telemetry.metrics.driverMetrics` defaults to `true`, but it only produces anything when
+`telemetry.metrics.enabled = true` **and** a `MeterRegistry` is on the graph. Otherwise Kora hands
+Hikari a no-op registry and the pool gauges never appear:
 
 ```hocon
-db.leakDetectionThreshold = "30s"
+jdbc.telemetry.metrics {
+    enabled = true          # default false in Kora 2.0
+    driverMetrics = true
+}
 ```
+
+Wire `micrometer-module` (and an exporter) into `@KoraApp` for the registry itself.
+
+---
+
+## Settings Kora does not expose
+
+Anything without a first-class key goes through `dsProperties`, which reaches Hikari as
+`dataSourceProperties` and from there to the driver:
+
+```hocon
+jdbc.dsProperties {
+    ApplicationName = "kora-service"
+    prepareThreshold = "0"
+}
+```
+
+For Hikari-level settings that are not driver properties, contribute a
+`Configurer<HikariConfig>` component (`io.koraframework.common.Configurer`). The factory module
+takes it as an optional, tag-matched dependency, so an untagged `@Component` configures the primary
+pool and a `@Tag(OtherDatabase.class)` one configures a second pool declared through a tagged
+`@FactoryModule`. `JdbcDataSource` fixes `autoCommit = true` and `registerMbeans = false` before the
+configurer runs — leave `autoCommit` alone, transaction handling depends on it.
+
+Do not build a `HikariDataSource` by hand. `JdbcDataSource` owns pool lifecycle, telemetry, the
+readiness probe and the scoped connection that makes `inTx` work.
 
 ---
 
@@ -62,17 +155,21 @@ db.leakDetectionThreshold = "30s"
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `Connection is not available, request timed out` | pool exhausted | raise `maxPoolSize`, shorten transactions, check for leaks |
-| `Connection timeout` at startup | DB unreachable | verify `jdbcUrl`/credentials/network; tune `connectionTimeout` |
-| `ClassNotFoundException: org.postgresql.Driver` | missing driver | add the JDBC driver dependency |
-| `connectionTimeout` ignored | value given as a number | use a duration string: `"10s"` |
-| possible connection leak logged | connection held too long | wrap manual `Connection` use in try-with-resources / `inTx()` |
-
-For a second database, do **not** hand-build a `HikariDataSource`; declare a tagged `JdbcDatabaseConfig` + `JdbcDatabase` in `@KoraApp` and tag the repository — see [repository-pattern-reference.md](repository-pattern-reference.md#multiple-databases).
+| `Connection is not available, request timed out` | pool exhausted | shorten transactions, remove external calls from `inTx`, then raise `maxPoolSize` |
+| Startup succeeds with the database down | `initializationFailTimeout` unset | set it (e.g. `"10s"`) |
+| `IllegalStateException: JdbcDataSource pool '…' failed to start` | credentials / URL / network / driver | check `jdbcUrl`, credentials and that the driver artifact is on the classpath |
+| `ClassNotFoundException: org.postgresql.Driver` | driver not declared | add the JDBC driver dependency — `database-jdbc` does not bundle one |
+| `connectionTimeout` appears ignored | given as a number | durations are strings: `"10s"` |
+| `ConfigValueException: … null at path: 'ROOT.jdbc.username'` | config still under `db { }` | rename the section to `jdbc` — including HOCON embedded in tests |
+| No `db_*` or Hikari pool metrics | `telemetry.metrics.enabled` defaults to `false` | enable it explicitly, and put a `MeterRegistry` on the graph |
+| Possible-leak stack traces | connection held too long | look for `acquireConnection()` without try-with-resources, or a long transaction |
+| Startup stalls, then `Connection is not available, request timed out`, before any query runs | `maxPoolSize = 1` with in-app Flyway, which needs two connections | raise `maxPoolSize` to at least 2, or migrate out of process |
+| Connections dropped by a proxy | `maxLifetime` above the proxy's limit | lower `maxLifetime` |
 
 ---
 
 ## See also
 
-- [database-jdbc-config-reference.md](database-jdbc-config-reference.md) — full config key list, drivers, telemetry
-- [transactions-reference.md](transactions-reference.md) — transaction boundaries
+- [database-jdbc-config-reference.md](database-jdbc-config-reference.md) — full key list, drivers, telemetry, YAML
+- [transactions-reference.md](transactions-reference.md) — transaction boundaries and connection scope
+- [repository-pattern-reference.md](repository-pattern-reference.md#multiple-databases) — wiring a second pool

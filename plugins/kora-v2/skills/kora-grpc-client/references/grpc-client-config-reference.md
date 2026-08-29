@@ -1,184 +1,347 @@
-# gRPC Client Configuration Reference
+# gRPC Client Configuration Reference (Kora 2.0)
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/grpc-client.md`
+Everything under `grpcClient.*`, plus the Gradle wiring that produces the stubs the config
+belongs to.
 
 ## Contents
 
-- [1. Overview](#1-overview)
-- [2. Basic configuration](#2-basic-configuration)
-- [3. Full configuration](#3-full-configuration)
-- [4. Environment variables](#4-environment-variables)
-- [5. Enabling GrpcClientModule](#5-enabling-grpcclientmodule)
-- [6. Protobuf Gradle plugin](#6-protobuf-gradle-plugin)
-- [7. Troubleshooting](#7-troubleshooting)
+- [1. Section naming](#1-section-naming)
+- [2. Complete key set](#2-complete-key-set)
+- [3. URL scheme — plaintext vs TLS](#3-url-scheme--plaintext-vs-tls)
+- [4. Timeout, keep-alive, load balancing](#4-timeout-keep-alive-load-balancing)
+- [5. defaultServiceConfig](#5-defaultserviceconfig)
+- [6. Telemetry](#6-telemetry)
+- [7. Environment substitution](#7-environment-substitution)
+- [8. Anything the config does not expose](#8-anything-the-config-does-not-expose)
+- [9. Gradle and protobuf wiring](#9-gradle-and-protobuf-wiring)
+- [10. Version alignment](#10-version-alignment)
+- [11. Troubleshooting](#11-troubleshooting)
 
-## 1. Overview
+---
 
-A gRPC service named `SimpleService` is configured under `grpcClient.SimpleService`. Each generated client gets its own configuration section keyed by the protobuf service name.
+## 1. Section naming
 
-## 2. Basic configuration
+`GrpcClientConfig.defaultConfig(config, mapper, serviceName)` is called with
+`<Service>Grpc.SERVICE_NAME`, takes the substring after the last `.`, and reads
+`grpcClient.<that>`.
 
-The `url` is required. Plaintext vs TLS is controlled by the URL scheme (`http://` for plaintext in local setups); there is no `usePlaintext` key.
+`SERVICE_NAME` is the **protobuf** fully-qualified service name, so:
 
-===! "Hocon"
+| `.proto` | `SERVICE_NAME` | Config section |
+|---|---|---|
+| `package io.koraframework.example.grpc;`<br>`service UserService { … }` | `io.koraframework.example.grpc.UserService` | `grpcClient.UserService` |
+| no `package`, `service Events { … }` | `Events` | `grpcClient.Events` |
+
+Not the Java class (`UserServiceGrpc`), not `option java_outer_classname`, not the stub name.
+Every client of the same proto service shares one section and one channel.
+
+Two proto services with the same simple name in different proto packages collide on one section.
+Rename one in the `.proto`, or give each its own `Configurer` — there is no per-client override key.
+
+---
+
+## 2. Complete key set
+
+Verified against `io.koraframework.grpc.client.GrpcClientConfig` and
+`io.koraframework.telemetry.common.TelemetryConfig`. Nothing else is read.
+
+| Key | Type | Required | Default |
+|---|---|---|---|
+| `url` | `String` | **yes** | — |
+| `timeout` | `Duration` | no | unset (no deadline added) |
+| `keepAliveTime` | `Duration` | no | unset (gRPC default) |
+| `keepAliveTimeout` | `Duration` | no | unset (gRPC default) |
+| `loadBalancingPolicy` | `String` | no | unset (gRPC default, `pick_first`) |
+| `defaultServiceConfig` | object | no | unset |
+| `telemetry.logging.enabled` | `boolean` | no | `false` |
+| `telemetry.metrics.enabled` | `boolean` | no | `false` |
+| `telemetry.metrics.slo` | `Duration[]` | no | `1, 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000, 90000` ms |
+| `telemetry.metrics.tags` | `Map<String,String>` | no | `{}` |
+| `telemetry.tracing.enabled` | `boolean` | no | `true` |
+| `telemetry.tracing.attributes` | `Map<String,String>` | no | `{}` |
+
+Keys that existed in Kora 1.x guidance and **do not exist in 2.0**: `maxInboundMessageSize`,
+`usePlaintext`. `config-common` performs no unknown-key validation, so a stale key is read by
+nobody and reported by nobody.
+
+### HOCON
 
 ```hocon
 grpcClient {
-  SimpleService {
-    url = "grpc://localhost:8090"   // (1) required
-    timeout = "10s"                  // (2) max request time, optional
-  }
-}
-```
-
-=== "YAML"
-
-```yaml
-grpcClient:
-  SimpleService:
-    url: "grpc://localhost:8090"
-    timeout: "10s"
-```
-
-## 3. Full configuration
-
-These are the keys from `GrpcClientConfig` (defaults / example values shown).
-
-===! "Hocon"
-
-```hocon
-grpcClient {
-  SimpleService {
-    url = "grpc://localhost:8090"
+  UserService {
+    url = "http://localhost:8090"
     timeout = "10s"
-    keepAliveTime = "0s"            // (1) interval between PING frames
-    keepAliveTimeout = "0s"         // (2) PING acknowledgement timeout
-    loadBalancingPolicy = "pick_first" // (3) load balancing policy
+    keepAliveTime = "30s"
+    keepAliveTimeout = "5s"
+    loadBalancingPolicy = "round_robin"
     telemetry {
-      logging {
-        enabled = false             // (4) default false
-      }
+      logging.enabled = true
       metrics {
-        enabled = true              // (5) default true
-        slo = [ 1, 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000, 90000 ] // (6)
-        tags = {                    // (7) optional metric tags
-          "key1" = "value1"
-        }
+        enabled = true
+        slo = [1, 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000, 90000]
+        tags { environment = "prod" }
       }
       tracing {
-        enabled = true              // (8) default true
-        attributes = {              // (9) optional tracing attributes
-          "key1" = "value1"
-        }
+        enabled = true
+        attributes { peer = "user-service" }
       }
     }
   }
 }
 ```
 
-=== "YAML"
+### YAML
 
 ```yaml
 grpcClient:
-  SimpleService:
-    url: "grpc://localhost:8090"
+  UserService:
+    url: "http://localhost:8090"
     timeout: "10s"
-    keepAliveTime: "0s"
-    keepAliveTimeout: "0s"
-    loadBalancingPolicy: "pick_first"
+    keepAliveTime: "30s"
+    keepAliveTimeout: "5s"
+    loadBalancingPolicy: "round_robin"
     telemetry:
       logging:
-        enabled: false
+        enabled: true
       metrics:
         enabled: true
-        slo: [ 1, 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000, 90000 ]
+        slo: [1, 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000, 90000]
         tags:
-          key1: value1
+          environment: "prod"
       tracing:
         enabled: true
         attributes:
-          key1: value1
+          peer: "user-service"
 ```
 
-1. Interval between PING frames.
-2. Timeout for a PING frame to be acknowledged; the connection is closed if no acknowledgement arrives in time.
-3. Load balancing policy.
-4. Enables module logging (default `false`).
-5. Enables module metrics (default `true`).
-6. SLO buckets for the `DistributionSummary` metrics.
-7. Optional metric tags.
-8. Enables module tracing (default `true`).
-9. Optional tracing attributes.
+Durations accept either an ISO-8601 string (`"PT10S"`), a HOCON-style string (`"10s"`, `"250ms"`,
+`"5m"`), or a bare number, which is **milliseconds**. That is why the `slo` list above is a list of
+plain numbers: each is a millisecond bucket.
 
-Netty transport options are documented in `.kora-agent/kora-docs/mkdocs/docs/en/documentation/netty.md`. Metrics are described in `.kora-agent/kora-docs/mkdocs/docs/en/documentation/metrics.md` (section `grpc-client`).
+---
 
-## 4. Environment variables
+## 3. URL scheme — plaintext vs TLS
 
-Externalize values with `${?VAR}` (optional override) or `${?VAR:default}`:
+`ManagedChannelLifecycle.init()` parses `url` as a `java.net.URI` and then:
 
-===! "Hocon"
+1. If the URI has **no port**, the scheme must be `http` (→ 80) or `https` (→ 443); anything else
+   throws `IllegalArgumentException: Unsupported gRPC client URL scheme '<x>' in '<url>'; use
+   http://host[:port] or https://host[:port]`.
+2. `usePlaintext()` is called **only** when the scheme is exactly `http`.
+
+| `url` | Result |
+|---|---|
+| `http://localhost:8090` | plaintext |
+| `http://user-service` | plaintext, port 80 |
+| `https://user-service` | TLS, port 443 |
+| `https://user-service:8443` | TLS |
+| `grpc://localhost:8090` | **TLS** — port present, scheme is not `http`, no exception, handshake fails against a plaintext server |
+| `grpc://localhost` | `IllegalArgumentException` at startup |
+
+A Kora 1.x config that used `grpc://` therefore does not fail loudly — it produces a TLS
+handshake error at first call. Rewrite every `grpc://` to `http://` (or `https://`).
+
+For mutual TLS or a custom trust store, supply a tagged `io.grpc.ChannelCredentials` component —
+see [grpc-client-interceptors-reference.md](grpc-client-interceptors-reference.md#4-channelcredentials--tls).
+
+---
+
+## 4. Timeout, keep-alive, load balancing
+
+`timeout` is applied by `GrpcClientConfigInterceptor`:
+
+```java
+if (callOptions.getDeadline() == null && this.config.timeout() != null) {
+    callOptions = callOptions.withDeadlineAfter(this.config.timeout().toMillis(), MILLISECONDS);
+}
+```
+
+So it is a **default deadline**, not a ceiling: a call that already carries a deadline
+(`stub.withDeadlineAfter(...)`) keeps its own, longer or shorter. Deadline expiry surfaces as
+`StatusRuntimeException` with `DEADLINE_EXCEEDED`.
+
+`keepAliveTime` / `keepAliveTimeout` map onto `ManagedChannelBuilder.keepAliveTime` /
+`keepAliveTimeout`; both are skipped entirely when unset. `loadBalancingPolicy` maps onto
+`defaultLoadBalancingPolicy` and only matters when the target resolves to several addresses
+(`round_robin` needs a DNS name with multiple A records or a headless Service).
+
+---
+
+## 5. defaultServiceConfig
+
+The `defaultServiceConfig` object is passed verbatim to
+`ManagedChannelBuilder.defaultServiceConfig(Map)` — it is the standard gRPC service config, so its
+schema is gRPC's, not Kora's. Kora only converts the HOCON/YAML tree into a `Map`, mapping every
+number to a **double** (the gRPC service config accepts no other numeric type) and dropping nulls.
 
 ```hocon
 grpcClient {
-  SimpleService {
+  UserService {
     url = "http://localhost:8090"
-    url = ${?GRPC_SERVER_URL}
-    timeout = ${?GRPC_TIMEOUT:"10s"}
+    defaultServiceConfig {
+      methodConfig = [
+        {
+          name = [ { service = "io.koraframework.example.grpc.UserService" } ]
+          retryPolicy {
+            maxAttempts = 4
+            initialBackoff = "0.1s"
+            maxBackoff = "1s"
+            backoffMultiplier = 2
+            retryableStatusCodes = [ "UNAVAILABLE" ]
+          }
+        }
+      ]
+    }
   }
 }
 ```
 
-=== "YAML"
+This is how you get gRPC-level retries — there is **no** Kora `retry` key under `grpcClient`.
+(Kora's own `@Retryable` aspect from `resilient-kora` is a separate, method-level mechanism and can
+be applied to the wrapper component instead.)
+
+---
+
+## 6. Telemetry
+
+`GrpcClientTelemetryConfig extends TelemetryConfig`, adding no keys of its own.
+
+**Defaults are off for logging and metrics.** If a task asks to "show gRPC client metrics" or "log
+gRPC calls", the config must turn them on explicitly:
+
+```hocon
+grpcClient.UserService.telemetry {
+  logging.enabled = true
+  metrics.enabled = true
+}
+```
+
+Beyond the flags, each signal also needs its provider component in the graph — `metrics` needs a
+`MeterRegistry` (`micrometer-module`), `tracing` needs a `Tracer` (`opentelemetry-tracing`).
+`DefaultGrpcClientTelemetryFactory` checks both: `tracer != null && tracing().enabled()`,
+`meterRegistry != null && metrics().enabled()`. With neither and logging off it returns a no-op
+telemetry, so there is no cost when everything is disabled.
+
+**Metric.** One Micrometer `Timer` named `rpc.client.duration`, tagged `rpc.system=grpc`,
+`rpc.service`, `rpc.method`, `rpc.grpc.status_code`, `server.address`, `server.port`, `error.type`,
+plus your `telemetry.metrics.tags`. `slo` becomes the timer's service-level objectives.
+
+**Loggers.** Two, named after the **full** proto service name:
+
+```
+io.koraframework.example.grpc.UserService.request
+io.koraframework.example.grpc.UserService.response
+```
+
+At `INFO` they log `GrpcClient request started` / `GrpcClient response received` with a structured
+`grpcRequest` / `grpcResponse` payload; at `DEBUG` the request logger adds the outgoing `Metadata`.
+Failures log at `WARN` with the cause. Level them like any other logger:
+
+```hocon
+logging.levels {
+  "io.koraframework.example.grpc.UserService.request" = "DEBUG"
+  "io.koraframework.example.grpc.UserService.response" = "INFO"
+}
+```
+
+Turning `telemetry.logging.enabled` on but leaving the logger at `WARN` produces nothing — both
+switches must agree.
+
+---
+
+## 7. Environment substitution
+
+```hocon
+grpcClient {
+  UserService {
+    url = "http://localhost:8090"
+    url = ${?GRPC_SERVER_URL}          # override only if the variable is set
+    timeout = ${?GRPC_TIMEOUT}
+    telemetry.logging.enabled = ${?GRPC_LOG_ENABLED}
+  }
+}
+```
 
 ```yaml
 grpcClient:
-  SimpleService:
+  UserService:
     url: ${?GRPC_SERVER_URL:"http://localhost:8090"}
     timeout: ${?GRPC_TIMEOUT:"10s"}
 ```
 
-## 5. Enabling GrpcClientModule
+`${VAR}` (no `?`) makes the variable mandatory and fails startup when absent — appropriate for a
+URL that must never default to localhost in production.
 
-===! "Java"
+---
+
+## 8. Anything the config does not expose
+
+Two extension points, both optional and both `@Nullable` in the graph:
+
+| Component | Tag | Applies to |
+|---|---|---|
+| `Configurer<ManagedChannelBuilder<?>>` | `@Tag(<Service>Grpc.class)` | that one service, applied **last**, after every config-driven setting |
+| `Configurer<ManagedChannelBuilder<?>>` | untagged | every channel built by the default `GrpcOkHttpClientChannelFactory` |
 
 ```java
-@KoraApp
-public interface Application extends HoconConfigModule, GrpcClientModule { }
+@Tag(UserServiceGrpc.class)
+@Component
+public final class UserServiceChannelConfigurer implements Configurer<ManagedChannelBuilder<?>> {
+
+    @Override
+    public ManagedChannelBuilder<?> configure(ManagedChannelBuilder<?> builder) {
+        return builder.maxInboundMessageSize(16 * 1024 * 1024);
+    }
+}
 ```
 
-=== "Kotlin"
+That is the 2.0 replacement for the `maxInboundMessageSize` config key, and the way to reach
+`executor`, `userAgent`, `idleTimeout`, `maxRetryAttempts` and anything else on
+`ManagedChannelBuilder`.
 
-```kotlin
-@KoraApp
-interface Application : HoconConfigModule, GrpcClientModule
-```
+---
 
-## 6. Protobuf Gradle plugin
+## 9. Gradle and protobuf wiring
 
-Generated client code is produced by the `com.google.protobuf` Gradle plugin. Pin the Kora BOM via `kora-parent` and keep the mandatory annotation processor.
+`kora-bom` constrains `io.koraframework:*` only. gRPC and protobuf versions are yours.
 
 ===! "Java (build.gradle)"
 
 ```groovy
 plugins {
-    id "com.google.protobuf" version "0.9.4"
+    id "application"
+    id "com.google.protobuf" version "0.10.0"
+}
+
+java { toolchain { languageVersion = JavaLanguageVersion.of(25) } }
+
+configurations {
+    koraBom
+    annotationProcessor.extendsFrom(koraBom)
+    implementation.extendsFrom(koraBom)
+    testImplementation.extendsFrom(koraBom)
+    testAnnotationProcessor.extendsFrom(koraBom)
 }
 
 dependencies {
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
-    implementation "ru.tinkoff.kora:grpc-client"
-    implementation "io.grpc:grpc-protobuf:1.74.0"
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")   // 2.0.0.RC1
+    annotationProcessor "io.koraframework:annotation-processors"
+
+    implementation "io.koraframework:grpc-client"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
+
+    implementation "io.grpc:grpc-protobuf:1.83.1"   // brings protobuf-java 3.25.9 transitively
     compileOnly "javax.annotation:javax.annotation-api:1.3.2"
+
+    testImplementation "io.koraframework:test-junit5"
+    testImplementation "io.grpc:grpc-inprocess:1.83.1"
 }
 
 protobuf {
     protoc { artifact = "com.google.protobuf:protoc:3.25.3" }
-    plugins {
-        grpc { artifact = "io.grpc:protoc-gen-grpc-java:1.74.0" }
-    }
-    generateProtoTasks {
-        all()*.plugins { grpc {} }
-    }
+    plugins { grpc { artifact = "io.grpc:protoc-gen-grpc-java:1.83.1" } }
+    generateProtoTasks { all()*.plugins { grpc {} } }
 }
 
 sourceSets {
@@ -197,39 +360,136 @@ sourceSets {
 import com.google.protobuf.gradle.id
 
 plugins {
-    id("com.google.protobuf") version "0.9.4"
+    id("org.jetbrains.kotlin.jvm") version "2.4.10"
+    id("com.google.devtools.ksp") version "2.3.11"
+    id("application")
+    id("com.google.protobuf") version "0.10.0"
 }
 
+kotlin { jvmToolchain { languageVersion.set(JavaLanguageVersion.of(25)) } }
+java { toolchain { languageVersion.set(JavaLanguageVersion.of(25)) } }
+
 dependencies {
-    ksp("ru.tinkoff.kora:symbol-processors")
-    implementation("ru.tinkoff.kora:grpc-client")
-    implementation("io.grpc:grpc-protobuf:1.74.0")
+    implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+    ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
+
+    implementation("io.koraframework:grpc-client")
+    implementation("io.koraframework:config-hocon")
+    implementation("io.koraframework:logging-logback")
+
+    implementation("io.grpc:grpc-protobuf:1.83.1")   // brings protobuf-java 3.25.9 transitively
     compileOnly("javax.annotation:javax.annotation-api:1.3.2")
+
+    testImplementation("io.koraframework:test-junit5")
+    testImplementation("io.grpc:grpc-inprocess:1.83.1")
 }
 
 protobuf {
     protoc { artifact = "com.google.protobuf:protoc:3.25.3" }
-    plugins {
-        id("grpc") { artifact = "io.grpc:protoc-gen-grpc-java:1.74.0" }
-    }
-    generateProtoTasks {
-        ofSourceSet("main").forEach { it.plugins { id("grpc") { } } }
-    }
+    plugins { id("grpc") { artifact = "io.grpc:protoc-gen-grpc-java:1.83.1" } }
+    generateProtoTasks { all().forEach { it.plugins { id("grpc") } } }
 }
 
-kotlin {
-    sourceSets.main {
-        kotlin.srcDir("build/generated/source/proto/main/grpc")
-        kotlin.srcDir("build/generated/source/proto/main/java")
+// protoc-gen-grpc-java emits JAVA — register it on the java source set, not the kotlin one
+sourceSets.main {
+    java.srcDir(layout.buildDirectory.dir("generated/source/proto/main/grpc"))
+    java.srcDir(layout.buildDirectory.dir("generated/source/proto/main/java"))
+}
+```
+
+Two details that are easy to get wrong in Kotlin projects:
+
+- the generated gRPC code is **Java**, so the source dirs go on `sourceSets.main.java`, not on
+  `kotlin.srcDir`;
+- KSP must see the generated stub classes, which it does because they are compiled Java sources of
+  the same module — no extra wiring, but `generateProto` must run before `kspKotlin`, which the
+  Gradle plugin arranges as long as the source dirs are declared.
+
+---
+
+## 10. Version alignment
+
+A mismatch between the gRPC artifacts you declare and the `grpc-core` that arrives through
+`io.koraframework:grpc-client` fails at runtime, not at compile time. Both migration guides record
+the symptom:
+
+```
+AbstractMethodError: ... does not define or inherit an implementation of the resolved method
+'buildClientTransportServers(List, MetricRecorder)'
+```
+
+It typically shows up in tests, where `io.grpc:grpc-inprocess` or `io.grpc:grpc-netty` is pinned to
+an older version than the rest. Pin one set across main and test:
+
+| Coordinate | Version |
+|---|---|
+| `io.grpc:grpc-protobuf`, `io.grpc:protoc-gen-grpc-java`, `io.grpc:grpc-inprocess`, `io.grpc:grpc-netty`, `io.grpc:grpc-services` | `1.83.1` |
+| `io.grpc:grpc-kotlin-stub`, `io.grpc:protoc-gen-grpc-kotlin` | `1.5.0` |
+| `com.google.protobuf:protoc` | `3.25.3` |
+| `com.google.protobuf:protobuf-java` | leave transitive — `grpc-protobuf:1.83.1` declares `3.25.9` |
+| Gradle plugin `com.google.protobuf` | `0.10.0` |
+
+### protobuf: leave it transitive
+
+The two halves of the alignment are handled differently, and this is the part that most often gets
+copied wrong.
+
+`io.grpc:grpc-protobuf:1.83.1` declares `com.google.protobuf:protobuf-java:3.25.9` (compile scope,
+verified in the published POM). Pinning `protoc` to `3.25.3` therefore produces generated code that
+the transitively-resolved runtime already satisfies — **no protobuf override is needed, and adding
+one only risks clamping the runtime below whatever a future gRPC bump brings.** All eight migrated
+Kora gRPC projects — both examples and all four guide apps, client and server — pin `protoc:3.25.3`.
+
+**Upgrading protoc is a paired change.** Kora's own version catalog uses protobuf `4.35.1`, and an
+application may use it too — but protoc 4.x generated code references `com.google.protobuf.Generated`,
+a class that does not exist in `protobuf-java` `3.25.9`. Bumping `protoc` alone fails to compile:
+
+```
+error: cannot find symbol
+  symbol:   class Generated
+  location: package com.google.protobuf
+```
+
+The fix is to move the runtime with it, so the explicit pin outranks the transitive `3.25.9`:
+
+```groovy
+protobuf { protoc { artifact = "com.google.protobuf:protoc:4.35.1" } }
+dependencies { implementation "com.google.protobuf:protobuf-java:4.35.1" }
+```
+
+Both recipes are correct. `3.25.3` is the default here because it is the one that stays correct when
+only half of it is copied.
+
+### Making the gRPC half enforceable
+
+gRPC is the half that does need forcing — nothing in the dependency graph stops a transitive pull
+onto a different `grpc-core`:
+
+```groovy
+configurations.configureEach {
+    resolutionStrategy.eachDependency {
+        // grpc-kotlin has its own version line (1.5.0); "contains" also spares protoc-gen-grpc-kotlin,
+        // which "startsWith" would not.
+        if (it.requested.group == "io.grpc" && !it.requested.name.contains("kotlin")) {
+            it.useVersion "1.83.1"
+        }
     }
 }
 ```
 
-## 7. Troubleshooting
+---
 
-| Problem | Solution |
-|---------|----------|
-| Connection refused | Check `grpcClient.<ServiceName>.url` |
-| `UNAVAILABLE` | Verify host/port and that the server is running |
-| Generated classes missing | Run `./gradlew generateProto` and check the source dirs |
-| Config not applied | Confirm the key path is `grpcClient.<ServiceName>` (matches the proto service name) |
+## 11. Troubleshooting
+
+| Problem | Cause / fix |
+|---|---|
+| `ConfigValueException: Config expected value, but got null at path: 'ROOT.grpcClient.<X>.url'` | section name wrong (must be the **proto** service simple name), or `url` genuinely missing |
+| Config edits have no effect | the key is not in the table above — unknown keys are ignored silently |
+| TLS handshake failure against a plaintext server | `url` uses `grpc://` — use `http://` |
+| `IllegalArgumentException: Unsupported gRPC client URL scheme` | non-`http`/`https` scheme **and** no explicit port |
+| `DEADLINE_EXCEEDED` on every call | `timeout` too small; it becomes the call's default deadline |
+| No `rpc.client.duration` metric | `telemetry.metrics.enabled` defaults to `false`; a `MeterRegistry` must also be in the graph |
+| Nothing logged although `telemetry.logging.enabled = true` | the `<protoService>.request` / `.response` loggers are below `INFO` |
+| `round_robin` behaves like `pick_first` | the target resolves to a single address |
+| `AbstractMethodError … buildClientTransportServers` | gRPC version mismatch — see [version alignment](#10-version-alignment) |
+| `package ru.tinkoff.kora … does not exist` under `build/generated` | stale protobuf output — `clean` + `--no-build-cache` |

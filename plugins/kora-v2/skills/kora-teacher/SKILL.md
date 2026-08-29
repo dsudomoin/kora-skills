@@ -1,460 +1,304 @@
 ---
 name: kora-teacher
-description: "Teach Kora to beginners strictly from official docs/guides/examples under .kora-agent/, never inventing. Use when a user wants to learn Kora from scratch, asks for a tutorial, or needs a concept explained."
+description: "Teach Kora 2.0 (io.koraframework) to a newcomer — guided curriculum, lesson plans and concept explanations, grounded in the framework source at tag 2.0.0.RC1 and the migrated example apps on kora-examples branch migration/2.0. Covers the beginner spine (helloworld, getting-started, dependency injection, config, JSON, HTTP, JDBC, testing) and the unlearning a Kora 1.x user needs: synchronous contracts on virtual threads instead of suspend/reactive/CompletionStage, no request Context, telemetry off by default, and why a green build is not proof of a working service. Use when someone is new to Kora, asks for a tutorial, course or walkthrough, or asks a foundational question such as \"what is @KoraApp\" or \"how does compile-time DI work\". Kora 2.0 has no documentation site — never send a learner to kora-docs for a 2.0 answer."
+license: Apache-2.0
+metadata:
+  kora-version: "2.x"
 ---
 
-# Kora Teacher — Learn Kora Framework from Scratch
+# Kora Teacher — learning Kora 2.0 from scratch
 
-> **Kora sub-skill — obey the [kora-v1 meta rules](../../SKILL.md) on every task:** **R0** ensure `.kora-agent/` docs+examples are cloned · **R1** read this sub-skill before writing code · **R2** Kora APIs only — no Spring/Micronaut/Quarkus, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
+> **Kora sub-skill — obey the [kora-v2 meta rules](../../SKILL.md) on every task:** **R0** ground the workspace on Kora 2.0 refs before starting (framework source at tag `2.0.0.RC1` + `kora-examples` at `migration/2.0`; `kora-docs` is 1.x only) · **R1** read this sub-skill before writing code · **R2** Kora 2.0 APIs only — no Spring/Micronaut/Quarkus, no Kora 1.x APIs, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
 
-**Purpose:** Guide new users through Kora Framework learning path using **ONLY official sources** — no invented explanations, no assumptions.
+**Version:** Kora 2.0 (`io.koraframework`, `2.0.0.RC1` on Maven Central) | **Java:** 25 | **Kotlin:** 2.4.10 + KSP 2.3.11 | **Gradle:** 9.5.1
 
-**Activation:** When user wants to learn Kora from zero, asks beginner questions, requests tutorials/guides, or needs step-by-step implementation help.
+**Purpose:** turn someone who does not know Kora into someone who can ship a Kora 2.0 service —
+teaching only what is demonstrated by the framework source or by a migrated example that the
+learner can actually run.
 
----
+**Two audiences, one skill.** A true newcomer needs the curriculum. Someone arriving from Kora 1.x
+needs the *unlearning* first — several habits they already have now compile and fail silently.
+Ask which one you are talking to before picking a starting point.
 
-## ⚠️ CORE RULE — Source Hierarchy (STRICT)
-
-**ALWAYS follow this order — NO DEVIATIONS:**
-
-```
-1. Guides (.kora-agent/kora-docs/mkdocs/docs/en/guides/<guide>.md)
-        ↓
-2. Documentation (.kora-agent/kora-docs/mkdocs/docs/en/documentation/<module>.md)
-        ↓
-3. Guide apps (.kora-agent/kora-examples/guides/java|kotlin/<app>/)
-        ↓
-4. Example apps (.kora-agent/kora-examples/examples/java|kotlin/<app>/)
-```
-
-**NEVER:**
-- Invent explanations not found in sources
-- Assume Kora behavior without checking docs
-- Use Spring/Micronaut/other framework analogies
-- Skip guide apps when implementing examples
-
-**WHY:** Kora has unique compile-time patterns. Wrong mental model from day 1 = hard to fix later.
+| Reader | Start at |
+|---|---|
+| New to Kora entirely | [`references/learning-path-reference.md`](references/learning-path-reference.md) — the curriculum, stop by stop |
+| Knows Kora 1.x | [`references/kora-2-unlearning-reference.md`](references/kora-2-unlearning-reference.md) — what changed, and what still compiles while doing nothing |
 
 ---
 
-## Quick Start — First Session
+## 1. Where teaching material comes from
+
+A teacher states facts. A wrong fact taught on day 1 becomes a habit that survives many
+corrections, so this skill has a stricter grounding rule than the rest of the package.
 
 ```
-Task Progress:
-- [ ] 1. Assess user's current level (Java/Kotlin? Framework experience?)
-- [ ] 2. Clone Kora docs + examples if not present
-- [ ] 3. Start with getting-started.md guide
-- [ ] 4. Implement getting-started-app together
-- [ ] 5. Explain every annotation, every line
-- [ ] 6. Move to next guide in sequence
+1. This file + references/            → the lesson plan and the pedagogy
+2. skills/<domain>/SKILL.md           → the vetted explanation of one domain
+3. .kora-agent/kora-examples-2.0/     → the executable curriculum: migrated apps the learner runs
+4. .kora-agent/kora-source-2.0/       → the framework source: the final authority
 ```
 
-### Clone Resources (if missing)
+Levels 3 and 4 are put on disk by **R0** in the [meta-skill](../../SKILL.md). Do not start a first
+lesson until both directories exist, or until you have told the learner they are missing and that
+you are therefore teaching without the ability to verify.
 
-```bash
-mkdir -p .kora-agent
-git clone --depth 1 https://github.com/kora-projects/kora-docs.git .kora-agent/kora-docs
-git clone --depth 1 https://github.com/kora-projects/kora-examples.git .kora-agent/kora-examples
-rm -rf .kora-agent/kora-docs/.git .kora-agent/kora-examples/.git
-echo ".kora-agent/" >> .gitignore
-```
+**Never invent, never analogise.** If a behaviour is not in a sub-skill, a reference here, or the
+grounded checkouts, say "I need to check that" and go read the source — in front of the learner.
+Reading the source together is a lesson in itself; guessing teaches them to guess.
 
-**Verify:** `.kora-agent/` contains both `kora-docs/` and `kora-examples/`.
+### ⚠ There is no Kora 2.0 documentation site
+
+`kora-docs` documents Kora **1.x** on every branch that exists, including `feature/kora-2.0`: its
+`docs/v2` tree is a byte-identical copy of the 1.x pages, mentions `ru.tinkoff.kora` in 134 files
+and `io.koraframework` in none, and still ships pages for `database-r2dbc` and `database-vertx`,
+integrations that 2.0 removed.
+
+Sending a beginner there is worse than sending them nowhere: everything reads authoritative and
+every import is wrong. Use it only as **1.x conceptual background**, said out loud as such.
+
+The same trap hides one level deeper. In the migrated `kora-examples` the **code** is 2.0 and the
+**prose is not** — the per-app `README.md` files still link to the 1.x documentation site and still
+name modules that no longer exist (the S3 guide app's README advertises `MinioS3ClientModule`,
+while its `build.gradle` actually uses `io.koraframework:s3-client-aws` and
+`io.koraframework.experimental:s3-client-kora`). Teach from the sources and the build files of an
+example app, not from its README.
+
+**Where to send a learner who wants to look something up themselves:**
+
+- Framework source, tag `2.0.0.RC1`: <https://github.com/kora-projects/kora/tree/2.0.0.RC1>
+- Migrated examples and guide apps: <https://github.com/kora-projects/kora-examples/tree/migration/2.0>
+- Their own `build/generated/` after a compile — the most under-used source of truth in Kora.
 
 ---
 
-## Learning Path — Recommended Sequence
+## 2. The teaching loop
 
-### Phase 1: Foundations
+One loop per concept. Do not compress it; the compile and the break/fix steps are where the
+compile-time model actually lands.
 
-| Order | Guide | Guide App | Key Concepts |
-|-------|-------|-----------|--------------|
-| 1 | `getting-started.md` | `kora-java-guide-getting-started-app` | @KoraApp, main(), minimal service |
-| 2 | `dependency-injection-introduction.md` | `kora-java-guide-dependency-injection-introduction-app` | @Component, constructor injection |
-| 3 | `dependency-injection.md` | `kora-java-guide-dependency-injection` | @Module, @Tag, All<T>, ValueOf |
-| 4 | `config-hocon.md` OR `config-yaml.md` | `kora-java-guide-config-hocon-app` / `kora-java-guide-config-yaml-app` | @ConfigSource, typed config, env substitution |
+1. **Name the concept and the problem it solves** — one sentence, before any code.
+2. **Show the smallest runnable form** — from a migrated app, not from memory.
+3. **Have the learner type it.** Not paste. Typing surfaces the imports, and in Kora the import is
+   usually the thing that is wrong.
+4. **Compile** — `./gradlew clean classes`. In Kora the annotation processors, not the compiler,
+   are what validate the code, so this is the real feedback signal.
+5. **Open the generated code together** — `build/generated/sources/annotationProcessor/` (Java) or
+   `build/generated/ksp/` (Kotlin). Nothing demystifies compile-time DI faster.
+6. **Break it deliberately.** Delete the `@Component`, misspell a config key, drop the module from
+   the `@KoraApp` extends clause. Read the error together, then fix it.
+7. **Test it** — `./gradlew test`. For anything on the silent-failure list (§4) a test is the
+   *only* proof; a green build is not.
 
-### Phase 2: HTTP Services
-
-| Order | Guide | Guide App | Key Concepts |
-|-------|-------|-----------|--------------|
-| 5 | `http-server.md` | `kora-java-guide-http-server-app` | @HttpController, @HttpRoute, @Path, @Query |
-| 6 | `http-server-advanced.md` | `kora-java-guide-http-server-advanced-app` | @Json, HttpResponseEntity, interceptors |
-| 7 | `http-client.md` | `kora-java-guide-http-client-app` | @HttpClient, declarative interfaces |
-| 8 | `http-client-advanced.md` | `kora-java-guide-http-client-advanced-app` | Interceptors, error handling |
-| 9 | `openapi-http-server.md` | `kora-java-guide-openapi-http-server-app` | OpenAPI codegen, delegates |
-| 10 | `openapi-http-client.md` | `kora-java-guide-openapi-http-client-app` | Typed API clients |
-
-### Phase 3: Data & Messaging
-
-| Order | Guide | Guide App | Key Concepts |
-|-------|-------|-----------|--------------|
-| 11 | `database-jdbc.md` | `kora-java-guide-database-jdbc-app` | @Repository, @Query, @EntityJdbc |
-| 12 | `database-jdbc-advanced.md` | `kora-java-guide-database-jdbc-advanced-app` | Transactions, connection pooling |
-| 13 | `database-cassandra.md` | `kora-java-guide-database-cassandra-app` | @EntityCassandra, CQL |
-| 14 | `messaging-kafka.md` | `kora-java-guide-messaging-kafka-app` | @KafkaListener, @KafkaPublisher |
-
-### Phase 4: Resilience & Observability
-
-| Order | Guide | Guide App | Key Concepts |
-|-------|-------|-----------|--------------|
-| 15 | `resilient.md` | `kora-java-guide-resilient-app` | @Retry, @CircuitBreaker, @Timeout |
-| 16 | `cache.md` | `kora-java-guide-cache-app` | @Cacheable, @CachePut, @CacheInvalidate |
-| 17 | `cache-multi-level.md` | `kora-java-guide-cache-multi-level-app` | Multi-level cache stacks |
-| 18 | `observability.md` | `kora-java-guide-observability-app` | Metrics, tracing, logging |
-| 19 | `validation.md` | `kora-java-guide-validation-app` | @Valid, JSR-380 constraints |
-
-### Phase 5: Advanced Topics
-
-| Order | Guide | Guide App | Key Concepts |
-|-------|-------|-----------|--------------|
-| 20 | `grpc-server.md` | `kora-java-guide-grpc-server-app` | gRPC handlers, protobuf |
-| 21 | `grpc-client.md` | `kora-java-guide-grpc-client-app` | gRPC stubs, interceptors |
-| 22 | `s3.md` | `kora-java-guide-s3-app` | @S3.Client, multipart |
-| 23 | `testing-junit.md` | `kora-java-guide-testing-junit-app` | @KoraAppTest, @TestComponent |
-| 24 | `testing-integration.md` | `kora-java-guide-testing-integration-app` | Testcontainers, E2E |
-| 25 | `testing-black-box.md` | `kora-java-guide-testing-black-box-app` | Docker-based tests |
-
-**Kotlin user?** Replace `java` → `kotlin` in app names (e.g., `kora-kotlin-guide-http-server-app`).
+**Never say:** "I think", "probably", "it's basically Spring's ...".
+**Say instead:** "the source at `<path>` says", "the `<app>` example does it this way", "let's check".
 
 ---
 
-## Teaching Methodology
+## 3. Lesson 0 — the smallest Kora 2.0 service
 
-### For Each Guide
-
-1. **Read guide together** — Go section by section, not all at once
-2. **Explain every annotation** — What it does, why it's needed, what code is generated
-3. **Clone guide app** — `cp -r .kora-agent/kora-examples/guides/java/<app> ./learning/<app>`
-4. **Run and verify** — `./gradlew clean test` must pass
-5. **Modify incrementally** — Add features, break things, fix them
-6. **Compile often** — `./gradlew clean classes` after each change
-7. **Check generated code** — Open `build/generated/sources/` to see what Kora generates
-
-### Explanation Template
-
-When explaining any Kora concept:
-
-```markdown
-## [Concept Name]
-
-**What:** One-sentence definition
-
-**Why:** Why Kora does it this way (compile-time vs runtime, performance, etc.)
-
-**How:**
-```java
-// Minimal working example
-```
-
-**Generated code:** What Kora generates at compile time (show if relevant)
-
-**Common mistakes:** What beginners get wrong
-
-**Next:** What to learn after this
-```
-
-### Answer Format
-
-When user asks a question:
-
-1. **Check guide first** — Is there a guide covering this?
-2. **Quote the guide** — Reference exact section
-3. **Show example** — From guide app or docs
-4. **Explain nuance** — Why it works this way
-5. **Verify understanding** — Ask user to implement small piece
-
-**Never say:** "I think...", "Probably...", "Similar to Spring..."
-
-**Always say:** "According to the guide...", "The guide app shows...", "Kora generates..."
-
----
-
-## Common Beginner Questions & Answers
-
-### "What is Kora?"
-
-> Kora is a **compile-time dependency injection framework** for Java/Kotlin. Unlike Spring (runtime proxies, reflection), Kora generates all wiring code at compile time via annotation processors. Result: faster startup, no reflection, errors caught at compile time.
-
-**Show:** `getting-started.md` + `kora-java-guide-getting-started-app`
-
-### "How does @Component work?"
-
-> `@Component` marks a class for DI. Kora's annotation processor reads it, generates `*ComponentImpl.java` with constructor code. No reflection — pure Java bytecode.
-
-**Show:** `dependency-injection-introduction.md` + generated code in `build/generated/sources/`
-
-### "Why no @Autowired?"
-
-> Kora uses **constructor injection only**. All dependencies are `final` fields set in constructor. No field injection, no setters. Compiler enforces immutability.
+Every curriculum starts here. Both files below are the real content of
+`guides/java/kora-java-guide-getting-started-app`, which compiles, runs and has a passing test.
 
 ```java
-// Kora way (correct)
-@Component
-public final class UserService {
-    private final UserRepository repo;
-    public UserService(UserRepository repo) { this.repo = repo; }
-}
+package io.koraframework.guide.gettingstarted;
 
-// Spring way (wrong in Kora)
-@Component
-public class UserService {
-    @Autowired  // ← Does not exist in Kora
-    private UserRepository repo;
-}
-```
+import io.koraframework.application.graph.KoraApplication;
+import io.koraframework.common.annotation.KoraApp;
+import io.koraframework.config.hocon.HoconConfigModule;
+import io.koraframework.http.server.undertow.UndertowPublicHttpServerModule;
+import io.koraframework.json.common.JsonModule;
+import io.koraframework.logging.logback.LogbackModule;
 
-### "What is @KoraApp?"
+@KoraApp
+public interface Application extends HoconConfigModule, JsonModule, LogbackModule, UndertowPublicHttpServerModule {
 
-> `@KoraApp` marks the application entry point. Kora generates `ApplicationGraph` class that wires all components. Call `KoraApplication.run(ApplicationGraph::graph)` to start.
-
-**Show:** `getting-started.md` section "Bootstrap"
-
-### "How do I create a REST endpoint?"
-
-> Use `@HttpController` + `@HttpRoute`. Kora generates router at compile time.
-
-```java
-@Component
-@HttpController
-public final class HelloController {
-    @HttpRoute(method = HttpMethod.GET, path = "/hello/{name}")
-    public String hello(@Path String name) {
-        return "Hello " + name;
+    static void main(String[] args) {
+        KoraApplication.run(ApplicationGraph::graph);
     }
 }
 ```
 
-**Show:** `http-server.md` + `kora-java-guide-http-server-app`
+```java
+package io.koraframework.guide.gettingstarted;
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.http.common.HttpMethod;
+import io.koraframework.http.common.annotation.HttpRoute;
+import io.koraframework.http.common.body.HttpBody;
+import io.koraframework.http.server.common.annotation.HttpController;
+import io.koraframework.http.server.common.response.HttpServerResponse;
+
+@Component
+@HttpController
+public final class HelloController {
+
+    @HttpRoute(method = HttpMethod.GET, path = "/hello")
+    public HttpServerResponse hello() {
+        return HttpServerResponse.of(200, HttpBody.plaintext("Hello, Kora!"));
+    }
+}
+```
+
+Kotlin is the same shape; the entry point is a top-level function
+(`fun main() { KoraApplication.run { ApplicationGraph.graph() } }`, as in
+`examples/kotlin/kora-kotlin-helloworld`).
+
+**The five things to explain here, in this order:**
+
+1. `@KoraApp` goes on an **interface**, not a class. It is a declaration of which modules the
+   application is made of — `extends HoconConfigModule, JsonModule, …` is the wiring.
+2. `ApplicationGraph` is **generated**, named after the interface (`Application` → `ApplicationGraph`).
+   It does not exist until `./gradlew classes` runs. A learner whose IDE shows it red before the
+   first compile has not made a mistake — show them why.
+3. `KoraApplication.run(ApplicationGraph::graph)` takes a `Supplier<ApplicationGraphDraw>`. The
+   graph is *drawn* first, then initialised; startup failures surface at init, before traffic.
+4. `@Component` marks a class for the graph. Dependencies arrive through **the constructor** —
+   there is no field injection and no `@Autowired` equivalent to look for.
+5. There is no reflection anywhere in that chain. Open `build/generated/` and show them the plain
+   Java that was written for them.
+
+**Then break it:** remove `UndertowPublicHttpServerModule` from the extends clause and rebuild. The
+failure is a compile-time graph error naming the missing dependency — that error, arriving at build
+time rather than at 3am, is Kora's entire value proposition in one screen.
 
 ---
 
-## Session Workflow
+## 4. The lesson that matters most — what the compiler cannot tell you
 
-### First Session
+Teach this early, around lesson 3, and keep returning to it. Beginners arrive believing a green
+build means working code. In Kora 2.0 that belief is specifically false, and the failures are
+silent rather than loud.
 
-```
-1. Greet + assess level
-   - "Java or Kotlin?"
-   - "Used Spring/Micronaut before?"
-   - "What do you want to build?"
+| It compiles, and then | Because |
+|---|---|
+| A global interceptor never runs — auth or error handling quietly gone | `@Tag(HttpServerModule.class)`. 2.0 collects global interceptors by `@Tag(HttpServer.class)`; the old class still exists, so nothing complains |
+| The service starts green, but nothing answers on the ports that were configured | `publicApiHttpPort` / `privateApiHttpPort` are 1.x keys. Unrecognised HOCON keys are ignored **without a warning**, so both servers fall back to their own defaults — 8080 public, 8085 system — and probes, scrapers and load balancers hit nothing |
+| `/metrics` returns 200 with no `http_server_*` or `db_*` series | Component metrics default to **off** in 2.0 (`telemetry.metrics.enabled = false`). Logging is off too; tracing is on |
+| Tracing is on, spans are created, and the collector receives nothing | The exporter's `endpoint` is unset, so `spanExporter`/`spanProcessor` return a no-op `composite()` without a warning — while `tracing.enabled` defaults to **true** |
+| `ConfigValueException: … got null at path: 'ROOT.jdbc.username'` | The datasource section is still called `db`; 2.0 wires `new JdbcDatabaseFactoryModule("jdbc")` |
 
-2. Setup verification
-   - Check JDK version (25+ for Java, 21 for Kotlin)
-   - Check Gradle version (9+)
-   - Clone .kora-agent/ if missing
+The teaching point is not the table. It is the habit: **for anything on this list, the acceptance
+criterion is a test or an observed response, never a successful build.** Have the learner prove one
+of these to themselves — configure `publicApiHttpPort = 9090`, start the app, curl 9090 and get
+nothing, curl 8080 and get the answer. That five-minute exercise is worth an hour of explanation.
 
-3. Start learning path
-   - Begin with getting-started.md
-   - Implement getting-started-app together
-   - Explain @KoraApp, main(), graph
-
-4. Assign homework
-   - "Modify the endpoint to return JSON"
-   - "Add a @Component service class"
-   - "Run tests and show me output"
-
-5. Schedule next session
-   - "Next: dependency-injection.md"
-```
-
-### Ongoing Sessions
-
-```
-1. Review homework
-   - Check what user implemented
-   - Fix mistakes (explain why wrong)
-   - Praise correct patterns
-
-2. New topic
-   - Read guide section together
-   - Implement guide app incrementally
-   - Explain every annotation
-
-3. Hands-on practice
-   - User types code (you guide)
-   - Compile after each change
-   - Run tests
-
-4. Q&A
-   - Answer from guides only
-   - Show generated code if unclear
-   - Assign next homework
-```
+The full list, with the source that establishes each, is §4 of the [meta-skill](../../SKILL.md).
 
 ---
 
-## Tools & Scripts
+## 5. What a Kora 1.x learner must unlearn
 
-### Check Guide Progress
+Full treatment, with the source behind each item, in
+[`references/kora-2-unlearning-reference.md`](references/kora-2-unlearning-reference.md). The
+headlines, because teaching any of them the old way produces code that cannot work:
+
+- **Kora 2.0 is synchronous, on virtual threads.** Reactive types, `CompletionStage` and Kotlin
+  `suspend` are not Kora contracts any more. Blocking is the correct style. Wrapping a Kora call in
+  `withContext(Dispatchers.IO)` is pure overhead. Real parallelism moves to Java
+  `StructuredTaskScope`.
+- **The request `Context` is gone from the whole framework.** Not moved — removed. A lesson about
+  threading state through it must be replaced, not patched: pass the value explicitly, and where it
+  genuinely must be ambient use JDK `ScopedValue`, which is what Kora itself now uses
+  (`Principal.VALUE` / `Principal.current()` / `Principal.with(...)`, and the same idiom for MDC and
+  telemetry).
+- **Kora's validation is Kora's own**, in `io.koraframework.validation.common.annotation`. It is not
+  Jakarta Bean Validation / JSR-380, and teaching it as "the usual `jakarta.validation` annotations"
+  is wrong.
+- **Resilience is typed, not string-named.** `@Retry("name")` became `@Retryable(SomeSpec.class)`.
+- **Coordinates changed wholesale**: group `io.koraframework`, BOM `io.koraframework:kora-bom`,
+  version `2.0.0.RC1` from plain `mavenCentral()`, Java 25 floor. `ru.tinkoff.kora:kora-parent`
+  does not resolve.
+- **Some integrations were removed outright**: R2DBC, Vert.x SQL, `http-client-async`,
+  `s3-client-minio`. JDBC on virtual threads is the only relational path.
+
+---
+
+## 6. Progress tracking
+
+Per-learner progress lives in **`~/.kora-teacher-progress.md`** — one file, in the learner's home
+directory, deliberately outside any project so a learner working across several repositories keeps
+one journey. (This mirrors `kora-journal`, which likewise keeps its store under `~/`.)
+
+Read it at the start of a session and write it at the end:
 
 ```bash
-# List completed guides (manual tracking)
-cat ~/.kora-teacher-progress.md
+cat ~/.kora-teacher-progress.md 2>/dev/null || echo "No progress file yet — this is session 1"
 ```
-
-### Verify Resources
-
-```bash
-# Check if guides exist
-test -f .kora-agent/kora-docs/mkdocs/docs/en/guides/getting-started.md && echo "Guides OK" || echo "Clone guides!"
-
-# Check if guide apps exist
-test -d .kora-agent/kora-examples/guides/java && echo "Guide apps OK" || echo "Clone examples!"
-```
-
-### Generate Learning Plan
-
-```bash
-# Create personalized learning plan (future script)
-# python scripts/generate-learning-plan.py --level beginner --language java
-```
-
----
-
-## Assessment Checklist
-
-Before moving to next phase, verify user understands:
-
-### Phase 1 (Foundations)
-- [ ] Can create `@KoraApp` from memory
-- [ ] Understands constructor injection vs field injection
-- [ ] Can explain what `ApplicationGraph` does
-- [ ] Can use `@ConfigSource` with HOCON/YAML
-- [ ] Knows why Kora uses compile-time DI
-
-### Phase 2 (HTTP)
-- [ ] Can create `@HttpController` with multiple routes
-- [ ] Understands `@Path` vs `@Query` vs `@Header`
-- [ ] Can return JSON with `@Json`
-- [ ] Can call external API with `@HttpClient`
-- [ ] Knows how interceptors work
-
-### Phase 3 (Data)
-- [ ] Can create `@Repository` with `@Query`
-- [ ] Understands `@EntityJdbc` mapping
-- [ ] Can use transactions (`@Transaction`)
-- [ ] Can publish/consume Kafka messages
-- [ ] Knows connection pooling config
-
-### Phase 4 (Resilience)
-- [ ] Can add `@Retry` to flaky calls
-- [ ] Understands circuit breaker states
-- [ ] Can cache method results with `@Cacheable`
-- [ ] Can add metrics/tracing to service
-- [ ] Knows how to validate input with `@Valid`
-
-### Phase 5 (Advanced)
-- [ ] Can create gRPC server/client
-- [ ] Can upload/download S3 objects
-- [ ] Can write `@KoraAppTest` tests
-- [ ] Can run Testcontainers integration tests
-- [ ] Understands black-box testing approach
-
----
-
-## Troubleshooting
-
-### User Stuck on Concept
-
-1. **Re-read guide section** — Maybe missed a detail
-2. **Show guide app code** — Concrete example often clearer
-3. **Show generated code** — See what Kora actually does
-4. **Simplify** — Create minimal example (one class, one method)
-5. **Compare wrong vs right** — Show common mistake, then fix
-
-### Compilation Errors
-
-```bash
-# Standard debugging sequence
-./gradlew clean          # Clear build artifacts
-./gradlew classes        # Compile, watch for errors
-./gradlew --stop         # If gradle daemon stuck
-./gradlew classes --info # Verbose output if still failing
-```
-
-**Common issues:**
-- Missing annotation processor → Check `build.gradle`
-- Wrong JDK version → `java -version`
-- Stale generated code → `rm -rf build/`
-
-### User Wants to Skip Ahead
-
-**Don't allow.** Kora concepts build on each other. User who skips DI will struggle with HTTP controllers. Say:
-
-> "I understand you want to build [X] quickly. But [prerequisite concept] is essential — you'll hit confusing errors without it. Let's spend 30 min on [prerequisite], then you'll build [X] confidently."
-
----
-
-## Progress Tracking
-
-Create `~/.kora-teacher-progress.md` for each user:
 
 ```markdown
-# Kora Learning Progress — [User Name]
+# Kora 2.0 learning progress — <name>
 
-**Started:** YYYY-MM-DD  
-**Language:** Java | Kotlin  
-**Goal:** [What user wants to build]
+**Started:** YYYY-MM-DD
+**Language:** Java | Kotlin
+**Coming from:** nothing | Kora 1.x | Spring | other
+**Goal:** <what they want to build>
 
-## Completed Guides
+## Completed stops
 
-| Date | Guide | Guide App | Notes |
-|------|-------|-----------|-------|
-| YYYY-MM-DD | getting-started.md | kora-java-guide-getting-started-app | Understood @KoraApp, main() |
-| ... | ... | ... | ... |
+| Date | Stop | Companion app | Notes |
+|------|------|---------------|-------|
+| YYYY-MM-DD | Getting started | kora-java-guide-getting-started-app | Understood @KoraApp on an interface, generated ApplicationGraph |
 
-## Current Phase
-
-Phase X: [Name]
-
-## Blockers
-
-- [ ] Concept user struggles with
-- [ ] TODO: Review in next session
+## Struggling with
+- <concept, and what specifically did not land>
 
 ## Homework
+- [ ] <task>
 
-- [ ] Task 1
-- [ ] Task 2
-
-## Next Session
-
-- Topic: [Next guide]
-- Date: [Scheduled]
+## Next
+- Stop: <next stop> · Date: <when>
 ```
 
----
-
-## References
-
-- **Guides:** `.kora-agent/kora-docs/mkdocs/docs/en/guides/`
-- **Documentation:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/`
-- **Guide Apps:** `.kora-agent/kora-examples/guides/java|kotlin/`
-- **Example Apps:** `.kora-agent/kora-examples/examples/java|kotlin/`
-- **Changelog:** https://raw.githubusercontent.com/kora-projects/kora-docs/refs/heads/master/mkdocs/docs/en/changelog/changelog.md
+If the learner would rather keep it inside their project, that is fine — write
+`./.kora-teacher-progress.md` instead and confirm it is git-ignored before writing anything into it.
 
 ---
 
-## Activation Triggers
+## 7. Handing off
 
-**This sub-skill activates when user:**
+Teaching a concept is this skill's job. Implementing production code in that domain is not — route
+to the domain sub-skill as soon as the learner is past the lesson, and say that you are doing it so
+they learn the map too.
 
-- Says "learn Kora", "new to Kora", "Kora tutorial", "Kora course"
-- Asks "how to start with Kora", "Kora for beginners"
-- Requests "guide me through Kora", "walk me through"
-- Asks foundational questions: "What is @KoraApp?", "How does DI work in Kora?"
-- Wants to implement examples from guides
-- Needs step-by-step explanation of Kora concepts
+| The learner is now asking about | Hand off to |
+|---|---|
+| Real project scaffolding, Gradle, BOM | [`kora-project-setup-java`](../kora-project-setup-java/SKILL.md) · [`kora-project-setup-kotlin`](../kora-project-setup-kotlin/SKILL.md) · [`kora-project-dependencies`](../kora-project-dependencies/SKILL.md) |
+| Graph wiring beyond the introduction | [`kora-di-compile`](../kora-di-compile/SKILL.md) · [`kora-di-runtime`](../kora-di-runtime/SKILL.md) |
+| Typed configuration | [`kora-config-hocon`](../kora-config-hocon/SKILL.md) · [`kora-config-yaml`](../kora-config-yaml/SKILL.md) |
+| HTTP endpoints, clients, auth | [`kora-http-server`](../kora-http-server/SKILL.md) · [`kora-http-client`](../kora-http-client/SKILL.md) · [`kora-http-server-auth`](../kora-http-server-auth/SKILL.md) |
+| JSON DTOs | [`kora-json`](../kora-json/SKILL.md) |
+| Repositories and transactions | [`kora-database-jdbc`](../kora-database-jdbc/SKILL.md) · [`kora-database-migration`](../kora-database-migration/SKILL.md) |
+| Tests | [`kora-testing-junit-java`](../kora-testing-junit-java/SKILL.md) · [`kora-testing-junit-kotlin`](../kora-testing-junit-kotlin/SKILL.md) · [`kora-testing-blackbox`](../kora-testing-blackbox/SKILL.md) |
+| Metrics, tracing, logs | [`kora-telemetry-metrics`](../kora-telemetry-metrics/SKILL.md) · [`kora-telemetry-tracing`](../kora-telemetry-tracing/SKILL.md) · [`kora-telemetry-logging`](../kora-telemetry-logging/SKILL.md) |
+| Anything else | the routing tables in the [meta-skill](../../SKILL.md) §3 |
 
-**Deactivate when:**
+Record any Kora mistake made during a lesson — yours or theirs — with
+[`kora-journal`](../kora-journal/SKILL.md) (R3). A teaching session is where wrong mental models are
+most visible; that is exactly the input the journal wants.
 
-- User completes learning path and builds production service
-- User asks advanced/specific questions (route to other sub-skills)
-- User says "I know Kora basics" or "skip to [advanced topic]"
+---
 
-**Handoff to other sub-skills:**
+## 8. Activation
 
-- Production service setup → `kora-project-setup-java` / `kora-project-setup-kotlin`
-- Specific module questions → respective sub-skill (e.g., `kora-http-server`)
-- Debugging DI errors → `kora-di-compile` / `kora-di-runtime`
+**Activates when the learner:**
+
+- says "learn Kora", "new to Kora", "Kora tutorial", "Kora course", "walk me through Kora"
+- asks "how do I start with Kora", "Kora for beginners"
+- asks a foundational question: "what is `@KoraApp`", "how does compile-time DI work",
+  "why is there no `@Autowired`", "what does Kora generate"
+- is coming from Kora 1.x and wants to know what changed conceptually, not just mechanically
+- wants a guide app or example explained line by line
+
+**Stops being the right skill when:**
+
+- the learner is building a real service and needs the domain sub-skill, not a lesson
+- the question is specific and advanced — route it (§7)
+- they say "I know the basics" or ask to skip ahead
+
+**On "can we skip ahead?"** — say what they will hit, then let them choose. Refusing outright
+teaches nothing:
+
+> "You can. Without the DI stop, `No component found for dependency` will read as noise rather than
+> as a sentence about your graph — that is the error you will meet most often. Twenty minutes there
+> makes the rest cheaper. Want to do it, or push on and come back when that error appears?"

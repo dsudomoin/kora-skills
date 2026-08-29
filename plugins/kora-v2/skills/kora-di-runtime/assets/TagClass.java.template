@@ -1,42 +1,17 @@
-package ${packagePath}
+package ${packagePath};
 
 /**
- * Tag class for component disambiguation.
+ * A tag marker.
  *
- * Usage:
- * - Simple marker class for @Tag annotation
- * - No fields or methods needed
- * - Just a type token
+ * <p>{@code @Tag} (io.koraframework.common.annotation.Tag) takes a {@code Class}, never a string —
+ * so rename and find-usages keep working. Any type can serve as a tag; an empty, purpose-named,
+ * non-instantiable class states the intent and nothing else.
  *
- * Example:
- *   @Tag(RedisTag.class)
- *   @Component
- *   public class RedisCache implements Cache { ... }
+ * <p>Matching rules: an untagged injection point sees only untagged components, a tagged one only
+ * the same tag, and {@code @Tag(Tag.Any.class)} sees everything. Tagging one implementation of an
+ * interface therefore removes it from every untagged consumer of that interface.
  */
 public final class ${ClassName} {
+
     private ${ClassName}() {}
 }
-
-// ============================================================================
-// EXAMPLE TAG CLASSES
-// ============================================================================
-//
-// // Cache implementations
-// public final class RedisTag {}
-// public final class CaffeineTag {}
-//
-// // Database implementations
-// public final class PrimaryTag {}
-// public final class SecondaryTag {}
-//
-// // Environment-specific
-// public final class ProdTag {}
-// public final class DevTag {}
-//
-// // Strategy pattern
-// public final class SyncTag {}
-// public final class AsyncTag {}
-//
-// // Tenant-specific (multi-tenant applications)
-// public final class TenantATag {}
-// public final class TenantBTag {}

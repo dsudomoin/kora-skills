@@ -1,514 +1,188 @@
-# Kora Collection Injection Reference
+# `All<T>` Reference — collection injection in Kora 2.0
 
-**Source:** [Kora Container Documentation](../../../.kora-agent/kora-docs/mkdocs/docs/en/documentation/container.md)
-
-Complete reference for injecting collections of components using `All<T>` and `@Tag`.
+**Kora 2.0** · `io.koraframework.application.graph.All`
 
 ---
 
-## Table of Contents
-
-1. [All<T> Basics](#allt-basics)
-2. [All<T> with Tags](#allt-with-tags)
-3. [Tag.Any — Collect All Components](#tagany--collect-all-components)
-4. [Common Patterns](#common-patterns)
-5. [Troubleshooting](#troubleshooting)
-
----
-
-## All<T> Basics
-
-`All<T>` injects all untagged implementations of a type.
+## 1. The type
 
 ```java
-// Multiple implementations
-@Component
-public final class EmailNotifier implements Notifier {
-    public void send(String message) { /* Send email */ }
-}
+package io.koraframework.application.graph;
 
-@Component
-public final class SmsNotifier implements Notifier {
-    public void send(String message) { /* Send SMS */ }
-}
+public sealed interface All<T> extends Iterable<T>
+    permits All.StaticAll, AllPromisesImpl, AllSimpleImpl, AllValuesImpl {
 
-@Component
-public final class PushNotifier implements Notifier {
-    public void send(String message) { /* Send push */ }
+    static <T> All<T> of(T... values);      // for tests and manual graphs
+    // the remaining static factories are used by generated code
 }
+```
 
-// Collect all notifiers
+**`All<T>` extends `Iterable<T>`, not `List<T>`.** It has no `size()`, `get(int)`, `isEmpty()`,
+`stream()` or `forEach(BiConsumer)` — only `iterator()` and `Iterable.forEach`. It is also `sealed`,
+so you cannot implement it yourself; use `All.of(...)` to build one in a test.
+
+`List<T>` is **not** a collection claim. A constructor parameter of type `List<Notifier>` asks the
+container for a single component of type `List<Notifier>` and fails with "no component found" unless
+some module actually provides one.
+
+---
+
+## 2. Supported claims
+
+The processor recognises exactly these collection shapes:
+
+| Parameter type | Claim | Meaning |
+|---|---|---|
+| `All<T>` | `ALL_OF_ONE` | every matching component, eagerly |
+| `All<ValueOf<T>>` | `ALL_OF_VALUE` | every matching component as a `ValueOf` — refresh-isolated |
+| `All<PromiseOf<T>>` | `ALL_OF_PROMISE` | every matching component as a `PromiseOf` — resolved lazily |
+
+Anything else parameterised over `All` is not special-cased.
+
+---
+
+## 3. Tag semantics
+
+Which components land in the collection is decided by the tag on the **parameter**:
+
+| Parameter | Collects |
+|---|---|
+| `All<Notifier>` | untagged `Notifier` components only |
+| `@Tag(Tag.Any.class) All<Notifier>` | every `Notifier`, tagged or not |
+| `@Tag(SmsTag.class) All<Notifier>` | only `Notifier`s tagged `SmsTag` |
+
+The first row is the usual cause of "my collection is missing implementations": tagging an
+implementation removes it from every untagged consumer, including untagged `All<T>`.
+
+---
+
+## 4. Java
+
+```java
+package com.example.notify;
+
+import io.koraframework.application.graph.All;
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Tag;
+
 @Component
 public final class NotificationService {
-    private final List<Notifier> notifiers;
 
-    public NotificationService(All<Notifier> notifiers) {
-        this.notifiers = List.copyOf(notifiers);
+    private final All<Notifier> notifiers;
+
+    public NotificationService(@Tag(Tag.Any.class) All<Notifier> notifiers) {
+        this.notifiers = notifiers;
     }
 
-    public void notify(String message) {
-        notifiers.forEach(n -> n.send(message));
+    public void broadcast(String user, String message) {
+        for (var notifier : notifiers) {
+            notifier.notify(user, message);
+        }
     }
 }
 ```
 
-### All<T> Contract
+Keeping the `All<T>` and iterating it is the simplest correct shape. If you genuinely need a `List`
+— to sort it, index it, or hand it to an API — materialise it explicitly; `List.copyOf` does **not**
+accept an `Iterable`:
 
 ```java
-public interface All<T> extends List<T> {}
+private final List<Notifier> notifiers;
+
+public NotificationService(@Tag(Tag.Any.class) All<Notifier> notifiers) {
+    var list = new ArrayList<Notifier>();
+    notifiers.forEach(list::add);
+    this.notifiers = List.copyOf(list);
+}
 ```
 
-**Key points:**
-- `All<T>` extends `List<T>` — can be passed to any method expecting `List`
-- Injects only **untagged** components
-- Order is deterministic (based on component creation order)
+## 5. Kotlin
+
+```kotlin
+package com.example.notify
+
+import io.koraframework.application.graph.All
+import io.koraframework.common.annotation.Component
+import io.koraframework.common.annotation.Tag
+
+@Component
+class NotificationService(
+    @Tag(Tag.Any::class) private val notifiers: All<Notifier>
+) {
+
+    fun broadcast(user: String, message: String) {
+        for (notifier in notifiers) {
+            notifier.notify(user, message)
+        }
+    }
+}
+```
+
+Kotlin's `Iterable` extensions apply, so `notifiers.toList()`, `.map { }`, `.filter { }` all work
+without materialising by hand.
 
 ---
 
-## All<T> with Tags
+## 6. `All<ValueOf<T>>` and `All<PromiseOf<T>>`
 
-Combine `@Tag` with `All<T>` for filtered collections.
-
-```java
-// Tagged handlers
-@Tag(AsyncTag.class)
-@Component
-public final class AsyncHandler implements EventHandler {}
-
-@Tag(AsyncTag.class)
-@Component
-public final class BatchHandler implements EventHandler {}
-
-@Tag(SyncTag.class)
-@Component
-public final class SyncHandler implements EventHandler {}
-
-// Only async handlers
-@Component
-public final class EventBus {
-    private final List<EventHandler> asyncHandlers;
-
-    public EventBus(
-        @Tag(AsyncTag.class)
-        All<EventHandler> asyncHandlers
-    ) {
-        this.asyncHandlers = asyncHandlers;
-    }
-}
-```
-
-### Syntax Rules
-
-When you use `@Tag(SpecificTag.class)` with `All<T>` or `List<T>`, Kora automatically collects ALL components with that specific tag.
+`All<ValueOf<T>>` gives a collection whose elements always resolve to the *current* instance, and —
+like a plain `ValueOf` dependency — keeps the consumer from being rebuilt when a member refreshes:
 
 ```java
-// Inject all components with a specific tag
-public EventBus(
-    @Tag(AsyncTag.class)
-    All<EventHandler> asyncHandlers
-) {}
-
-// Same with List
-public EventBus(
-    @Tag(AsyncTag.class)
-    List<EventHandler> asyncHandlers
-) {}
-
-// To get ALL components (tagged + untagged), use @Tag(Tag.Any.class):
-public ComponentCollector(
-    @Tag(Tag.Any.class)
-    All<Component> allComponents
-) {}
-```
-
----
-
-## Tag.Any — Collect ALL Components
-
-`@Tag(Tag.Any.class)` injects ALL components regardless of tags.
-
-```java
-// Tagged implementations
-@Tag(RedisTag.class)
 @Component
-public final class RedisCache implements Cache {}
+public final class HealthAggregator {
 
-@Tag(CaffeineTag.class)
-@Component
-public final class CaffeineCache implements Cache {}
+    private final All<ValueOf<HealthCheck>> checks;
 
-@Component
-public final class DefaultCache implements Cache {}
-
-// ALL caches injected
-@Component
-public final class CacheManager {
-    private final List<Cache> allCaches;
-
-    public CacheManager(@Tag(Tag.Any.class) List<Cache> allCaches) {
-        this.allCaches = allCaches;
-        // Gets: RedisCache, CaffeineCache, DefaultCache
+    public HealthAggregator(@Tag(Tag.Any.class) All<ValueOf<HealthCheck>> checks) {
+        this.checks = checks;
     }
 
-    public void invalidateAll() {
-        allCaches.forEach(Cache::invalidate);
-    }
-}
-```
-
-### Tag with Specific Tag Type — Collect Components with Specific Tag
-
-`@Tag(SpecificTag.class)` with `All<T>` or `List<T>` injects all components with that specific tag.
-
-```java
-// Multiple Redis caches
-@Tag(RedisTag.class)
-@Component
-public final class UserRedisCache implements Cache {}
-
-@Tag(RedisTag.class)
-@Component
-public final class OrderRedisCache implements Cache {}
-
-@Tag(RedisTag.class)
-@Component
-public final class SessionRedisCache implements Cache {}
-
-// Only Redis caches
-@Component
-public final class RedisCacheManager {
-    private final List<Cache> redisCaches;
-
-    public RedisCacheManager(
-        @Tag(RedisTag.class)
-        All<Cache> redisCaches
-    ) {
-        this.redisCaches = redisCaches;
-    }
-}
-```
-
-### Quick Reference Table
-
-| Injection Pattern | What You Get |
-|-------------------|--------------|
-| `List<Cache>` | Only untagged caches |
-| `@Tag(Tag.Any.class) List<Cache>` | ALL caches (tagged + untagged) |
-| `@Tag(RedisTag.class) List<Cache>` | Single `RedisCache` (error if multiple) |
-| `@Tag(RedisTag.class) All<Cache>` | All caches with `RedisTag` |
-| `All<Cache>` | Same as `List<Cache>` (untagged only) |
-| `@Tag(Tag.Any.class) All<Cache>` | ALL caches (tagged + untagged) |
-
----
-
-## Common Patterns
-
-### Pattern 1: Event Bus with Multiple Handlers
-
-```java
-// Event handler marker
-public final class OrderCreatedTag {}
-
-// Multiple handlers for same event
-@Tag(OrderCreatedTag.class)
-@Component
-public final class EmailNotificationHandler implements EventHandler<OrderCreated> {
-    public void handle(OrderCreated event) {
-        // Send confirmation email
-    }
-}
-
-@Tag(OrderCreatedTag.class)
-@Component
-public final class InventoryHandler implements EventHandler<OrderCreated> {
-    public void handle(OrderCreated event) {
-        // Reserve inventory
-    }
-}
-
-@Tag(OrderCreatedTag.class)
-@Component
-public final class AnalyticsHandler implements EventHandler<OrderCreated> {
-    public void handle(OrderCreated event) {
-        // Track analytics
-    }
-}
-
-// Event bus
-@Component
-public final class EventBus {
-    private final List<EventHandler<OrderCreated>> handlers;
-
-    public EventBus(
-        @Tag(OrderCreatedTag.class)
-        All<EventHandler<OrderCreated>> handlers
-    ) {
-        this.handlers = handlers;
-    }
-
-    public void publish(OrderCreated event) {
-        handlers.forEach(h -> h.handle(event));
-    }
-}
-```
-
-### Pattern 2: Validation Chain
-
-```java
-// All validators
-@Component
-public final class ValidationService {
-    private final List<Validator> validators;
-
-    public ValidationService(All<Validator> validators) {
-        this.validators = validators;
-    }
-
-    public ValidationResult validate(Request request) {
-        for (Validator validator : validators) {
-            var result = validator.validate(request);
-            if (!result.isValid()) {
-                return result;  // Fail fast
+    public boolean healthy() {
+        for (var check : checks) {
+            if (!check.get().isHealthy()) {
+                return false;
             }
         }
-        return ValidationResult.ok();
-    }
-}
-
-// Validator implementations
-@Component
-public final class AuthValidator implements Validator {
-    public ValidationResult validate(Request request) { /* ... */ }
-}
-
-@Component
-public final class RateLimitValidator implements Validator {
-    public ValidationResult validate(Request request) { /* ... */ }
-}
-
-@Component
-public final class SchemaValidator implements Validator {
-    public ValidationResult validate(Request request) { /* ... */ }
-}
-```
-
-### Pattern 3: Plugin Architecture
-
-```java
-// All plugins collected
-@Component
-public final class PluginManager {
-    private final List<Plugin> plugins;
-
-    public PluginManager(@Tag(Tag.Any.class) All<Plugin> plugins) {
-        this.plugins = plugins;
-    }
-
-    public void init() {
-        plugins.forEach(Plugin::initialize);
-    }
-
-    public void shutdown() {
-        plugins.forEach(Plugin::shutdown);
-    }
-
-    public List<Plugin> getPlugins() {
-        return List.copyOf(plugins);
-    }
-}
-
-// Plugin implementations
-@Component
-public final class MetricsPlugin implements Plugin {
-    public void initialize() { /* Setup metrics */ }
-    public void shutdown() { /* Cleanup */ }
-}
-
-@Component
-public final class TracingPlugin implements Plugin {
-    public void initialize() { /* Setup tracing */ }
-    public void shutdown() { /* Cleanup */ }
-}
-
-@Component
-public final class HealthPlugin implements Plugin {
-    public void initialize() { /* Setup health checks */ }
-    public void shutdown() { /* Cleanup */ }
-}
-```
-
-### Pattern 4: Health Checks
-
-```java
-@Component
-public final class HealthChecker {
-    private final All<HealthCheck> healthChecks;
-
-    public HealthChecker(All<HealthCheck> healthChecks) {
-        this.healthChecks = healthChecks;
-    }
-
-    public Map<String, Boolean> checkAll() {
-        Map<String, Boolean> results = new HashMap<>();
-        for (HealthCheck check : healthChecks) {
-            try {
-                check.run();
-                results.put(check.name(), true);
-            } catch (Exception e) {
-                results.put(check.name(), false);
-            }
-        }
-        return results;
-    }
-}
-
-// Health check implementations
-@Component
-public final class DatabaseHealthCheck implements HealthCheck {
-    public String name() { return "database"; }
-    public void run() { /* Check DB connection */ }
-}
-
-@Component
-public final class CacheHealthCheck implements HealthCheck {
-    public String name() { return "cache"; }
-    public void run() { /* Check cache connectivity */ }
-}
-
-@Component
-public final class KafkaHealthCheck implements HealthCheck {
-    public String name() { return "kafka"; }
-    public void run() { /* Check Kafka consumer */ }
-}
-```
-
-### Pattern 5: Strategy Pattern with Tags
-
-```java
-// Tag classes
-public final class JsonTag {}
-public final class XmlTag {}
-public final class CsvTag {}
-
-// Strategy implementations
-@Tag(JsonTag.class)
-@Component
-public final class JsonExporter implements DataExporter {
-    public void export(Data data) { /* JSON format */ }
-}
-
-@Tag(XmlTag.class)
-@Component
-public final class XmlExporter implements DataExporter {
-    public void export(Data data) { /* XML format */ }
-}
-
-@Tag(CsvTag.class)
-@Component
-public final class CsvExporter implements DataExporter {
-    public void export(Data data) { /* CSV format */ }
-}
-
-// All exporters for batch export
-@Component
-public final class ExportService {
-    private final Map<String, DataExporter> exporters;
-
-    public ExportService(
-        @Tag(Tag.Any.class) All<DataExporter> allExporters,
-        @Tag(JsonTag.class) DataExporter json,
-        @Tag(XmlTag.class) DataExporter xml,
-        @Tag(CsvTag.class) DataExporter csv
-    ) {
-        // Map for dynamic lookup
-        this.exporters = allExporters.stream()
-            .collect(Collectors.toMap(
-                e -> getFormat(e),
-                e -> e
-            ));
-    }
-
-    public void export(Data data, String format) {
-        exporters.get(format).export(data);
+        return true;
     }
 }
 ```
+
+`All<PromiseOf<T>>` yields `PromiseOf<T>` elements whose `get()` returns `Optional<T>`; use it when
+members may legitimately not be resolvable at the point of use.
 
 ---
 
-## Troubleshooting
+## 7. Ordering and conditional members
 
-### Empty Collection
+Order follows the order in which the processor resolved the components — it is deterministic for a
+given source set but **not** something to encode behaviour against. Where order matters (a filter or
+validation chain), give the element interface an explicit `order()`/`priority()` and sort.
 
-**Problem:** `All<Notifier>` is empty
+Members declared `@Conditional` whose condition failed are **skipped**, not returned as null:
 
-**Check:**
-1. Are components marked with `@Component`?
-2. Are they in scanned packages?
-3. Do they have all dependencies satisfied?
-
-### Ambiguous Dependency Error
-
-**Error:** `Found multiple components of type Cache`
-
-**Solution:** Use `@Tag` to disambiguate or use collection injection:
-
-```java
-// WRONG: Ambiguous
-public UserService(Cache cache) {}
-
-// CORRECT: Tagged
-public UserService(@Tag(RedisTag.class) Cache cache) {}
-
-// OR: Collection
-public UserService(@Tag(Tag.Any.class) List<Cache> caches) {}
-```
-
-### Tag.Any Not Working
-
-**Problem:** `@Tag(Tag.Any.class)` only gets untagged components
-
-**Check:**
-1. Make sure you're using `List<T>` or `All<T>` (not single injection)
-2. Verify `Tag.Any` is imported from correct package
-
-### Wrong Order
-
-**Problem:** Components not in expected order
-
-**Solution:** Don't rely on injection order for logic. Use explicit ordering:
-
-```java
-@Component
-public final class FirstValidator implements Validator {
-    public int priority() { return 1; }  // Custom ordering method
-}
-
-@Component
-public final class SecondValidator implements Validator {
-    public int priority() { return 2; }
-}
-
-// Or sort manually with custom comparator
-public ValidationService(All<Validator> validators) {
-    this.validators = validators.stream()
-        .sorted(Comparator.comparingInt(v -> v.priority()))
-        .toList();
-}
-```
-
-### Duplicate Components
-
-**Problem:** Same implementation appears twice in collection
-
-**Check:**
-1. Is component defined in multiple modules?
-2. Are there duplicate `@Component` annotations?
+- `All<T>` filters at construction time — the collection is fixed once built;
+- `All<ValueOf<T>>` / `All<PromiseOf<T>>` re-evaluate the filter on **every `iterator()` call**.
 
 ---
 
-## See Also
+## 8. Pitfalls
 
-- [SKILL.md](../SKILL.md) — Runtime DI overview
-- [Tag Injection Reference](tag-injection-reference.md) — @Tag disambiguation patterns
-- [Container Documentation](../../../.kora-agent/kora-docs/mkdocs/docs/en/documentation/container.md) — Official docs
+| Symptom | Cause |
+|---|---|
+| `cannot find symbol: method size()` / `get(int)` / `stream()` | `All` is `Iterable`, not `List` |
+| `List.copyOf(all)` does not compile | `List.copyOf` needs a `Collection`; drain the iterable first |
+| "no component found for `List<Foo>`" | `List<T>` is not a collection claim — use `All<T>` |
+| collection is empty | no untagged components of that type; try `@Tag(Tag.Any.class)` |
+| collection misses the tagged implementations | untagged `All<T>` excludes them by design |
+| `class is not allowed to extend sealed class: All` | `All` is sealed; use `All.of(...)` in tests |
+| a member is unexpectedly absent at runtime | its `@Conditional` condition evaluated to `Failed` |
+
+---
+
+## See also
+
+- [`tag-injection-reference.md`](tag-injection-reference.md) — tag matching rules
+- [`optional-dependency-reference.md`](optional-dependency-reference.md) — `ValueOf` / `PromiseOf` semantics
+- [`conditional-graph-evaluation-reference.md`](conditional-graph-evaluation-reference.md) — why a member can be missing

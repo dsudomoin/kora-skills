@@ -1,59 +1,108 @@
+// Kora 2.0 gRPC server — Kotlin.
+// gradle.properties must define: koraVersion=2.0.0.RC1 (and optionally grpcPort=8090)
+//
+// VERSION RULE — read before editing any coordinate below.
+// kora-bom constrains ONLY io.koraframework:* artifacts. It pins nothing under io.grpc or
+// com.google.protobuf, so every one of those is yours to keep consistent:
+//   * every io.grpc:* artifact  -> 1.83.1  (the version io.koraframework:grpc-server brings in
+//                                  via grpc-okhttp/grpc-stub; a stale pin fails at RUNTIME with
+//                                  AbstractMethodError: ... 'buildClientTransportServers(List, MetricRecorder)')
+//   * com.google.protobuf:protoc -> 3.25.3 (grpc-protobuf:1.83.1 brings protobuf-java 3.25.9;
+//                                  protoc 4.x gencode calls com.google.protobuf.RuntimeVersion,
+//                                  which does not exist in 3.25.9 -> NoClassDefFoundError)
+//
+// The gRPC stubs are generated as JAVA in Kotlin projects too — a handler extends the same
+// *Grpc.*ImplBase. There is no Kora support for protoc-gen-grpc-kotlin coroutine services, and
+// Kora 2.0 contracts are synchronous: no suspend, no Flow, no reactive types.
+
 import com.google.protobuf.gradle.id
+import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 
 plugins {
-    id("org.jetbrains.kotlin.jvm")
-    id("com.google.devtools.ksp")
+    id("org.jetbrains.kotlin.jvm") version "2.4.10"
+    id("com.google.devtools.ksp") version "2.3.11"
     id("application")
     id("com.google.protobuf") version "0.10.0"
 }
 
-// koraBom feeds the Kora BOM into every configuration so versions are inherited.
-val koraBom: Configuration by configurations.creating
-configurations {
-    ksp.get().extendsFrom(koraBom)
-    compileOnly.get().extendsFrom(koraBom)
-    implementation.get().extendsFrom(koraBom)
-    api.get().extendsFrom(koraBom)
-    testImplementation.get().extendsFrom(koraBom)
+kotlin {
+    jvmToolchain {
+        languageVersion.set(JavaLanguageVersion.of(25))   // Kora 2.0 artifacts are class-file 69
+        vendor.set(JvmVendorSpec.ADOPTIUM)
+    }
 }
 
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(25))
+        vendor.set(JvmVendorSpec.ADOPTIUM)
+    }
+}
+
+// From gradle.properties. A delegated `by project` val keeps the coordinates free of
+// ${...} interpolation, which reads better and templates cleanly.
+val koraVersion: String by project
+
 dependencies {
-    koraBom(platform("ru.tinkoff.kora:kora-parent:$koraVersion"))
-    ksp("ru.tinkoff.kora:symbol-processors")
+    implementation(platform("io.koraframework:kora-bom:$koraVersion"))
+    ksp("io.koraframework:symbol-processors:$koraVersion")
 
-    // gRPC Server
-    implementation("ru.tinkoff.kora:grpc-server")
-    implementation("io.grpc:grpc-protobuf:1.74.0")
-    implementation("javax.annotation:javax.annotation-api:1.3.2")
+    // gRPC server
+    implementation("io.koraframework:grpc-server")
+    implementation("io.grpc:grpc-protobuf:1.83.1")
+    compileOnly("javax.annotation:javax.annotation-api:1.3.2")   // generated stubs use @Generated
 
-    // Configuration (HOCON) and logging
-    implementation("ru.tinkoff.kora:config-hocon")
-    implementation("ru.tinkoff.kora:logging-logback")
+    // Optional: gRPC Server Reflection (grpcurl / Postman). Required for reflectionEnabled = true.
+    implementation("io.grpc:grpc-services:1.83.1")
 
-    // Optional: gRPC Server Reflection (grpcurl / Postman gRPC)
-    implementation("io.grpc:grpc-services:1.74.0")
+    // Configuration and logging
+    implementation("io.koraframework:config-hocon")
+    implementation("io.koraframework:logging-logback")
 
-    testImplementation("ru.tinkoff.kora:test-junit5")
+    // Optional telemetry: needed for grpcServer.telemetry.metrics / .tracing to produce anything
+    // implementation("io.koraframework:micrometer-module")
+    // implementation("io.koraframework:opentelemetry-tracing")
+
+    // Tests
+    testCompileOnly("javax.annotation:javax.annotation-api:1.3.2")
+    testImplementation("io.koraframework:test-junit5")
+    // A test that opens a client channel needs a client transport, pinned to the SAME 1.83.1:
+    // testImplementation("io.grpc:grpc-netty:1.83.1")
 }
 
 protobuf {
     protoc { artifact = "com.google.protobuf:protoc:3.25.3" }
     plugins {
-        id("grpc") { artifact = "io.grpc:protoc-gen-grpc-java:1.74.0" }
+        id("grpc") { artifact = "io.grpc:protoc-gen-grpc-java:1.83.1" }
     }
     generateProtoTasks {
-        ofSourceSet("main").forEach { it.plugins { id("grpc") { } } }
+        all().forEach { task -> task.plugins { id("grpc") } }
     }
 }
 
-kotlin {
-    sourceSets.main {
-        kotlin.srcDir("build/generated/source/proto/main/grpc")
-        kotlin.srcDir("build/generated/source/proto/main/java")
-    }
+// The generated stubs are Java — they belong to the java source set, not kotlin.srcDir.
+sourceSets.main {
+    java.srcDir("build/generated/source/proto/main/grpc")
+    java.srcDir("build/generated/source/proto/main/java")
 }
 
 application {
     applicationName = "application"
     mainClass.set("${package}.ApplicationKt")
+    applicationDefaultJvmArgs = listOf("-Dfile.encoding=UTF-8")
+}
+
+tasks.test {
+    dependsOn("generateProto")
+    environment("GRPC_PORT", (project.findProperty("grpcPort") ?: "8090").toString())
+    useJUnitPlatform()
+    testLogging {
+        showStandardStreams = true
+        events("passed", "skipped", "failed")
+        exceptionFormat = TestExceptionFormat.FULL
+    }
+}
+
+tasks.distTar {
+    archiveFileName.set("application.tar")
 }

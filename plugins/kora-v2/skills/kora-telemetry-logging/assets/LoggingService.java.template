@@ -1,61 +1,97 @@
 package ${package}.service;
 
+import io.koraframework.common.annotation.Component;
+import io.koraframework.json.common.annotation.Json;
+import io.koraframework.logging.common.MDC;
+import io.koraframework.logging.common.annotation.Mask;
+import io.koraframework.logging.common.arg.StructuredArgument;
+import io.koraframework.logging.common.masking.MaskingKeepLast;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.logging.common.MDC;
-import ru.tinkoff.kora.logging.common.arg.StructuredArgument;
 
 import java.util.Map;
 
 /**
- * Example service demonstrating Kora structured logging patterns.
+ * Kora 2.0 structured logging patterns.
+ *
+ * All structured values go through Jackson 3 (tools.jackson.core.JsonGenerator): the field
+ * writers are writeStringProperty / writeNumberProperty / writeName, NOT the Jackson 2
+ * writeStringField / writeNumberField / writeFieldName.
  */
 @Component
-public class UserService {
-    private static final Logger log = LoggerFactory.getLogger(UserService.class);
+public class LoggingService {
+
+    private static final Logger log = LoggerFactory.getLogger(LoggingService.class);
 
     /**
-     * Structured argument: a parameter interpolated into the message.
+     * Typed overload: String / Integer / Long / Boolean / Map&lt;String,String&gt;.
+     *
+     * Passed as a message parameter the JSON is appended on its own indented line as
+     * "user={...}". The {} position itself gets SLF4J's toString() of the argument, and the
+     * arg(...) types are plain records with no toString() override, so the message reads
+     * "Created user ArgumentWithValueAndWriter[fieldName=user, value=..., writer=...]".
+     * When the message line has to stay readable, use the marker or addKeyValue form below
+     * and keep the message a constant string.
      */
-    public User createUser(String userId, String email, String role) {
-        // Typed Map overload renders a nested JSON object; avoids manual generator calls.
-        var userArg = StructuredArgument.arg("user", Map.of(
+    public void createUser(String userId, String email, String role) {
+        var user = StructuredArgument.arg("user", Map.of(
             "id", userId,
             "email", email,
             "role", role));
 
-        log.info("Creating user {}", userArg);
-        User user = new User(userId, email, role);
-        log.info("Created user {}", userArg);
-        return user;
+        log.info("Created user {}", user);
     }
 
     /**
-     * Kora MDC: structured context attached to every record in scope.
-     * Propagated by KoraAsyncAppender. Remove what you put.
+     * SLF4J key/value + StructuredArgument.value(...) — the form Kora's own telemetry uses.
+     * The key lives in addKeyValue, so the message stays a constant string.
      */
-    public void processOrder(String orderId, String userId) {
-        MDC.put("orderId", orderId);
-        MDC.put("userId", userId);
-        try {
-            log.info("Processing order");   // orderId and userId attached to the record
-            log.info("Order processed");
-        } finally {
-            MDC.remove("orderId");
-            MDC.remove("userId");
-        }
+    public void recordOrder(String orderId, long amountMinor, int items) {
+        log.atInfo()
+            .addKeyValue("order", StructuredArgument.value(gen -> {
+                gen.writeStartObject();
+                gen.writeStringProperty("id", orderId);
+                gen.writeNumberProperty("amountMinor", amountMinor);
+                gen.writeNumberProperty("items", items);
+                gen.writeEndObject();
+            }))
+            .log("Order accepted");
     }
 
     /**
      * Marker: structured metadata that is not interpolated into the message.
      */
     public void auditAction(String action, String userId) {
-        var marker = StructuredArgument.marker("audit", Map.of(
+        log.info(StructuredArgument.marker("audit", Map.of(
             "action", action,
-            "userId", userId));
-        log.info(marker, "Audit event: {}", action);
+            "userId", userId)), "Audit event");
     }
 
-    public record User(String id, String email, String role) {}
+    /**
+     * Kora MDC: attaches typed values to every record in the current scope.
+     * Only valid inside a Kora-bound scope (HTTP request, Kafka record, scheduled job, ...).
+     * Outside one, MDC.get() throws because the ScopedValue is unbound.
+     */
+    public void processOrder(String orderId, int attempt) {
+        MDC.put("orderId", orderId);
+        MDC.put("attempt", attempt);
+        log.info("Processing order");
+        log.info("Order processed");
+    }
+
+    /**
+     * @Mask on the TYPE is what makes the processor generate the @Module holding the
+     * MaskingRules&lt;Payment&gt; component; @Mask on a component selects the strategy.
+     * Built-in strategies: MaskingFull (default, "***"), MaskingKeepFirst, MaskingKeepLast.
+     *
+     * The generated name carries the outer classes as a prefix (NameUtils.generatedType), so
+     * this nested record yields LoggingService_Payment_MaskingRulesModule, not
+     * Payment_MaskingRulesModule. Declare the record top-level if you want the short name.
+     */
+    @Json
+    @Mask
+    public record Payment(String id,
+                          @Mask String cvv,
+                          @Mask(MaskingKeepLast.class) String pan,
+                          long amountMinor) {}
 }

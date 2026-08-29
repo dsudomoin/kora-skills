@@ -1,13 +1,25 @@
 package ${package}
 
-import ru.tinkoff.grpc.client.GrpcClientModule
-import ru.tinkoff.kora.application.graph.KoraApplication
-import ru.tinkoff.kora.common.KoraApp
-import ru.tinkoff.kora.config.hocon.HoconConfigModule
-import ru.tinkoff.kora.logging.logback.LogbackModule
+import io.koraframework.application.graph.KoraApplication
+import io.koraframework.common.annotation.KoraApp
+import io.koraframework.config.hocon.HoconConfigModule
+import io.koraframework.grpc.client.GrpcClientModule
+import io.koraframework.logging.logback.LogbackModule
 
+/**
+ * gRPC client application root (Kora 2.0).
+ *
+ * GrpcClientModule contributes the OkHttp channel factory and the default telemetry factory.
+ * It declares no stub factories: a compile-time extension inside io.koraframework:symbol-processors
+ * generates one per generated *Grpc class as soon as some component asks for a stub type.
+ *
+ * `application { mainClass }` must point at `${package}.ApplicationKt`.
+ */
 @KoraApp
-interface Application : HoconConfigModule, LogbackModule, GrpcClientModule
+interface Application :
+    HoconConfigModule,
+    LogbackModule,
+    GrpcClientModule
 
 fun main() {
     KoraApplication.run(ApplicationGraph::graph)

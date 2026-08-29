@@ -2,105 +2,309 @@
   "evals": [
     {
       "id": "kora-testing-blackbox-appcontainer-basic",
-      "skills": ["kora-testing-blackbox"],
+      "skills": [
+        "kora-testing-blackbox"
+      ],
       "query": "Write a black-box end-to-end test for my Kora service that runs the packaged Docker image and checks POST /users returns 201 and GET /users/999999 returns 404.",
       "expected_behavior": [
-        "Defines an AppContainer extending GenericContainer<AppContainer> built from the application Dockerfile via ImageFromDockerfile",
-        "Exposes ports 8080 and 8085 and gates startup with Wait.forHttp(\"/system/readiness\").forPort(8085).forStatusCode(200)",
-        "Annotates the test class with @Testcontainers and the container fields with @Container",
-        "Drives the application through java.net.http.HttpClient against the public port URI and asserts status codes 201 and 404",
-        "Does not use @KoraAppTest, @TestComponent, field injection, or in-process graph injection for the black-box test"
+        "Defines an AppContainer extending GenericContainer<AppContainer> built from the application Dockerfile via ImageFromDockerfile, and says explicitly that AppContainer is user-written because Kora ships no Testcontainers integration",
+        "Calls withExposedPorts(8080, 8085) so both the public API and the system server are mapped",
+        "Gates startup with Wait.forHttp(\"/system/readiness\").forPort(8085).forStatusCode(200)",
+        "Annotates the test class with @Testcontainers and the container fields with @Container, and keeps the fields static",
+        "Drives the application through java.net.http.HttpClient against getMappedPort(8080) and asserts status codes 201 and 404",
+        "Does not use @KoraAppTest, @TestComponent, field injection, or any in-process graph access"
       ],
-      "tags": ["blackbox", "basic"]
+      "anti_behavior": [
+        "Waits with Wait.forLogMessage(...) on a Kora startup message",
+        "Waits with Wait.forListeningPort()",
+        "Puts the readiness probe on port 8080",
+        "Omits 8085 from withExposedPorts while still waiting on it",
+        "Imports anything from ru.tinkoff.kora"
+      ],
+      "tags": [
+        "blackbox",
+        "basic",
+        "regression-readiness"
+      ]
+    },
+    {
+      "id": "kora-testing-blackbox-wait-strategy-log-line",
+      "skills": [
+        "kora-testing-blackbox"
+      ],
+      "query": "My black-box test waits for the container with Wait.forLogMessage(\".*Kora started.*\", 1) and it stopped matching after we upgraded to Kora 2.0. What should I use instead?",
+      "expected_behavior": [
+        "States that Kora's startup message wording is not part of its contract and changed between 1.x and 2.0, so a log-line wait is the wrong gate at any version",
+        "Replaces it with Wait.forHttp(\"/system/readiness\").forPort(8085).forStatusCode(200)",
+        "Explains that /system/readiness is served by the system HTTP server, whose default port is 8085 (SystemHttpServerConfig overrides port(), it does not inherit the public 8080)",
+        "Reminds the reader that 8085 must appear in withExposedPorts(...) for the strategy to have a port to probe",
+        "Mentions withStartupTimeout, and that a GraalVM native image needs a longer budget (the migrated native examples allow 50-60s) than a JVM image (30s)"
+      ],
+      "anti_behavior": [
+        "Suggests a different, 'more stable' log message to match on",
+        "Suggests Wait.forListeningPort() as the fix",
+        "Suggests Thread.sleep or a fixed delay",
+        "Puts the readiness wait on the public port 8080"
+      ],
+      "tags": [
+        "readiness",
+        "regression-readiness",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-testing-blackbox-ports-and-probe-paths",
+      "skills": [
+        "kora-testing-blackbox"
+      ],
+      "query": "Our Kora 1.x app config had httpServer { publicApiHttpPort = 8081, privateApiHttpPort = 9090, privateApiHttpReadinessPath = \"/health\" }. The container starts fine after the 2.0 upgrade but the black-box readiness wait on 9090/health times out. Why?",
+      "expected_behavior": [
+        "Identifies publicApiHttpPort / privateApiHttpPort / privateApiHttpReadinessPath as Kora 1.x keys that do not exist in 2.0",
+        "States that unknown HOCON keys are ignored silently - no warning, no startup failure - so each server fell back to its own default: 8080 public and 8085 system, with readinessPath back at /system/readiness",
+        "Gives the 2.0 replacements: httpServer.port, httpServer.system.port, httpServer.system.readinessPath (and livenessPath / metricsPath)",
+        "Notes the app therefore came up green on the wrong ports and paths, which is why the container looks healthy while probes and scrapers hit nothing",
+        "Tells the reader to check inline HOCON in test sources too, not only application.conf/application.yaml"
+      ],
+      "anti_behavior": [
+        "Claims both servers try to bind 8080 and the app dies with 'Address already in use'",
+        "Claims the stale keys cause a compilation or config-validation error",
+        "Says SystemHttpServerConfig inherits port() = 8080 from HttpServerConfig",
+        "Keeps any of the 1.x key names in the corrected config"
+      ],
+      "tags": [
+        "config",
+        "ports",
+        "regression-config-keys",
+        "advanced"
+      ]
     },
     {
       "id": "kora-testing-blackbox-postgres-network",
-      "skills": ["kora-testing-blackbox"],
+      "skills": [
+        "kora-testing-blackbox"
+      ],
       "query": "My Kora app needs a real PostgreSQL for its black-box test. How do I start Postgres with Testcontainers and point the app at it?",
       "expected_behavior": [
         "Declares a PostgreSQLContainer on Network.SHARED with withNetworkAliases(\"postgres\")",
         "Uses AppContainer.dependsOn(POSTGRES) so the database starts first",
-        "Injects connection settings with withEnv such as POSTGRES_JDBC_URL = jdbc:postgresql://postgres:5432/<db>, POSTGRES_USER, POSTGRES_PASS",
-        "Notes that the env var names must match the application's ${VAR} substitution keys in its @ConfigSource config",
-        "Does not create a fresh Network.newNetwork() per test and does not use field injection"
+        "Injects the connection settings with withEnv using the in-network address jdbc:postgresql://postgres:5432/<db> - the container port, not getMappedPort or getJdbcUrl",
+        "Explains the two-address split: the test JVM uses POSTGRES.getJdbcUrl() (host-mapped), the application container uses the alias on port 5432",
+        "Notes that the env var names must match the application's own environment substitution keys, and that the Kora 2.0 JDBC config section is jdbc, not the 1.x db"
       ],
-      "tags": ["database", "basic"]
+      "anti_behavior": [
+        "Passes POSTGRES.getJdbcUrl() or getMappedPort(5432) into the application container",
+        "Creates a fresh Network.newNetwork() per test class instead of Network.SHARED",
+        "Writes a db { ... } config section",
+        "Uses field injection or @KoraAppTest anywhere in the black-box test"
+      ],
+      "tags": [
+        "database",
+        "networking",
+        "basic"
+      ]
     },
     {
-      "id": "kora-testing-blackbox-gradle-dockerfile",
-      "skills": ["kora-testing-blackbox"],
-      "query": "Set up the Gradle build and Dockerfile so my black-box module can package and test the Kora application.",
-      "expected_behavior": [
-        "Pins Kora artifacts through the ru.tinkoff.kora:kora-parent BOM and includes the annotation processor (annotationProcessor \"ru.tinkoff.kora:annotation-processors\", or ksp \"ru.tinkoff.kora:symbol-processors\" for Kotlin)",
-        "Adds testImplementation for ru.tinkoff.kora:test-junit5 and org.testcontainers:junit-jupiter / testcontainers / postgresql",
-        "Configures test { dependsOn \":app:distTar\" } so the distribution archive is built before tests",
-        "Writes a Dockerfile based on eclipse-temurin JRE that unpacks build/distributions/application.tar and EXPOSEs 8080 and 8085",
-        "Does not version individual ru.tinkoff.kora:* dependencies and does not introduce a non-Kora application packaging plugin"
+      "id": "kora-testing-blackbox-testcontainers-coordinates",
+      "skills": [
+        "kora-testing-blackbox"
       ],
-      "tags": ["build", "docker", "basic"]
+      "query": "Set up the Gradle dependencies for a Kora 2.0 black-box test module with Testcontainers and PostgreSQL.",
+      "expected_behavior": [
+        "Pins Kora artifacts through platform(\"io.koraframework:kora-bom:$koraVersion\") with koraVersion = 2.0.0.RC1 from mavenCentral()",
+        "Declares org.testcontainers:junit-jupiter, org.testcontainers:testcontainers and org.testcontainers:postgresql at 1.21.4, the version the migrated Kora 2.0 examples use",
+        "Notes that kora-bom constrains only io.koraframework artifacts, so the Testcontainers version is the application's own choice",
+        "Uses platform(\"org.junit:junit-bom:6.1.3\") for JUnit",
+        "If Testcontainers 2.x is mentioned, gives the renamed modules org.testcontainers:testcontainers-postgresql / testcontainers-kafka / testcontainers-cassandra and warns against mixing a 1.x coordinate with a 2.x version",
+        "Adds test { dependsOn \":app:distTar\" } plus inputs.file(...) for the Dockerfile and the archive"
+      ],
+      "anti_behavior": [
+        "Writes ru.tinkoff.kora:kora-parent or any ru.tinkoff.kora coordinate",
+        "Declares org.testcontainers:testcontainers-postgresql at version 1.21.4, or org.testcontainers:postgresql at a 2.x version",
+        "Claims kora-bom manages the Testcontainers version",
+        "Adds io.koraframework:test-junit5 as if it were required for a black-box test",
+        "Versions individual io.koraframework artifacts instead of using the BOM"
+      ],
+      "tags": [
+        "build",
+        "dependencies",
+        "regression-coordinates",
+        "basic"
+      ]
     },
     {
-      "id": "kora-testing-blackbox-restassured",
-      "skills": ["kora-testing-blackbox"],
-      "query": "I prefer RestAssured for HTTP assertions. Show a black-box test for a Product API CRUD flow.",
-      "expected_behavior": [
-        "Adds the io.rest-assured:rest-assured test dependency and sets RestAssured.baseURI from AppContainer.getURI()",
-        "Uses the given().when().then() DSL with statusCode() and body() matchers for create/read/update/delete",
-        "Reuses the AppContainer (GenericContainer subclass) waiting on /system/readiness on port 8085",
-        "Asserts realistic CRUD status codes (201 create, 200 read, 204 delete, 404 missing)",
-        "Does not use an in-process mock web layer or @KoraAppTest in place of the running container"
+      "id": "kora-testing-blackbox-dockerfile-disttar",
+      "skills": [
+        "kora-testing-blackbox"
       ],
-      "tags": ["restassured", "advanced"]
+      "query": "Write the Dockerfile my Kora 2.0 black-box test will build, and tell me which Gradle task has to run first.",
+      "expected_behavior": [
+        "Uses a JRE 25 base image such as eclipse-temurin:25-jre-jammy and explains that JDK 25 is a hard floor for Kora 2.0 artifacts",
+        "Unpacks build/distributions/application.tar and EXPOSEs both 8080/tcp and 8085/tcp",
+        "States that distTar (not installDist) produces build/distributions/*.tar, while installDist produces an exploded build/install/ directory",
+        "Shows the application plugin config that fixes the launcher path: applicationName, mainClass and distTar { archiveFileName = \"application.tar\" }",
+        "Sets CMD to <TARGET_DIR>/<applicationName>/bin/<applicationName>",
+        "Runs the process as a non-root user"
+      ],
+      "anti_behavior": [
+        "Uses a JRE/JDK 17 or 21 base image",
+        "Tells the reader to run installDist for a Dockerfile that copies build/distributions/*.tar",
+        "Exposes only 8080",
+        "Adds a Spring Boot or other non-Kora packaging plugin"
+      ],
+      "tags": [
+        "docker",
+        "build",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-testing-blackbox-metrics-not-proof",
+      "skills": [
+        "kora-testing-blackbox"
+      ],
+      "query": "My black-box test asserts GET /metrics returns 200 and it passes, so metrics are working, right? This is a Kora 2.0 service.",
+      "expected_behavior": [
+        "Says no: with no MetricsScraper in the graph the handler still answers 200, with the literal body \"# Metric Scraper disabled\"",
+        "Requires io.koraframework:micrometer-module on the application runtime classpath to get a real scraper",
+        "States that component metrics are off by default in Kora 2.0 (telemetry.metrics.enabled defaults to false) and must be enabled per component, e.g. httpServer.telemetry.metrics.enabled = true",
+        "Changes the assertion to check body content - that it does not contain \"Metric Scraper disabled\", and that it does contain real series such as kora_up and http_server_request_duration",
+        "Points /metrics at the system server on port 8085"
+      ],
+      "anti_behavior": [
+        "Confirms that a 200 status code is sufficient evidence",
+        "Claims component metrics are enabled by default in Kora 2.0",
+        "Puts /metrics on the public port 8080",
+        "Uses the Kora 1.x key privateApiHttpMetricsPath"
+      ],
+      "tags": [
+        "metrics",
+        "telemetry",
+        "regression-metrics",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-testing-blackbox-native-image-green-build",
+      "skills": [
+        "kora-testing-blackbox"
+      ],
+      "query": "Our Kora 2.0 GraalVM module builds a native image successfully with nativeCompile and the CI job is green. Is the migration of that module done?",
+      "expected_behavior": [
+        "Says no: a green nativeCompile proves nothing, because reachability-metadata defects compile cleanly and fail only at runtime",
+        "Gives the acceptance set: the binary starts and survives; GET /system/readiness returns 200; GET /metrics returns real series rather than a stub or 500; the module's scenario runs against a real dependency rather than mocks; and there are no stack traces in the startup log",
+        "Recommends pinning this in CI with a black-box test that builds the native Dockerfile and runs it under Testcontainers, gated on the readiness probe on port 8085",
+        "Notes that metadata file names are load-bearing: reflect-config.json is read and reflection-config.json is silently ignored",
+        "Notes a native container needs a longer startup timeout than a JVM one"
+      ],
+      "anti_behavior": [
+        "Treats a successful build, or a passing unit-test suite, as sufficient",
+        "Suggests waiting on a startup log line to verify the native binary",
+        "Recommends jar.enabled = false alongside nativeCompile",
+        "Names the metadata file reflection-config.json"
+      ],
+      "tags": [
+        "graalvm",
+        "native",
+        "regression-native",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-testing-blackbox-restassured-kotlin",
+      "skills": [
+        "kora-testing-blackbox"
+      ],
+      "query": "In Kotlin I prefer RestAssured for HTTP assertions. Show a black-box test for a Product API CRUD flow against my Kora 2.0 service.",
+      "expected_behavior": [
+        "Puts the @Container fields in a companion object with @JvmStatic, and explains that the Testcontainers extension only manages static fields",
+        "Reuses an AppContainer (GenericContainer<AppContainer> subclass) that exposes 8080 and 8085 and waits on Wait.forHttp(\"/system/readiness\").forPort(8085).forStatusCode(200)",
+        "Assigns RestAssured.baseURI in @BeforeAll (after the container has started), not in a property initialiser, because getMappedPort is only meaningful once running",
+        "Adds io.rest-assured:rest-assured as a test dependency and uses the given()/`when`()/then() DSL with statusCode() and body() matchers",
+        "Asserts realistic CRUD status codes: 201 create, 200 read/update, 204 delete, 404 missing, 400 invalid body"
+      ],
+      "anti_behavior": [
+        "Declares the containers as ordinary instance properties without @JvmStatic",
+        "Reads getMappedPort in a property initialiser before the container starts",
+        "Substitutes @KoraAppTest or an in-process mock web layer for the running container",
+        "Uses suspend test functions on the assumption Kora contracts are asynchronous"
+      ],
+      "tags": [
+        "restassured",
+        "kotlin",
+        "advanced"
+      ]
     },
     {
       "id": "kora-testing-blackbox-kafka-async",
-      "skills": ["kora-testing-blackbox"],
-      "query": "My Kora service consumes a Kafka topic and updates an order status. Write a black-box test that publishes an event and verifies processing via HTTP.",
-      "expected_behavior": [
-        "Starts a KafkaContainer on Network.SHARED with a network alias and injects withEnv(\"KAFKA_BOOTSTRAP_SERVERS\", \"kafka:9092\") into the AppContainer",
-        "Publishes a record with a plain org.apache.kafka.clients.producer.KafkaProducer using getBootstrapServers() for the host-mapped port",
-        "Uses Awaitility await().atMost(...).untilAsserted(...) to poll the HTTP API until the order status is PROCESSED",
-        "Verifies the side effect only through the public HTTP endpoint, not by reaching into the consumer",
-        "Does not modify the Kora graph or add test components into the running application"
+      "skills": [
+        "kora-testing-blackbox"
       ],
-      "tags": ["kafka", "async", "advanced"]
-    },
-    {
-      "id": "kora-testing-blackbox-error-scenarios",
-      "skills": ["kora-testing-blackbox"],
-      "query": "Add black-box tests for error handling: invalid request body, missing resource, and duplicate email.",
+      "query": "My Kora 2.0 service consumes a Kafka topic and updates an order status. Write a black-box test that publishes an event and verifies processing through the HTTP API.",
       "expected_behavior": [
-        "Asserts 400 for an invalid/empty JSON body (exercising @Json deserialization and @Valid validation through the real boundary)",
-        "Asserts 404 for a GET on a non-existent id",
-        "Asserts 409 for creating a resource with a duplicate unique value",
-        "Sends requests through HttpClient or RestAssured against the running AppContainer",
-        "Does not assert by calling controller or service methods directly and only checks responses at the HTTP boundary"
+        "Puts the broker and the AppContainer on the same shared network and injects the bootstrap address with withEnv into the application container",
+        "Gives the application the in-network advertised listener, not the host-mapped one, and explains the failure mode: the bootstrap connection succeeds, the broker returns metadata pointing at localhost, and the consumer then silently receives nothing",
+        "Wires the address into the Kora config through kafka.listener.<name>.driverProperties.\"bootstrap.servers\" (and the matching publisher section)",
+        "Polls the public HTTP API with Awaitility await().atMost(...).untilAsserted(...) until the order status is the expected one",
+        "Verifies the side effect only through the public HTTP endpoint, without reaching into the consumer or the graph",
+        "If the raw org.testcontainers Kafka module is used, notes that its class names and coordinates differ across Testcontainers versions and must be checked against the declared version"
       ],
-      "tags": ["errors", "advanced"]
+      "anti_behavior": [
+        "Passes the host-facing bootstrap servers string into the application container",
+        "Uses Thread.sleep instead of Awaitility or another polling assertion",
+        "Injects a test component or mock into the running application",
+        "Declares org.testcontainers:kafka at a Testcontainers 2.x version"
+      ],
+      "tags": [
+        "kafka",
+        "async",
+        "advanced"
+      ]
     },
     {
       "id": "kora-testing-blackbox-ci-app-image",
-      "skills": ["kora-testing-blackbox"],
-      "query": "In CI I build and push the Docker image separately. How do I make the black-box test use a pre-built image instead of building the Dockerfile each run?",
-      "expected_behavior": [
-        "Branches the AppContainer construction on System.getenv(\"APP_IMAGE\"): when set, builds from DockerImageName.parse(appImage); otherwise from ImageFromDockerfile with the application Dockerfile",
-        "Keeps the same exposed ports and Wait.forHttp(\"/system/readiness\") readiness gating regardless of image source",
-        "Describes the CI flow: build image, push to registry, export APP_IMAGE, run ./gradlew test",
-        "Does not hardcode container ports (uses getMappedPort) and does not depend on a local JDK at test time when APP_IMAGE is set"
+      "skills": [
+        "kora-testing-blackbox"
       ],
-      "tags": ["ci", "docker", "advanced"]
+      "query": "In CI I build and push the Docker image in a separate job. How do I make the black-box test use that prebuilt image instead of building the Dockerfile on every run?",
+      "expected_behavior": [
+        "Branches the AppContainer construction on an environment variable such as APP_IMAGE: when set, DockerImageName.parse(appImage); otherwise ImageFromDockerfile with the application Dockerfile",
+        "Keeps the exposed ports and the /system/readiness wait identical in both branches, so CI tests what was debugged locally",
+        "Describes the CI flow: ./gradlew distTar, docker build, push, export APP_IMAGE, ./gradlew test",
+        "Uses getMappedPort(...) rather than hardcoded host ports",
+        "Notes that the Gradle JVM itself must be 25+, not only the toolchain, and that the test job needs a Docker daemon available to Testcontainers"
+      ],
+      "anti_behavior": [
+        "Hardcodes localhost:8080 / localhost:8085 in the test",
+        "Uses a different wait strategy for the prebuilt-image branch",
+        "Sets up JDK 17 or 21 in the CI job"
+      ],
+      "tags": [
+        "ci",
+        "docker",
+        "advanced"
+      ]
     },
     {
       "id": "kora-testing-blackbox-vs-component",
-      "skills": ["kora-testing-blackbox"],
+      "skills": [
+        "kora-testing-blackbox"
+      ],
       "query": "Should I write a black-box test or a component test to verify my UserService business logic in isolation?",
       "expected_behavior": [
-        "Recommends a component test with @KoraAppTest and @TestComponent (the kora-testing-junit skill) for isolated business logic, not a black-box test",
-        "Explains black-box tests run the packaged Docker image through HTTP and are best for end-to-end contract validation",
-        "Notes that black-box does not mock collaborators while @KoraAppTest supports @TestComponent mocks with Mockito/MockK and KoraConfigModification",
-        "Does not suggest mixing @KoraAppTest with GenericContainer in one test, and uses @TestComponent (not field injection) for mocks"
+        "Recommends an in-process component test with @KoraAppTest and @TestComponent (the kora-testing-junit-java / kora-testing-junit-kotlin skills) for isolated business logic",
+        "Explains that black-box tests run the packaged Docker image through HTTP and are the right tool for end-to-end contract validation, packaging, config keys, migrations, probes and native images",
+        "Notes that black-box cannot mock a collaborator or override config, while @KoraAppTest supports @TestComponent mocks and KoraConfigModification",
+        "Does not suggest mixing @KoraAppTest with GenericContainer in one test class"
       ],
-      "tags": ["decision", "basic"]
+      "anti_behavior": [
+        "Recommends a black-box test for isolated business logic",
+        "Suggests injecting mocks into the running container",
+        "Uses field injection instead of @TestComponent for the component test"
+      ],
+      "tags": [
+        "decision",
+        "basic"
+      ]
     }
   ]
 }

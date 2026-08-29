@@ -1,275 +1,210 @@
-# Context Propagation in Kora HTTP Server
+# Request Enrichment Reference
 
-**Kora Version:** 1.2.x
+Passing a value computed in an interceptor down to the handler, now that `Context` is gone.
 
-This reference covers passing computed values from HTTP interceptors to controller methods using `ru.tinkoff.kora.common.Context`.
+> **`ru.tinkoff.kora.common.Context` does not exist in Kora 2.0.** It was not moved or renamed — it
+> was removed from the entire framework. `Context.Key`, `Context.current()`, `context.get(key)` and
+> the `Context` parameter on interceptors, request mappers and response mappers are all gone. Every
+> 1.x pattern built on it needs one of the three replacements below.
+
+## Contents
+
+- [Choosing a mechanism](#choosing-a-mechanism)
+- [1. Enrich the request](#1-enrich-the-request)
+- [2. ScopedValue](#2-scopedvalue)
+- [3. Principal, for authorization](#3-principal-for-authorization)
+- [Migration from Context](#migration-from-context)
+- [Pitfalls](#pitfalls)
 
 ---
 
-## Overview
+## Choosing a mechanism
 
-Kora's `Context` is a request-scoped key-value store for passing data between interceptors, filters, and controllers. Common use cases:
+| Need | Use |
+|---|---|
+| Authenticated caller identity | `Principal` — see [Authentication](authentication-reference.md) |
+| A value the handler can declare as a parameter | [Enrich the request](#1-enrich-the-request) with `toBuilder()` |
+| A value read deep in the call stack, not at the handler boundary | [`ScopedValue`](#2-scopedvalue) |
 
-- Auth session or user profile (computed in interceptor, used in controller)
-- Request metadata (trace ID, request ID, timing info)
-- Computed values (fingerprint, rate limit bucket, tenant ID)
+Prefer the first two. A value that a handler declares as a parameter is visible in the signature
+and testable without any ambient state; a `ScopedValue` is invisible ambient state and should be
+reserved for genuinely cross-cutting values (trace ids, tenant, principal).
 
 ---
 
-## Context.Key Definition
+## 1. Enrich the request
 
-Define a static singleton key for each value type:
+`chain.process(...)` takes the request to pass downstream, and `HttpServerRequest.toBuilder()`
+derives a modified copy. So an interceptor can attach a computed value as a header and the handler
+binds it like any other parameter.
 
 ```java
-package com.example.context;
-
-import ru.tinkoff.kora.common.Context;
-
-public final class RequestContext {
-    
-    // Mutable key
-    public static final Context.Key<String> REQUEST_ID_KEY = Context.Key.of("requestId");
-    
-    // Immutable key (recommended for records)
-    public static final Context.Key<UserProfile> USER_PROFILE_KEY = Context.KeyImmutable.of("userProfile");
-    
-    private RequestContext() {}
-}
-```
-
-**Key types:**
-- `Context.Key<T>` — mutable key
-- `Context.KeyImmutable<T>` — immutable key (recommended for records/immutable types)
-
-**Naming:** Use `Context.KeyImmutable.of("descriptive-name")` for debugging — the name appears in error messages.
-
----
-
-## Interceptor: Setting Values
-
-Set values in `Context` **BEFORE** calling `chain.process()`:
-
-```java
-package com.example.interceptor;
-
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.common.Context;
-import ru.tinkoff.kora.http.server.common.HttpServerInterceptor;
-import ru.tinkoff.kora.http.server.common.HttpServerRequest;
-import ru.tinkoff.kora.http.server.common.HttpServerResponse;
-import ru.tinkoff.kora.http.server.common.InterceptChain;
-import ru.tinkoff.kora.http.server.common.annotation.Tag;
-import com.example.context.RequestContext;
-import com.example.auth.UserProfile;
-
-import java.util.UUID;
-import java.util.concurrent.CompletionStage;
-
-@Tag(HttpServerModule.class)  // Global interceptor
+@Tag(HttpServer.class)
 @Component
-public final class RequestContextInterceptor implements HttpServerInterceptor {
-    
+public final class TenantInterceptor implements HttpServerInterceptor {
+
+    private final TenantResolver resolver;
+
+    public TenantInterceptor(TenantResolver resolver) {
+        this.resolver = resolver;
+    }
+
     @Override
-    public CompletionStage<HttpServerResponse> intercept(Context context,
-                                                         HttpServerRequest request,
-                                                         InterceptChain chain) {
-        // Generate request ID
-        String requestId = UUID.randomUUID().toString();
-        context.set(RequestContext.REQUEST_ID_KEY, requestId);
-        
-        // Load user profile (from token, session, etc.)
-        UserProfile profile = loadUserProfile(request);
-        if (profile != null) {
-            context.set(RequestContext.USER_PROFILE_KEY, profile);
+    public HttpServerResponse intercept(HttpServerRequest request, InterceptChain chain) throws Exception {
+        String tenant = resolver.resolve(request.headers().getFirst("host"));
+        if (tenant == null) {
+            return HttpServerResponseException.of(400, "Unknown tenant");
         }
-        
-        // Continue the chain with context populated
-        return chain.process(context, request)
-            .whenComplete((response, error) -> {
-                // Optional: cleanup or logging after request completes
-                // Context is request-scoped and will be garbage collected
-            });
-    }
-    
-    private UserProfile loadUserProfile(HttpServerRequest request) {
-        String token = request.header("Authorization");
-        if (token == null || !token.startsWith("Bearer ")) {
-            return null;
-        }
-        // Validate token and extract profile
-        return validateToken(token.substring(7));
-    }
-    
-    private UserProfile validateToken(String token) {
-        // JWT validation, session lookup, etc.
-        // Return null if invalid
+        return chain.process(request.toBuilder()
+                .headerRemove("x-tenant-id")      // never trust an inbound value
+                .header("x-tenant-id", tenant)
+                .build());
     }
 }
 ```
 
-**Critical timing:**
 ```java
-context.set(KEY, value);      // BEFORE
-return chain.process(context, request);  // THEN
-```
-
-If you set values after `chain.process()`, the controller won't see them.
-
----
-
-## Controller: Reading Values
-
-Read values from `Context` in controller methods:
-
-```java
-package com.example.controller;
-
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.common.Context;
-import ru.tinkoff.kora.http.server.common.annotation.HttpController;
-import ru.tinkoff.kora.http.server.common.annotation.HttpRoute;
-import ru.tinkoff.kora.http.server.common.HttpMethod;
-import com.example.context.RequestContext;
-import com.example.auth.UserProfile;
-
-import java.util.Map;
-
-@Component
-@HttpController
-public final class ProfileController {
-    
-    @HttpRoute(method = HttpMethod.GET, path = "/profile")
-    @Json
-    public UserProfileResponse getProfile() {
-        UserProfile profile = Context.current().get(RequestContext.USER_PROFILE_KEY);
-        
-        // NULL-CHECK REQUIRED!
-        // Value is null if:
-        // - Route is not protected by the interceptor
-        // - Interceptor didn't set the value
-        // - Request failed before interceptor ran
-        if (profile == null) {
-            throw HttpServerResponseException.of(401, "Not authenticated");
-        }
-        
-        return mapToResponse(profile);
-    }
-    
-    @HttpRoute(method = HttpMethod.GET, path = "/request-info")
-    @Json
-    public Map<String, String> getRequestInfo() {
-        String requestId = Context.current().get(RequestContext.REQUEST_ID_KEY);
-        return Map.of("requestId", requestId != null ? requestId : "unknown");
-    }
-}
-```
-
-**Null safety:** Always add null-checks unless you're certain the route is protected.
-
----
-
-## Type-Safe Accessor Pattern
-
-For frequently-used context values, create typed accessors:
-
-```java
-public final class RequestContext {
-    public static final Context.Key<UserProfile> USER_PROFILE_KEY = Context.KeyImmutable.of("userProfile");
-    
-    private RequestContext() {}
-    
-    /**
-     * Typed accessor with consistent null handling.
-     * @throws HttpServerResponseException 401 if not authenticated
-     */
-    public static UserProfile requireProfile() {
-        UserProfile profile = Context.current().get(USER_PROFILE_KEY);
-        if (profile == null) {
-            throw HttpServerResponseException.of(401, "Not authenticated");
-        }
-        return profile;
-    }
-    
-    /**
-     * Typed accessor returning Optional.
-     */
-    public static Optional<UserProfile> currentProfile() {
-        return Optional.ofNullable(Context.current().get(USER_PROFILE_KEY));
-    }
-}
-```
-
-Usage in controller:
-```java
-@HttpRoute(method = HttpMethod.GET, path = "/profile")
+@HttpRoute(method = HttpMethod.GET, path = "/reports")
 @Json
-public UserProfileResponse getProfile() {
-    UserProfile profile = RequestContext.requireProfile();  // Throws 401 if null
-    return mapToResponse(profile);
+public List<Report> reports(@Header("x-tenant-id") String tenantId) {
+    return reportService.forTenant(tenantId);
 }
 ```
 
----
+`HttpServerRequestBuilder` offers `header(name, value)`, `header(name, List<String>)`,
+`headerRemove(name)`, `queryParam(name[, value])` (with `int`/`long`/`boolean`/`UUID`/`Collection`
+overloads), `queryParamRemove(name)` and `body(HttpBodyInput)`.
 
-## Important: Use Kora Context, Not gRPC Context
+**Always `headerRemove` before `header`** for a value the handler will trust. Otherwise a client
+can send `x-tenant-id` itself, and depending on how the header list is assembled the handler may
+read the attacker's value.
+
+For a richer value, pair the enrichment with an `HttpServerRequestMapper` so the handler receives a
+typed object rather than loose strings:
 
 ```java
-// ✅ CORRECT
-import ru.tinkoff.kora.common.Context;
+@Component
+public static final class TenantContextMapper implements HttpServerRequestMapper<TenantContext> {
+    @Override
+    public TenantContext apply(HttpServerRequest request) {
+        return new TenantContext(request.headers().getFirst("x-tenant-id"),
+                                 request.headers().getFirst("x-trace-id"));
+    }
+}
 
-Context.current().get(KEY);
-
-// ❌ WRONG
-import io.grpc.Context;
-
-io.grpc.Context.current().get(KEY);  // Different Context!
+@HttpRoute(method = HttpMethod.GET, path = "/reports")
+@Json
+public List<Report> reports(@Mapping(TenantContextMapper.class) TenantContext ctx) { /* ... */ }
 ```
 
-Kora's `ru.tinkoff.kora.common.Context` is **not** the same as `io.grpc.Context`. They are completely unrelated classes with different APIs.
+Remember the `@Component` rule: `@Mapping(X.class)` injects the concrete class, so `X` must be a
+component even with no constructor arguments. See
+[Response Types](response-types-reference.md#the-component-rule-for-mappers).
 
 ---
 
-## Thread Safety
+## 2. ScopedValue
 
-`Context` is request-scoped and thread-safe:
+Kora 2.0 handlers run on virtual threads, and `ScopedValue` (final API in JDK 25, no preview flag
+needed) is the JDK's replacement for a `ThreadLocal` in that model. This is the mechanism Kora
+itself uses for `Principal`.
 
-- Each request gets its own `Context` instance
-- Values set in one request are not visible to other requests
-- Safe to use in async/reactive handlers
+```java
+public final class RequestScope {
+    public static final ScopedValue<String> TRACE_ID = ScopedValue.newInstance();
+
+    public static String traceId() {
+        return TRACE_ID.isBound() ? TRACE_ID.get() : null;
+    }
+}
+```
+
+```java
+@Tag(HttpServer.class)
+@Component
+public final class TraceInterceptor implements HttpServerInterceptor {
+
+    @Override
+    public HttpServerResponse intercept(HttpServerRequest request, InterceptChain chain) throws Exception {
+        String traceId = Objects.requireNonNullElseGet(
+                request.headers().getFirst("x-trace-id"),
+                () -> UUID.randomUUID().toString());
+
+        return ScopedValue.where(RequestScope.TRACE_ID, traceId)
+                .call(() -> chain.process(request));
+    }
+}
+```
+
+Anything called during that request — the handler, services below it, another interceptor further
+down the chain — reads it with `RequestScope.traceId()`.
+
+Rules that come with `ScopedValue`:
+
+- **Always check `isBound()`** before `get()`; an unbound read throws `NoSuchElementException`.
+  Code reachable outside a request (a scheduled job, a Kafka consumer, a test) will hit that.
+- The binding is immutable for the duration of the scope. You cannot set a value from inside the
+  handler and read it in an outer interceptor — bind it where the scope starts.
+- The value does **not** propagate to threads you start yourself, only to `StructuredTaskScope`
+  forks within the scope.
+
+Do not reach for `ThreadLocal` instead: virtual threads make per-request `ThreadLocal`s expensive
+and easy to leak.
 
 ---
 
-## Performance Considerations
+## 3. Principal, for authorization
 
-`Context` operations are O(1) — implemented as a thread-local map. Overhead is negligible for typical use (a few keys per request).
+For the authenticated caller specifically, use the framework's own contract rather than rolling
+your own scoped value:
 
-Avoid:
-- Storing large objects in Context (pass references only)
-- Too many keys (>10 per request is unusual)
-- Using Context as a cache (it's request-scoped, not application-scoped)
+```java
+public interface Principal {
+    ScopedValue<Principal> VALUE = ScopedValue.newInstance();
 
----
+    @Nullable static Principal current();
+    static <T, X extends Throwable> T with(Principal principal, ScopedValue.CallableOp<T, X> op) throws X;
+}
+```
 
-## Debugging
+An interceptor binds it, and anything below reads `Principal.current()`:
 
-### Value is null in controller
+```java
+return Principal.with(principal, () -> chain.process(request));
+```
 
-Checklist:
-1. Interceptor has `@Tag(HttpServerModule.class)` and `@Component`
-2. Value is set **BEFORE** `chain.process()`
-3. Controller route is actually hit by the interceptor (check path, HTTP method)
-4. No exception thrown before value is set
-
-### Wrong value in controller
-
-Checklist:
-1. Key is a static singleton (not created per-request)
-2. Value is not being overwritten by another interceptor
-3. Async handlers are using the same `Context` instance
+That is exactly what the OpenAPI-generated `ApiSecurity` interceptors do. See
+[Authentication](authentication-reference.md) for how the pieces fit together and which skill owns
+the detail.
 
 ---
 
-## See Also
+## Migration from Context
 
-- [Authentication & Principal](authentication-reference.md) — Storing principal in Context
-- [Interceptors](interceptors-reference.md) — Global, controller, and method-level interceptors
+| 1.x | 2.0 |
+|---|---|
+| `Context.Key<T> KEY = Context.key()` | `ScopedValue<T> KEY = ScopedValue.newInstance()` |
+| `ctx.set(KEY, value)` before `chain.process(ctx, req)` | `ScopedValue.where(KEY, value).call(() -> chain.process(req))` |
+| `Context.current().get(KEY)` | `KEY.isBound() ? KEY.get() : null` |
+| `Context` parameter on `intercept` / mappers | removed from every signature |
+| auth principal stashed in `Context` | `Principal.with(...)` / `Principal.current()` |
+| value only needed by the handler | a header via `request.toBuilder()` + `@Header` |
+
+A `Context` import that survives a package rename is a compile error, not a silent failure — but
+the *design* it implies still has to change, because setting a value after the chain has started is
+no longer possible.
+
+---
+
+## Pitfalls
+
+| Symptom | Cause and fix |
+|---|---|
+| `cannot find symbol: class Context` | `Context` was removed framework-wide; pick a mechanism above |
+| `NoSuchElementException` from `get()` | The `ScopedValue` is unbound — guard with `isBound()` |
+| Handler reads a header the client controls | Call `headerRemove(name)` before `header(name, value)` |
+| Value set in the handler is invisible to the interceptor | Bindings are immutable; bind at the start of the scope |
+| Value missing in a forked task | Only `StructuredTaskScope` forks inherit the binding |
+| Value missing in a test | The test calls the handler directly, outside any interceptor — bind it explicitly or pass it as a parameter |
+
+**See also:** [Interceptors](interceptors-reference.md), [Request Mapping](request-mapping-reference.md), [Authentication](authentication-reference.md).

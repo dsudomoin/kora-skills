@@ -1,0 +1,50 @@
+package ${package}
+
+import io.koraframework.common.util.Size
+import io.koraframework.config.common.annotation.ConfigMapper
+import io.koraframework.config.common.annotation.ConfigSource
+import java.time.Duration
+
+/**
+ * Application configuration mapped from the "app" section of application.conf.
+ *
+ * Kora 2.0 rules:
+ *  - required values are plain abstract functions (the graph build fails if absent);
+ *  - optional values use a NULLABLE RETURN TYPE — never a Java nullability annotation;
+ *  - default values are functions with a body — Kora has no @DefaultValue annotation;
+ *  - nested objects and list element types use @ConfigMapper, never @ConfigSource.
+ *
+ * KSP generates $AppConfig_ConfigValueMapper and an AppConfigModule (@Module) next to this file.
+ * A @Module generated in the same compilation is discovered automatically — do not add
+ * AppConfigModule to the @KoraApp supertype list.
+ *
+ * This module must apply the KSP plugin and ksp("io.koraframework:symbol-processors") itself,
+ * including when it is a library module consumed by another project.
+ */
+@ConfigSource("app")
+interface AppConfig {
+
+    fun name(): String                       // required
+
+    fun version(): String                    // required
+
+    fun environment(): String?               // optional
+
+    fun maxUploadSize(): Size = Size.of(10, Size.Type.MiB)
+
+    fun database(): DatabaseConfig
+
+    @ConfigMapper
+    interface DatabaseConfig {
+
+        fun url(): String
+
+        fun username(): String
+
+        fun password(): String
+
+        fun poolSize(): Int = 20
+
+        fun connectionTimeout(): Duration = Duration.ofSeconds(30)
+    }
+}

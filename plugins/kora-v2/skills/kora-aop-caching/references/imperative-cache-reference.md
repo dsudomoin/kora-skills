@@ -1,270 +1,312 @@
-# Imperative Cache Usage
+# Imperative cache use
 
-**Kora Version:** 1.2.x
+**Contracts:** `io.koraframework.cache.{Cache, LoadableCache}`
+**Backends:** `CaffeineCache<K, V>` and `RedisCache<K, V>` both extend `Cache<K, V>`
 
-This reference covers programmatic (imperative) cache usage in Kora — injecting cache components and calling methods directly, without `@Cacheable` AOP annotations.
-
----
-
-## Overview
-
-Kora cache can be used **programmatically** for:
-
-- Stateful caching (OAuth flow state, rate-limit counters)
-- Manual cache management (explicit invalidation, conditional updates)
-- Non-memoization use cases (caching computed values, external data)
-
-This is separate from the declarative `@Cacheable`/`@CachePut`/`@CacheInvalidate` AOP pattern.
+Injecting a `@Cache` interface and calling it directly is a first-class alternative to the
+annotations. Use it when the key is produced inside the method body, when the cache holds state
+rather than a memoised result (one-time tokens, counters, in-flight OAuth state), or when caching
+must be conditional.
 
 ---
 
-## Declaring an Imperative Cache
+## Contents
 
-Define a typed cache interface and inject it as a regular component:
+- [The Cache contract](#the-cache-contract)
+- [Injecting a cache](#injecting-a-cache)
+- [Null handling](#null-handling)
+- [computeIfAbsent](#computeifabsent)
+- [Bulk operations](#bulk-operations)
+- [LoadableCache](#loadablecache)
+- [Facade cache](#facade-cache)
+- [Backend-specific methods](#backend-specific-methods)
+- [Patterns](#patterns)
+- [Imperative vs declarative](#imperative-vs-declarative)
+
+---
+
+## The `Cache` contract
 
 ```java
-import ru.tinkoff.kora.cache.annotation.Cache;
-import ru.tinkoff.kora.cache.caffeine.CaffeineCache;
+public interface Cache<K, V> {
 
-// Typed cache interface
-@Cache("oauth.state.cache")
-public interface OAuthStateCache extends CaffeineCache<String, OAuthState> {}
+    @Nullable V get(K key);
+    Map<K, V> get(Collection<K> keys);
+
+    V put(K key, V value);
+    Map<K, V> put(Map<K, V> keyAndValues);
+
+    @Nullable V computeIfAbsent(K key, Function<K, @Nullable V> mappingFunction);
+    Map<K, V> computeIfAbsent(Collection<K> keys, Function<Set<K>, Map<K, V>> mappingFunction);
+
+    void invalidate(K key);
+    void invalidate(Collection<K> keys);
+    void invalidateAll();
+
+    default LoadableCache<K, V> asLoadableSimple(Function<K, V> cacheLoader);
+    default LoadableCache<K, V> asLoadable(Function<Collection<K>, Map<K, V>> cacheLoader);
+
+    static <K, V> Builder<K, V> builder(Cache<K, V> cache);
+}
 ```
 
-**Config path:** `oauth.state.cache` — corresponds to HOCON/YAML config section.
+That is the whole surface. There is no `contains`, no `containsValue`, no `asMap`, no `size` and no
+`CacheManager`. `CaffeineCache` adds `getAll()`; `RedisCache` adds `putExpireAfterWrite(...)`.
+
+Note that `put` **returns** the value it stored (and `put(Map)` returns the map), which makes
+`return cache.put(id, loaded);` a legitimate one-liner.
 
 ---
 
-## Cache Methods
+## Injecting a cache
 
-`CaffeineCache<K, V>` and `RedisCache<K, V>` provide:
-
-| Method | Purpose | Returns |
-|--------|---------|---------|
-| `V get(K key)` | Get value | `null` if absent |
-| `void put(K key, V value)` | Put value | `void` (throws if value is `null`) |
-| `V computeIfAbsent(K key, Function<K,V> loader)` | Atomic get-or-load | Existing or loaded value |
-| `void invalidate(K key)` | Evict single key | `void` |
-| `void invalidateAll()` | Clear entire cache | `void` |
-| `boolean contains(K key)` | Check if key exists | `true`/`false` |
-
-**NOT available:** `containsValue()`, `asMap()` — cache is key-based only. For reverse lookup (by value), maintain a separate index cache.
-
----
-
-## Example: OAuth State Cache
+The `@Cache` interface is a normal graph component — constructor-inject it.
 
 ```java
-import ru.tinkoff.kora.common.Component;
-import com.example.cache.OAuthStateCache;
-import com.example.auth.OAuthState;
-import java.util.UUID;
-
 @Component
-public final class OAuthService {
-    private final OAuthStateCache stateCache;
-    
-    public OAuthService(OAuthStateCache stateCache) {
-        this.stateCache = stateCache;
+public class OrderService {
+
+    private final OrderCache cache;
+    private final OrderRepository repository;
+
+    public OrderService(OrderCache cache, OrderRepository repository) {
+        this.cache = cache;
+        this.repository = repository;
     }
-    
-    /**
-     * Generate and cache OAuth state for CSRF protection.
-     */
-    public String generateState() {
-        String state = UUID.randomUUID().toString();
-        OAuthState oauthState = new OAuthState(state, Instant.now().plusSeconds(300));
-        
-        // Direct put — TTL from config
-        stateCache.put(state, oauthState);
-        
-        return state;
+
+    public OrderDto getOrLoad(UUID id) {
+        return cache.computeIfAbsent(id, repository::find);
     }
-    
-    /**
-     * Validate and consume OAuth state (one-time use).
-     */
-    public OAuthState validateState(String state) {
-        // Direct get — returns null if missing/expired
-        OAuthState oauthState = stateCache.get(state);
-        
-        if (oauthState == null) {
-            throw new IllegalStateException("Invalid or expired OAuth state");
-        }
-        
-        // Check expiration
-        if (Instant.now().isAfter(oauthState.expiresAt())) {
-            stateCache.invalidate(state);
-            throw new IllegalStateException("OAuth state expired");
-        }
-        
-        // Consume (one-time token)
-        stateCache.invalidate(state);
-        
-        return oauthState;
-    }
-    
-    /**
-     * Compute-if-absent pattern for rate limiting.
-     */
-    public int getRateLimitCounter(String userId) {
-        return stateCache.computeIfAbsent(userId, key -> {
-            // This lambda is NOT called if key exists
-            return new OAuthState(key, Instant.now().plusSeconds(60));
-        }).counter();
-    }
+}
+```
+
+```kotlin
+@Component
+class OrderService(
+    private val cache: OrderCache,
+    private val repository: OrderRepository
+) {
+    fun getOrLoad(id: UUID): OrderDto? = cache.computeIfAbsent(id) { repository.find(it) }
+}
+```
+
+A class that only uses the cache imperatively needs no AOP, so it does not have to be `open` in
+Kotlin or non-final in Java.
+
+---
+
+## Null handling
+
+Both backends treat null defensively and never throw for it:
+
+| Call | Behaviour with null |
+|---|---|
+| `get(null)` | returns `null` |
+| `put(null, v)` / `put(k, null)` | **no-op**; Caffeine returns the value, Redis returns `null` |
+| `computeIfAbsent(null, fn)` | calls `fn` and returns its result without caching |
+| loader returns `null` | nothing is stored; the next call loads again |
+| `invalidate(null)` | no-op |
+
+So "the value was not cached" is never signalled by an exception. If a null value must be
+distinguishable from a miss, cache `Optional<V>`:
+
+```java
+@Cache("orders.cache")
+public interface OrderCache extends CaffeineCache<UUID, Optional<OrderDto>> {}
+```
+
+The `@Cacheable` aspect understands that shape too, and it is the only way to memoise a negative
+lookup.
+
+---
+
+## `computeIfAbsent`
+
+`computeIfAbsent(key, loader)` is the imperative equivalent of `@Cacheable` on a single cache — the
+aspect generates exactly this call. On Caffeine it runs under the cache's own per-key lock, so the
+loader executes once for concurrent callers. On Redis it is `get` → loader → `put`, with no
+distributed lock.
+
+```java
+public OrderDto get(UUID id) {
+    return cache.computeIfAbsent(id, key -> repository.find(key));
 }
 ```
 
 ---
 
-## TTL Configuration
+## Bulk operations
 
-Cache config path comes from `@Cache("path.to.section")`:
+```java
+Map<UUID, OrderDto> found = cache.get(List.of(id1, id2, id3));      // only the entries present
 
-```hocon
-oauth.state.cache {
-  maximumSize = 10000
-  expireAfterWrite = "5m"        # TTL — entries auto-expire after 5 minutes
-  expireAfterAccess = "1m"       # Optional: expire after 1m of inactivity
-}
+Map<UUID, OrderDto> all = cache.computeIfAbsent(
+        List.of(id1, id2, id3),
+        missing -> repository.findAll(missing));                     // loader gets only the misses
+
+cache.put(Map.of(id1, dto1, id2, dto2));
+cache.invalidate(List.of(id1, id2));
 ```
 
-**Common options:**
-- `maximumSize` — max entries (evict LRU when exceeded)
-- `expireAfterWrite` — TTL from creation time
-- `expireAfterAccess` — TTL from last read/write
-- `refreshAfterWrite` — async refresh after duration (Caffeine only)
-
-See [Cache Config Reference](references/cache-config-reference.md) for all options.
+The bulk loader receives a `Set<K>` of the keys that were **not** found and must return a map for
+them; keys it omits simply stay uncached. Redis uses `MGET`/`MSET` (or `GETEX`/`PSETEX` when a TTL
+is configured) for these.
 
 ---
 
-## Module Requirements
+## `LoadableCache`
 
-| Cache Type | Module | Dependency |
-|------------|--------|------------|
-| Caffeine (in-process) | `CaffeineCacheModule` | `ru.tinkoff.kora:cache-caffeine` |
-| Redis (distributed) | `RedisCacheModule` | `ru.tinkoff.kora:cache-redis` |
+A read-only get-or-load view:
+
+```java
+public interface LoadableCache<K, V> {
+    @Nullable V get(K key);
+    Map<K, V> get(Collection<K> keys);
+}
+```
+
+Pick the factory that matches your loader shape:
+
+```java
+cache.asLoadableSimple(repository::find);                    // Function<K, V>
+cache.asLoadable(keys -> repository.findAll(keys));          // Function<Collection<K>, Map<K, V>>
+```
+
+Passing a single-key method reference to `asLoadable` does not compile — that overload is the bulk
+one.
+
+Publish it from a module so it can be injected:
 
 ```java
 @KoraApp
-public interface Application extends CaffeineCacheModule {}
-// Or for Redis: extends RedisCacheModule
-// Or for both (multi-level): extends CaffeineCacheModule, RedisCacheModule
+public interface Application extends HoconConfigModule, CaffeineCacheModule {
+
+    default LoadableCache<UUID, OrderDto> orderLoadableCache(OrderCache cache, OrderRepository repository) {
+        return cache.asLoadableSimple(repository::find);
+    }
+}
 ```
+
+`LoadableCache` exposes no writes — keep the underlying `Cache` injected as well if you also need
+`put` or `invalidate`.
 
 ---
 
-## Multi-Level Cache Pattern
+## Facade cache
 
-For L1 (Caffeine) + L2 (Redis) caching:
+`Cache.builder` composes several caches into one `Cache<K, V>` with L1/L2 semantics:
 
 ```java
-@Cache("users.cache")
-public interface UsersL1Cache extends CaffeineCache<String, User> {}
+Cache<String, UserResponse> layered = Cache.builder(userCaffeineCache)
+        .addCache(userRedisCache)
+        .build();
+```
 
-@Cache("users.cache")  // Same config path
-public interface UsersL2Cache extends RedisCache<String, User> {}
+- `get` walks the levels in order and returns the first hit — without back-filling.
+- `computeIfAbsent` walks the levels, back-fills every shallower level on a hit, and on a full miss
+  writes the computed value into all of them.
+- `put`, `invalidate`, `invalidateAll` fan out to every level.
+- `get(Collection<K>)` throws `UnsupportedOperationException`; use
+  `computeIfAbsent(Collection, Function)` for bulk reads.
+- A builder with one cache returns that cache unchanged.
 
-@Component
-public final class UserService {
-    private final UsersL1Cache l1Cache;
-    private final UsersL2Cache l2Cache;
-    
-    public User getUser(String id) {
-        // Try L1 first
-        User user = l1Cache.get(id);
-        if (user != null) {
-            return user;
-        }
-        
-        // Try L2
-        user = l2Cache.get(id);
-        if (user != null) {
-            // Populate L1
-            l1Cache.put(id, user);
-            return user;
-        }
-        
-        // Load from database
-        user = loadFromDatabase(id);
-        
-        // Populate both caches
-        l1Cache.put(id, user);
-        l2Cache.put(id, user);
-        
-        return user;
+For a declarative L1/L2 prefer stacked annotations —
+[multi-level-cache-reference.md](multi-level-cache-reference.md).
+
+---
+
+## Backend-specific methods
+
+```java
+Map<K, V> CaffeineCache.getAll();                                          // every live entry
+
+V RedisCache.putExpireAfterWrite(K key, V value, Duration ttl);            // per-call TTL
+Map<K, V> RedisCache.putExpireAfterWrite(Map<K, V> values, Duration ttl);
+```
+
+`putExpireAfterWrite` rejects a null `Duration` with
+`RedisCache#putExpireAfterWrite received nullable expireAfterWrite argument`.
+
+Redis swallows client errors: a failed `get` reads as a miss, a failed `put` returns normally. Do
+not build correctness on a Redis write having happened.
+
+---
+
+## Patterns
+
+### One-time token
+
+```java
+@Cache("oauth.state")
+public interface OAuthStateCache extends CaffeineCache<String, OAuthState> {}
+```
+
+```java
+public String issue() {
+    var state = UUID.randomUUID().toString();
+    stateCache.put(state, new OAuthState(state, Instant.now()));
+    return state;
+}
+
+public OAuthState consume(String state) {
+    var found = stateCache.get(state);
+    if (found == null) {
+        throw new IllegalStateException("Unknown or expired OAuth state");
     }
+    stateCache.invalidate(state);           // one-time use
+    return found;
+}
+```
+
+with `oauth.state { maximumSize = 10000, expireAfterWrite = "5m" }` — the TTL, not application code,
+enforces expiry.
+
+### Cache warm-up on create
+
+The key does not exist until the method has run, so `@CachePut` cannot express this:
+
+```java
+public OrderDto create(OrderRequest request) {
+    var created = repository.insert(request);
+    cache.put(created.id(), created);
+    return created;
+}
+```
+
+### Conditional caching
+
+Kora's annotations have no `condition` / `unless`, so gate it in code:
+
+```java
+public OrderDto get(UUID id, boolean fresh) {
+    if (fresh) {
+        return repository.find(id);
+    }
+    return cache.computeIfAbsent(id, repository::find);
 }
 ```
 
 ---
 
-## Comparison: Imperative vs Declarative
+## Imperative vs declarative
 
-| Aspect | Imperative | Declarative (`@Cacheable`) |
-|--------|------------|---------------------------|
-| **Control** | Full manual control | Automatic memoization |
-| **Use case** | Stateful caching, manual invalidation | Method result memoization |
-| **Code location** | Service/business logic | Method annotations |
-| **Null handling** | Explicit (`get()` returns `null`) | `@Cacheable` skips `null` by default |
-| **Complexity** | Higher (manual management) | Lower (annotation-only) |
+| | Declarative (`@Cacheable` …) | Imperative (`Cache<K, V>`) |
+|---|---|---|
+| Key | derived from method parameters / `@Mapping` | anything you can compute |
+| Conditional caching | not supported | trivial |
+| Concurrency | `computeIfAbsent` for a single sync cache | whatever you call |
+| Multi-level | stacked annotations | `Cache.builder` or by hand |
+| AOP requirements | non-final (Java) / `open` (Kotlin), no self-invocation | none |
+| Async writes | `mode = CacheMode.ASYNC` | your own executor |
 
----
-
-## Common Patterns
-
-### Rate Limiting
-
-```java
-@Component
-public final class RateLimiter {
-    private final RateLimitCache cache;
-    
-    public RateLimiter(RateLimitCache cache) {
-        this.cache = cache;
-    }
-    
-    public boolean allowRequest(String userId) {
-        Counter counter = cache.computeIfAbsent(userId, k -> new Counter());
-        return counter.incrementAndGet() <= 100;  // 100 requests per TTL window
-    }
-    
-    @Cache("rate.limit.cache")
-    public interface RateLimitCache extends CaffeineCache<String, Counter> {}
-    
-    public static class Counter {
-        private final AtomicLong count = new AtomicLong(0);
-        public long incrementAndGet() { return count.incrementAndGet(); }
-    }
-}
-```
-
-### Manual Invalidation
-
-```java
-@Component
-public final class ProductService {
-    private final ProductCache cache;
-    
-    public void updateProduct(String id, ProductUpdate update) {
-        // Update database
-        repository.update(id, update);
-        
-        // Invalidate cache
-        cache.invalidate(id);
-    }
-    
-    @Cache("products.cache")
-    public interface ProductCache extends CaffeineCache<String, Product> {}
-}
-```
+The two mix freely on the same cache: annotate the read path and write to the same injected cache
+from a `create` method.
 
 ---
 
-## See Also
+## See also
 
-- [AOP Caching Skill](../SKILL.md) — `@Cacheable`, `@CachePut`, `@CacheInvalidate`
-- [Cache Config Reference](references/cache-config-reference.md) — TTL, sizing, eviction
-- [Multi-Level Cache Guide](../../.kora-agent/kora-docs/mkdocs/docs/en/guides/cache-multi-level.md) — L1 + L2 patterns
+- [cacheable-reference.md](cacheable-reference.md) — the annotations these calls replace
+- [cache-caffeine-reference.md](cache-caffeine-reference.md) — Caffeine configuration
+- [cache-redis-reference.md](cache-redis-reference.md) — Redis configuration
+- [multi-level-cache-reference.md](multi-level-cache-reference.md) — L1/L2 patterns

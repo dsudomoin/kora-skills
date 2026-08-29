@@ -1,14 +1,17 @@
 package ${package}
 
-import ru.tinkoff.kora.json.common.annotation.Json
+import io.koraframework.json.common.annotation.Json
 
 /**
- * ${enum_name} with custom JSON serialization.
+ * ${enum_name} as a JSON value.
  *
- * <p>Serialized via toString() — override for a custom format.</p>
+ * The generated mapper picks the value accessor in this order:
+ *  1. the first public, non-static, zero-argument method annotated `@Json` — its return type
+ *     becomes the JSON value type;
+ *  2. `toString()`, i.e. the constant name unless overridden.
  *
- * @see toString
- * @see fromString
+ * Reading matches the parsed value back against `entries` through the same accessor, so no
+ * `fromString`/`valueOf` helper is needed.
  */
 @Json
 enum class ${enum_name}(
@@ -16,24 +19,24 @@ enum class ${enum_name}(
 ) {
     ${enum_values};
 
-    /**
-     * Returns the JSON representation of the enum.
-     * By default returns the lowercase name.
-     */
+    /** JSON representation of the constant. */
     override fun toString(): String = value
-
-    /**
-     * Deserializes an enum from a JSON string.
-     *
-     * @param value value from JSON
-     * @return the matching enum constant
-     * @throws IllegalArgumentException if the value is not found
-     */
-    companion object {
-        @JvmStatic
-        fun fromString(value: String): ${enum_name} {
-            return entries.find { it.value == value }
-                ?: throw IllegalArgumentException("Unknown ${enum_name}: $value")
-        }
-    }
 }
+
+/*
+ * Variant: a non-string JSON value. Drop the toString() override and expose the value
+ * through a @Json accessor instead — the JSON type then follows the return type.
+ *
+ *   @Json
+ *   enum class Status(private val code: Int) {
+ *       CREATED(1), DELETED(2);
+ *
+ *       @Json
+ *       fun code(): Int = code
+ *   }
+ *
+ * → 1, 2
+ *
+ * Variant: the plain constant names. Declare `@Json enum class Status { CREATED, DELETED }`
+ * with no body at all — toString() already returns name().
+ */

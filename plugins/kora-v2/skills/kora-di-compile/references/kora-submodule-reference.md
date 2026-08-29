@@ -1,220 +1,180 @@
 # @KoraSubmodule Reference
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/container.md`
-**Examples:** `.kora-agent/kora-examples/guides/java/kora-java-guide-dependency-injection/`
+**Applies to:** Kora 2.x (`io.koraframework`)
 
 ## Contents
 
 - [Overview](#overview)
-- [When to Split](#when-to-split)
+- [What the Processor Generates](#what-the-processor-generates)
 - [Project Structure](#project-structure)
 - [Root Build Configuration](#root-build-configuration)
-- [Module Configuration Examples](#module-configuration-examples)
-- [Module Inheritance Chain](#module-inheritance-chain)
+- [Subproject Builds](#subproject-builds)
+- [The Sources](#the-sources)
+- [Kotlin Variant](#kotlin-variant)
+- [Test @KoraApp and kora.app.submodule.enabled](#test-koraapp-and-koraappsubmoduleenabled)
 - [Key Rules](#key-rules)
 - [Common Mistakes](#common-mistakes)
+- [Related References](#related-references)
 
 ## Overview
 
-`@KoraSubmodule` marks an interface for which Kora builds a module from all `@Module` and `@Component` types in that Gradle compilation module. It is used for **physical separation** of code into separate Gradle subprojects, where the `@KoraApp` assembly lives in its own module apart from the business logic. Each submodule has its own `build.gradle` and can be developed and tested independently.
+`@KoraSubmodule` (`io.koraframework.common.annotation.KoraSubmodule`) is how a Gradle subproject
+exports its Kora components across a compilation boundary. Placed on an interface, it makes the
+processor emit a companion interface containing a provider for **every `@Component` class and every
+`@Module` provider method compiled in that subproject**. The `@KoraApp` in the assembly project then
+extends the annotated interface, and the generated companion is wired in automatically.
 
-## When to Split
+Without it, `@Module`/`@Component` in another subproject are invisible — the `@KoraApp` processor
+never compiled them.
 
-Split into multiple Gradle modules when:
+## What the Processor Generates
 
-| Criteria | Threshold |
-|----------|-----------|
-| **Code size** | 500+ classes |
-| **Domain boundaries** | Clear separation (pet-api, vet-api) |
-| **Team structure** | Multiple teams working on different domains |
-| **Compilation time** | Exceeds 2 minutes |
-| **Deployment** | Different deployment units needed |
+| Property | Value |
+|---|---|
+| Generated interface | `<InterfaceSimpleName>SubmoduleImpl`, same package |
+| Contents | `_component0()`, `_component1()`, … one per exported provider |
+| Carried over | `@Tag`, `@Root`, `@DefaultComponent` from the original declaration |
+| Skipped | abstract `@Component` classes and classes carrying AOP annotations (the aspect processor owns those) |
+| Trigger | the annotation processor / symbol processor running **in that subproject** |
+
+The `@KoraApp` processor looks the companion up by name. If the subproject did not run a processor:
+
+```
+Kora submodule was not generated yet:
+  expected type: com.example.pet.PetModuleSubmoduleImpl
+
+Fix:
+  - Ensure the submodule processor is enabled.
+  - Compile again after generated sources are available.
+```
 
 ## Project Structure
 
-### Recommended Layout
-
 ```
 my-app/
-├── build.gradle              # Root build configuration
-├── settings.gradle           # Module includes
-├── gradle.properties         # Version properties
-├── common/                   # Shared types and utilities
-│   ├── build.gradle
-│   └── src/main/java/com/example/common/
-│       └── CommonModule.java
-├── pet-api/                  # Pet domain module
-│   ├── build.gradle
-│   └── src/main/java/com/example/pet/
-│       └── PetModule.java
-├── vet-api/                  # Vet domain module
-│   ├── build.gradle
-│   └── src/main/java/com/example/vet/
-│       └── VetModule.java
-└── app/                      # Application assembly
-    ├── build.gradle
-    └── src/main/java/com/example/app/
-        └── Application.java
+├── settings.gradle
+├── gradle.properties            # koraVersion=2.0.0.RC1
+├── build.gradle                 # shared subprojects { } configuration
+├── common/
+│   └── src/main/java/com/example/common/CommonModule.java   // @KoraSubmodule
+├── pet-api/
+│   └── src/main/java/com/example/pet/PetModule.java         // @KoraSubmodule
+├── vet-api/
+│   └── src/main/java/com/example/vet/VetModule.java         // @KoraSubmodule
+└── app/
+    └── src/main/java/com/example/app/Application.java       // @KoraApp
 ```
 
-### Module Responsibilities
-
-| Module | Purpose | Dependencies |
-|--------|---------|--------------|
-| `common` | Shared types, utilities, base interfaces | kora:common |
-| `pet-api` | Pet domain entities, services, controllers | common, database, cache |
-| `vet-api` | Vet domain entities, services, controllers | common, database, cache |
-| `app` | Application assembly, main class | all domain modules |
+Split when domains have genuinely separate ownership or dependency sets — not by class count.
+The assembly project should hold the `@KoraApp`, the entry point and little else.
 
 ## Root Build Configuration
 
-### build.gradle (Root)
+### settings.gradle
 
 ```groovy
-// Root build.gradle for multi-module Kora project
+rootProject.name = "my-app"
 
+include ":common"
+include ":pet-api"
+include ":vet-api"
+include ":app"
+```
+
+### gradle.properties
+
+```properties
+koraVersion=2.0.0.RC1
+
+org.gradle.parallel=true
+org.gradle.caching=true
+```
+
+### build.gradle (root)
+
+```groovy
 subprojects {
-    apply plugin: "java"
-    
+    repositories {
+        mavenCentral()   // io.koraframework:kora-bom:2.0.0.RC1 is on Maven Central
+    }
+
     configurations {
         koraBom
         annotationProcessor.extendsFrom(koraBom)
         compileOnly.extendsFrom(koraBom)
         implementation.extendsFrom(koraBom)
         api.extendsFrom(koraBom)
+        testImplementation.extendsFrom(koraBom)
+        testAnnotationProcessor.extendsFrom(koraBom)
     }
-    
+
     dependencies {
-        koraBom platform("ru.tinkoff.kora:kora-parent:1.2.19")
-        annotationProcessor "ru.tinkoff.kora:annotation-processors"
+        koraBom platform("io.koraframework:kora-bom:$koraVersion")
+        annotationProcessor "io.koraframework:annotation-processors"
     }
-    
-    java {
-        sourceCompatibility = JavaVersion.VERSION_25
-        targetCompatibility = JavaVersion.VERSION_25
+
+    plugins.withId("java") {
+        java {
+            toolchain {
+                languageVersion = JavaLanguageVersion.of(25)
+                vendor = JvmVendorSpec.ADOPTIUM
+            }
+        }
     }
-    
-    compileJava {
-        options.encoding("UTF-8")
-        options.incremental(true)
-        options.fork = false
-    }
+
+    tasks.withType(JavaCompile).configureEach { options.encoding = "UTF-8" }
 }
 ```
 
-### settings.gradle
+Declaring `annotationProcessor` once in `subprojects` is what guarantees every module generates its
+`…SubmoduleImpl`. If you configure builds per-project instead, add it to every one of them.
 
-```groovy
-rootProject.name = 'my-app'
-
-// Include submodules
-include ':common'
-include ':pet-api'
-include ':vet-api'
-include ':app'
-```
-
-### gradle.properties
-
-```properties
-koraVersion=1.2.19
-org.gradle.caching=true
-org.gradle.configuration-cache=true
-org.gradle.parallel=true
-```
-
-## Module Configuration Examples
+## Subproject Builds
 
 ### common/build.gradle
 
 ```groovy
-plugins {
-    id "java-library"
-}
+plugins { id "java-library" }
 
 dependencies {
-    koraBom platform("ru.tinkoff.kora:kora-parent:$koraVersion")
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
-    
-    implementation "ru.tinkoff.kora:common"
-}
-```
-
-### CommonModule.java
-
-```java
-package com.example.common;
-
-import ru.tinkoff.kora.common.KoraSubmodule;
-import ru.tinkoff.kora.config.hocon.HoconConfigModule;
-import ru.tinkoff.kora.logging.logback.LogbackModule;
-
-@KoraSubmodule
-public interface CommonModule extends HoconConfigModule, LogbackModule {
-    // Base submodule interface
-    // Shared dependencies for all domain modules
+    api "io.koraframework:common"   // just the annotations
 }
 ```
 
 ### pet-api/build.gradle
 
 ```groovy
-plugins {
-    id "java"
-}
+plugins { id "java-library" }
 
 dependencies {
-    implementation project(":common")
-    
-    koraBom platform("ru.tinkoff.kora:kora-parent:$koraVersion")
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
-    
-    implementation "ru.tinkoff.kora:database-jdbc"
-    implementation "ru.tinkoff.kora:cache-caffeine"
-    implementation "ru.tinkoff.kora:resilient-kora"
+    api project(":common")
+
+    api "io.koraframework:database-jdbc"
+    api "io.koraframework:cache-caffeine"
+    api "io.koraframework:resilient-kora"
+
+    testAnnotationProcessor "io.koraframework:annotation-processors"
+    testImplementation "io.koraframework:config-hocon"
 }
 ```
 
-### PetModule.java
-
-```java
-package com.example.pet;
-
-import ru.tinkoff.kora.common.KoraSubmodule;
-import com.example.common.CommonModule;
-// External modules: JdbcDatabaseModule (ru.tinkoff.kora:database-jdbc),
-// CaffeineCacheModule (ru.tinkoff.kora:cache-caffeine),
-// ResilientModule (ru.tinkoff.kora:resilient-kora)
-
-@KoraSubmodule
-public interface PetModule extends
-    CommonModule,
-    JdbcDatabaseModule,
-    CaffeineCacheModule,
-    ResilientModule {
-    // Pet domain specific dependencies
-}
-```
+Use `api` (not `implementation`) for the Kora modules a submodule's interface `extends` — the
+assembly project's `@KoraApp` has to see those types to extend `PetModule` at all.
 
 ### app/build.gradle
 
 ```groovy
-plugins {
-    id "java"
-    id "application"
-}
+plugins { id "java"; id "application" }
 
 dependencies {
-    implementation project(":common")
     implementation project(":pet-api")
     implementation project(":vet-api")
-    
-    koraBom platform("ru.tinkoff.kora:kora-parent:$koraVersion")
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
-    
-    implementation "ru.tinkoff.kora:config-hocon"
-    implementation "ru.tinkoff.kora:logging-logback"
-    implementation "ru.tinkoff.kora:json-module"
+
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
+    implementation "io.koraframework:json-common"
+
+    testAnnotationProcessor "io.koraframework:annotation-processors"
 }
 
 application {
@@ -224,25 +184,58 @@ application {
 }
 ```
 
-### Application.java
+## The Sources
 
 ```java
+// common/src/main/java/com/example/common/CommonModule.java
+package com.example.common;
+
+import io.koraframework.common.annotation.KoraSubmodule;
+
+@KoraSubmodule
+public interface CommonModule { }
+```
+
+An empty `@KoraSubmodule` interface is normal and useful: the interface is only the *handle*; the
+generated companion carries everything the subproject declared.
+
+```java
+// pet-api/src/main/java/com/example/pet/PetModule.java
+package com.example.pet;
+
+import io.koraframework.cache.caffeine.CaffeineCacheModule;
+import io.koraframework.common.annotation.KoraSubmodule;
+import io.koraframework.database.jdbc.JdbcDatabaseModule;
+import io.koraframework.resilient.ResilientModule;
+import com.example.common.CommonModule;
+
+@KoraSubmodule
+public interface PetModule extends
+        CommonModule,
+        JdbcDatabaseModule,
+        CaffeineCacheModule,
+        ResilientModule { }
+```
+
+```java
+// app/src/main/java/com/example/app/Application.java
 package com.example.app;
 
-import ru.tinkoff.kora.application.graph.KoraApplication;
-import ru.tinkoff.kora.application.graph.ApplicationGraph;
-import ru.tinkoff.kora.common.KoraApp;
-import ru.tinkoff.kora.json.module.JsonModule;
-import com.example.common.CommonModule;
+import io.koraframework.application.graph.KoraApplication;
+import io.koraframework.common.annotation.KoraApp;
+import io.koraframework.config.hocon.HoconConfigModule;
+import io.koraframework.json.common.JsonModule;
+import io.koraframework.logging.logback.LogbackModule;
 import com.example.pet.PetModule;
 import com.example.vet.VetModule;
 
 @KoraApp
 public interface Application extends
-    CommonModule,             // Common submodule
-    PetModule,                // Pet domain submodule
-    VetModule,                // Vet domain submodule
-    JsonModule {              // External library module
+        PetModule,
+        VetModule,
+        HoconConfigModule,
+        LogbackModule,
+        JsonModule {
 
     static void main(String[] args) {
         KoraApplication.run(ApplicationGraph::graph);
@@ -250,124 +243,179 @@ public interface Application extends
 }
 ```
 
-## Module Inheritance Chain
+A `@KoraSubmodule` may itself extend Kora modules; the assembly project inherits them and must not
+repeat them.
+
+## Kotlin Variant
+
+```kotlin
+// root build.gradle.kts
+plugins {
+    kotlin("jvm") version "2.4.10" apply false
+    id("com.google.devtools.ksp") version "2.3.11" apply false
+}
+
+subprojects {
+    apply(plugin = "org.jetbrains.kotlin.jvm")
+    apply(plugin = "com.google.devtools.ksp")
+
+    repositories {
+        mavenCentral()
+    }
+
+    pluginManager.withPlugin("org.jetbrains.kotlin.jvm") {
+        configure<org.jetbrains.kotlin.gradle.dsl.KotlinProjectExtension> {
+            jvmToolchain {
+                languageVersion.set(JavaLanguageVersion.of(25))
+                vendor.set(JvmVendorSpec.ADOPTIUM)
+            }
+            sourceSets.named("main") { kotlin.srcDir("build/generated/ksp/main/kotlin") }
+            sourceSets.named("test") { kotlin.srcDir("build/generated/ksp/test/kotlin") }
+        }
+    }
+
+    dependencies {
+        add("implementation", platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+        add("ksp", "io.koraframework:symbol-processors:${property("koraVersion")}")
+    }
+}
+```
+
+```kotlin
+@KoraSubmodule
+interface PetModule : CommonModule, JdbcDatabaseModule, CaffeineCacheModule, ResilientModule
+```
+
+```kotlin
+@KoraApp
+interface Application : PetModule, VetModule, HoconConfigModule, LogbackModule, JsonModule
+
+fun main() {
+    KoraApplication.run(ApplicationGraph::graph)
+}
+```
+
+`ksp` is not covered by the BOM platform, so `symbol-processors` carries an explicit version. Add
+`kspTest(...)` in any subproject with Kora annotations in its test sources.
+
+## Test @KoraApp and `kora.app.submodule.enabled`
+
+A common integration-test pattern is a test-source `@KoraApp` that extends the production one and
+adds test-only components:
+
+```java
+// app/src/test/java/com/example/app/TestApplication.java
+@KoraApp
+public interface TestApplication extends Application {
+
+    @Root
+    @Component
+    @Repository
+    interface TestPetRepository extends JdbcRepository {
+        @Query("DELETE FROM pets")
+        void deleteAll();
+    }
+}
+```
+
+For this to see the production app's `@Component` classes, the **main** compilation must also emit a
+submodule companion for the `@KoraApp` interface. That is exactly what the flag does:
+
+```groovy
+// app/build.gradle — Java
+compileJava {
+    options.compilerArgs += ["-Akora.app.submodule.enabled=true"]
+}
+```
+
+```kotlin
+// app/build.gradle.kts — Kotlin
+ksp {
+    arg("kora.app.submodule.enabled", "true")
+}
+```
+
+Set it on the **main** compilation, not the test one — it changes what `compileJava`/`compileKotlin`
+generates for `Application`, which the test compilation then consumes.
+
+**This is a silent failure.** Without the flag the build still succeeds; you only get a warning:
 
 ```
-Application (@KoraApp)
-    ├── PetModule (@KoraSubmodule)
-    │   ├── CommonModule (@KoraSubmodule)
-    │   │   ├── HoconConfigModule (external)
-    │   │   └── LogbackModule (external)
-    │   ├── JdbcDatabaseModule (external)
-    │   ├── CaffeineCacheModule (external)
-    │   └── ResilientModule (external)
-    ├── VetModule (@KoraSubmodule)
-    │   └── CommonModule (shared)
-    └── JsonModule (external)
+Expected @KoraApp as SubModule, but Submodule implementation not found for: com.example.app.Application
+Check that @KoraApp was generated with compile annotation processor option: -Akora.app.submodule.enabled=true
 ```
+
+(KSP wording: `Check that @KoraApp was generated with KSP argument: kora.app.submodule.enabled=true`.)
+
+The test graph then quietly loses every `@Component` declared in the production module, and the
+failure surfaces much later as a missing dependency or a test asserting against a half-built graph.
+
+The flag is only needed for this pattern. A plain single-project application does not want it.
 
 ## Key Rules
 
-| Rule | Description |
-|------|-------------|
-| **One submodule per Gradle module** | Each `@KoraSubmodule` = one `build.gradle` |
-| **Submodules require extends** | Parent `@KoraApp` must extend submodules |
-| **Common should be small** | Only truly shared code in common module |
-| **No cross-dependencies** | Domain modules (pet-api, vet-api) should not depend on each other |
-| **App is thin** | Application module only for assembly |
-
-## Benefits
-
-| Benefit | Description |
-|---------|-------------|
-| **Faster compilation** | Only changed modules recompile |
-| **Clear boundaries** | Domain separation enforced by build |
-| **Team autonomy** | Teams work independently on modules |
-| **Better testing** | Module-level isolation |
-| **Code reuse** | Common module shared across domains |
-| **Deployment flexibility** | Deploy domains separately if needed |
-
-## Module Naming Conventions
-
-| Pattern | Purpose |
-|---------|---------|
-| `common` | Shared types and utilities |
-| `{domain}-api` | Domain module with API and implementation |
-| `{domain}-service` | Alternative for service-only modules |
-| `app` | Main application assembly |
-| `{domain}-client` | External client integrations |
-| `{domain}-repository` | Data access layer |
+| Rule | Detail |
+|---|---|
+| Processor everywhere | every subproject with Kora annotations needs `annotationProcessor` / `ksp` |
+| `@KoraSubmodule` only on interfaces | same constraint as `@Module` and `@KoraApp` |
+| Assembly must `extends` | cross-subproject modules are never auto-discovered |
+| Use `api`, not `implementation` | for the Kora modules a `@KoraSubmodule` extends |
+| One `@KoraApp` per runnable artifact | a test `@KoraApp` in `src/test` is separate and fine |
+| No cross-domain project dependencies | `pet-api` and `vet-api` both depend on `common`, never on each other |
 
 ## Common Mistakes
 
-### Mistake 1: Circular Dependencies
+### Missing processor in a subproject
 
 ```groovy
-// BAD - pet-api depends on vet-api
+// BAD — no processor, so PetModuleSubmoduleImpl is never generated
 // pet-api/build.gradle
-dependencies {
-    implementation project(":vet-api")  // Error!
-}
+dependencies { api project(":common") }
 
-// vet-api/build.gradle  
+// GOOD — inherit it from subprojects { }, or declare it here
 dependencies {
-    implementation project(":pet-api")  // Circular!
-}
-
-// GOOD - Both depend only on common
-// pet-api/build.gradle
-dependencies {
-    implementation project(":common")
-}
-
-// vet-api/build.gradle
-dependencies {
-    implementation project(":common")
+    annotationProcessor "io.koraframework:annotation-processors"
+    api project(":common")
 }
 ```
 
-### Mistake 2: Missing @KoraSubmodule
+Symptom: `Kora submodule was not generated yet: expected type: …SubmoduleImpl`.
+
+### `@Module` instead of `@KoraSubmodule` across a boundary
 
 ```java
-// BAD - Module interface without annotation
-// pet-api/src/main/java/com/example/pet/PetModule.java
-public interface PetModule { }  // Won't be discovered!
+// BAD — @Module does not cross a compilation boundary
+@Module
+public interface PetModule { }
 
 // GOOD
 @KoraSubmodule
 public interface PetModule { }
 ```
 
-### Mistake 3: App Module with Business Logic
+### `implementation` where `api` is required
 
-```java
-// BAD - Business logic in app module
-@KoraApp
-public interface Application extends PetModule {
-    
-    @Component
-    class PetController {  // Wrong location!
-        // Business logic here
-    }
-}
+```groovy
+// BAD — the app cannot see JdbcDatabaseModule, so `PetModule extends JdbcDatabaseModule` breaks
+implementation "io.koraframework:database-jdbc"
 
-// GOOD - Business logic in domain module
-// pet-api/src/main/java/com/example/pet/PetController.java
-@Component
-public final class PetController {
-    // Business logic here
-}
+// GOOD
+api "io.koraframework:database-jdbc"
 ```
 
-## When to Read This Reference
+### Test `@KoraApp` without the submodule flag
 
-- **Project growing large** — Consider splitting into modules
-- **Team scaling** — Multiple teams need clear boundaries
-- **Build times slow** — Incremental compilation needed
-- **Code reuse needed** — Common module for shared types
+Covered above — add `-Akora.app.submodule.enabled=true` (or the KSP `arg`) to the **main**
+compilation, and assert in a test that a production component is actually present.
+
+### Business logic in the assembly project
+
+Keep `@Component` classes in the domain subprojects. Anything declared in `app/` is only visible to
+`app/`, which defeats the split.
 
 ## Related References
 
-- [@KoraApp Reference](kora-app-component-reference.md) — Application bootstrap
-- [Module Auto-Discovery Reference](module-auto-discovery-reference.md) — When extends needed
-- [Component Registration Reference](component-registration-reference.md) — 5 registration methods
+- [@KoraApp Reference](kora-app-component-reference.md) — bootstrap and the generated graph
+- [Module Auto-Discovery Reference](module-auto-discovery-reference.md) — when `extends` is required
+- [Component Registration Reference](component-registration-reference.md) — how types enter the graph
+- [Graph Roots & Lifecycle Reference](lifecycle-reference.md) — `@Root` propagation through a submodule

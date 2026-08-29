@@ -1,0 +1,66 @@
+package ${package}
+
+import io.koraframework.http.client.common.annotation.HttpClient
+import io.koraframework.http.client.common.interceptor.BasicAuthHttpClientInterceptor
+import io.koraframework.http.common.HttpMethod
+import io.koraframework.http.common.annotation.HttpRoute
+import io.koraframework.http.common.annotation.InterceptWith
+import io.koraframework.http.common.form.FormUrlEncoded
+import io.koraframework.json.common.annotation.Json
+import io.koraframework.json.common.annotation.JsonField
+
+/**
+ * Declarative client for the OAuth2 token endpoint.
+ *
+ * Requires: `OAuth2Config` (for the `BasicAuthHttpClientInterceptor` factory in `OAuth2AuthModule`).
+ * Config path `httpClient.oauth2`:
+ *
+ * ```
+ * httpClient.oauth2 {
+ *   url = "https://auth.example"
+ *   requestTimeout = 5s          // keep shorter than the business client's
+ * }
+ * ```
+ *
+ * The client id and secret travel in `Authorization: Basic`, which the client logger masks by
+ * default. Putting them in the form body instead would put them in the log, because there is no
+ * body masking.
+ *
+ * Do **not** attach a Bearer interceptor here: this client is what produces the token.
+ * Methods are plain functions — `suspend` is not a Kora 2.0 contract.
+ */
+@InterceptWith(BasicAuthHttpClientInterceptor::class)
+@HttpClient("httpClient.oauth2")
+interface OAuth2AuthClient {
+
+    @HttpRoute(method = HttpMethod.POST, path = "/oauth2/token")
+    @Json
+    fun requestToken(form: FormUrlEncoded): TokenResponse
+
+    fun requestClientCredentialsToken(scopes: String): TokenResponse =
+        if (scopes.isBlank()) {
+            requestToken(FormUrlEncoded(FormUrlEncoded.FormPart("grant_type", "client_credentials")))
+        } else {
+            requestToken(
+                FormUrlEncoded(
+                    FormUrlEncoded.FormPart("grant_type", "client_credentials"),
+                    FormUrlEncoded.FormPart("scope", scopes)
+                )
+            )
+        }
+
+    /**
+     * `scope` is optional in RFC 6749 when it matches the request, so it is nullable. The
+     * generated reader decides "required" from the declared nullability, not from a Kotlin default
+     * value — a non-null field the issuer omits fails with "missing required field(s)". No default
+     * is given here on purpose: defaults reorder the constructor and make positional calls silently
+     * swap values.
+     */
+    @Json
+    data class TokenResponse(
+        @JsonField("access_token") val accessToken: String,
+        @JsonField("token_type") val tokenType: String,
+        @JsonField("expires_in") val expiresIn: Long,
+        @JsonField("scope") val scope: String?
+    )
+}

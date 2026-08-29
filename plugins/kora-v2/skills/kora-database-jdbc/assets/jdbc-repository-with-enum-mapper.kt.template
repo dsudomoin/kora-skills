@@ -1,95 +1,121 @@
 package ${package}
 
-import ru.tinkoff.kora.common.Mapping
-import ru.tinkoff.kora.database.common.UpdateCount
-import ru.tinkoff.kora.database.common.annotation.Column
-import ru.tinkoff.kora.database.common.annotation.Id
-import ru.tinkoff.kora.database.common.annotation.Query
-import ru.tinkoff.kora.database.common.annotation.Repository
-import ru.tinkoff.kora.database.common.annotation.Table
-import ru.tinkoff.kora.database.jdbc.EntityJdbc
-import ru.tinkoff.kora.database.jdbc.JdbcRepository
-import ru.tinkoff.kora.database.jdbc.mapper.parameter.JdbcParameterColumnMapper
-import ru.tinkoff.kora.database.jdbc.mapper.result.JdbcResultColumnMapper
+import io.koraframework.common.annotation.Mapping
+import io.koraframework.database.common.UpdateCount
+import io.koraframework.database.common.annotation.Id
+import io.koraframework.database.common.annotation.Query
+import io.koraframework.database.common.annotation.Repository
+import io.koraframework.database.common.annotation.Table
+import io.koraframework.database.jdbc.JdbcRepository
+import io.koraframework.database.jdbc.annotation.EntityJdbc
+import io.koraframework.database.jdbc.mapper.parameter.JdbcParameterColumnMapper
+import io.koraframework.database.jdbc.mapper.result.JdbcResultColumnMapper
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.Types
 
 /**
- * Repository example with custom mappers for an enum stored as an integer code (Kotlin).
+ * Entity whose enum property is stored as an integer code, with both column mappers (Kotlin).
  *
- * Supply a JdbcResultColumnMapper (read) and a JdbcParameterColumnMapper (write); select
- * both by repeating @Mapping on the property. In Kotlin, mappers only need to handle T?.
+ * Enums are not a natively supported column type, so each direction needs its own mapper.
  *
- * Database schema example:
- *   CREATE TABLE tasks (
+ * NULLABILITY — the trap that only bites Kotlin. The 2.0 mapper contracts are JSpecify-marked, so
+ * an override must declare the value as `T?`:
+ *     override fun set(stmt: PreparedStatement, index: Int, value: ${entity_name}Status?)
+ * Writing `value: ${entity_name}Status` makes the compiler report `'set' overrides nothing`, which
+ * says nothing about nullability. The Java twin of the same mapper compiles either way.
+ * Return types may be narrowed to non-null, which is why `apply` below returns a plain enum.
+ *
+ * SELECTION — @Mapping is @Repeatable, so both mappers go on the same property, one annotation
+ * each. Apply @Mapping without a use-site target (it also targets PARAMETER); use `@field:` for
+ * @Id / @Column / @Embedded, which Kora reads off the field.
+ *
+ * @Component is deliberately absent: Kotlin classes are final and these have an empty primary
+ * constructor, so the generated repository instantiates them itself. A mapper that is `open`, has
+ * constructor dependencies, or is tagged is injected instead and then MUST be a @Component.
+ *
+ * Matching DDL:
+ *   CREATE TABLE ${table_name} (
  *       id     BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
  *       title  VARCHAR(255) NOT NULL,
- *       status INT NOT NULL
+ *       status INTEGER NOT NULL
  *   );
  */
 @EntityJdbc
 @Table("${table_name}")
-data class Task(
-    @field:Id @field:Column("id") val id: Long?,
-    @field:Column("title") val title: String,
-    @field:Mapping(TaskStatusResultMapper::class)
-    @field:Mapping(TaskStatusParameterMapper::class)
-    @field:Column("status") val status: TaskStatus
+data class ${entity_name}(
+    @field:Id val id: Long?,
+    val title: String,
+    @Mapping(${entity_name}StatusResultMapper::class)
+    @Mapping(${entity_name}StatusParameterMapper::class)
+    val status: ${entity_name}Status
 ) {
-    constructor(title: String, status: TaskStatus) : this(null, title, status)
+    /** Constructor for inserts where the database assigns the id. */
+    constructor(title: String, status: ${entity_name}Status) : this(null, title, status)
 }
 
-/** Enum stored as an integer code. */
-enum class TaskStatus(val code: Int) {
+/** Enum persisted as its integer code rather than its name. */
+enum class ${entity_name}Status(val code: Int) {
+
     UNKNOWN(-10),
     PENDING(0),
     IN_PROGRESS(10),
     COMPLETED(20);
 
     companion object {
-        private val ALL = entries.toTypedArray()
-
-        fun fromCode(code: Int): TaskStatus = ALL.find { it.code == code } ?: UNKNOWN
+        fun fromCode(code: Int): ${entity_name}Status =
+            entries.firstOrNull { it.code == code } ?: UNKNOWN
     }
 }
 
-/** Reads the integer column into a TaskStatus. */
-class TaskStatusResultMapper : JdbcResultColumnMapper<TaskStatus> {
-    override fun apply(rs: ResultSet, index: Int): TaskStatus = TaskStatus.fromCode(rs.getInt(index))
+/** Reads the integer column into the enum, falling back to UNKNOWN for unknown codes. */
+class ${entity_name}StatusResultMapper : JdbcResultColumnMapper<${entity_name}Status> {
+
+    override fun apply(rs: ResultSet, index: Int): ${entity_name}Status =
+        ${entity_name}Status.fromCode(rs.getInt(index))
 }
 
-/** Writes a TaskStatus as its integer code. */
-class TaskStatusParameterMapper : JdbcParameterColumnMapper<TaskStatus> {
-    override fun set(stmt: PreparedStatement, index: Int, value: TaskStatus?) {
-        if (value != null) {
-            stmt.setInt(index, value.code)
-        } else {
+/** Writes the enum as its integer code. The value parameter must be nullable. */
+class ${entity_name}StatusParameterMapper : JdbcParameterColumnMapper<${entity_name}Status> {
+
+    override fun set(stmt: PreparedStatement, index: Int, value: ${entity_name}Status?) {
+        if (value == null) {
             stmt.setNull(index, Types.INTEGER)
+        } else {
+            stmt.setInt(index, value.code)
         }
     }
 }
 
-/**
- * Repository using the enum-mapped entity.
- */
 @Repository
-interface TaskRepository : JdbcRepository {
+interface ${entity_name}Repository : JdbcRepository {
 
     @Query("SELECT %{return#selects} FROM %{return#table} WHERE id = :id")
-    fun findById(id: Long): Task?
+    fun findById(id: Long): ${entity_name}?
 
     @Query("SELECT %{return#selects} FROM %{return#table}")
-    fun findAll(): List<Task>
+    fun findAll(): List<${entity_name}>
 
-    // Enum query parameters need their own @Mapping (the property mappers apply to the entity only)
+    /**
+     * A query parameter needs its own @Mapping: the property-level mappers describe the entity,
+     * not loose arguments. Making the mapper a @Component instead would remove the need for this.
+     */
     @Query("SELECT %{return#selects} FROM %{return#table} WHERE status = :status")
-    fun findByStatus(@Mapping(TaskStatusParameterMapper::class) status: TaskStatus): List<Task>
+    fun findByStatus(
+        @Mapping(${entity_name}StatusParameterMapper::class) status: ${entity_name}Status
+    ): List<${entity_name}>
 
-    @Query("INSERT INTO %{entity#inserts-= @id}")
+    /**
+     * The macro target is the parameter name, so it must be called `entity` for %{entity#...}.
+     * @Id on the function returns the database-generated key.
+     */
     @Id
-    fun insert(task: Task): Long
+    @Query("INSERT INTO %{entity#inserts -= @id}")
+    fun insert(entity: ${entity_name}): Long
 
     @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
-    fun update(task: Task): UpdateCount
+    fun update(entity: ${entity_name}): UpdateCount
+
+    @Query("DELETE FROM ${table_name} WHERE id = :id")
+    fun deleteById(id: Long): UpdateCount
 }

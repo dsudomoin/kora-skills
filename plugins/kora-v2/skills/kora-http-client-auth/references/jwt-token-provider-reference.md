@@ -1,186 +1,433 @@
-# JWT / Bearer Token Provider Reference
+# Bearer / JWT Token Provider Reference
 
-How to implement `HttpClientTokenProvider` so the `BearerAuthHttpClientInterceptor`
-always sends a fresh token.
+Implementing `HttpClientTokenProvider` so `BearerAuthHttpClientInterceptor` always sends a valid
+token.
 
 ## Contents
 
-- [HttpClientTokenProvider interface](#httpclienttokenprovider-interface)
-- [Provider with caching](#provider-with-caching)
-- [Auth client to fetch the token](#auth-client-to-fetch-the-token)
-- [Wiring it together](#wiring-it-together)
+- [The contract](#the-contract)
+- [Static token](#static-token)
+- [The auth client](#the-auth-client)
+- [The caching provider](#the-caching-provider)
+- [Wiring](#wiring)
+- [Configuration](#configuration)
+- [Retrying a 401](#retrying-a-401)
+- [Kotlin](#kotlin)
 - [Testing](#testing)
+- [Porting a 1.x provider](#porting-a-1x-provider)
 - [See also](#see-also)
 
-Source of truth: `.kora-agent/kora-docs/mkdocs/docs/en/documentation/http-client.md` (Bearer section).
-
 ---
 
-## HttpClientTokenProvider interface
-
-The published declarative Bearer API returns a `CompletionStage<String>` so token
-fetching stays non-blocking:
+## The contract
 
 ```java
+package io.koraframework.http.client.common.auth;
+
 public interface HttpClientTokenProvider {
 
-    /**
-     * Returns the authorization token asynchronously. Implementations should cache
-     * and refresh the token internally.
-     *
-     * @param request the HTTP request being executed
-     * @return a CompletionStage with the token value
-     */
-    CompletionStage<String> getToken(HttpClientRequest request);
+    @Nullable String getToken(HttpClientRequest request);
 }
 ```
 
-Register a single implementation as a component; the `BearerAuthHttpClientInterceptor`
-factory in your `@Module` receives it.
+`BearerAuthHttpClientInterceptor` calls it **once per request** and then sets
+`authorization: Bearer <token>`. Return the bare token; the interceptor adds the prefix.
 
----
+Returning `null` makes the interceptor forward the request **with no `Authorization` header**. Use
+that deliberately (a scheme that does not apply to this request) and never as an error path — a
+failed token fetch should throw, so the caller sees the real cause instead of an upstream `401`.
 
-## Provider with caching
-
-Keep a `TokenCache` (see [token-cache-reference.md](token-cache-reference.md)) and
-refresh ahead of expiry with a margin so a token never expires mid-flight.
+Because `getToken` receives the `HttpClientRequest`, a single provider can serve different tokens
+per route:
 
 ```java
-@Component
-public final class JwtTokenProvider implements HttpClientTokenProvider {
-
-    private static final Duration REFRESH_MARGIN = Duration.ofSeconds(60);
-
-    private final TokenCache tokenCache;
-    private final AuthClient authClient;
-
-    public JwtTokenProvider(TokenCache tokenCache, AuthClient authClient) {
-        this.tokenCache = tokenCache;
-        this.authClient = authClient;
-    }
-
-    @Override
-    public CompletionStage<String> getToken(HttpClientRequest request) {
-        String cached = tokenCache.get();
-        if (cached != null && !tokenCache.isExpiringSoon(REFRESH_MARGIN)) {
-            return CompletableFuture.completedFuture(cached);
-        }
-        return authClient.fetchToken()
-                .thenApply(response -> {
-                    tokenCache.set(response.accessToken(), Duration.ofSeconds(response.expiresIn()));
-                    return response.accessToken();
-                });
-    }
+@Override
+public String getToken(HttpClientRequest request) {
+    return request.uriTemplate().startsWith("/admin")
+            ? tokens.getOrRefresh(this::fetchAdminToken)
+            : tokens.getOrRefresh(this::fetchUserToken);
 }
 ```
 
-Key points:
-1. **Refresh margin** — refresh 60s before expiry.
-2. **Caching** — avoid hammering the auth service.
-3. **Thread safety** — `TokenCache` must be safe under concurrent access.
-4. **Async** — return a `CompletionStage` for non-blocking work.
+`uriTemplate()` is the un-substituted path (`/users/{id}`), which is what you want for routing
+decisions; `uri()` is the resolved absolute `URI`.
 
 ---
 
-## Auth client to fetch the token
+## Static token
 
-A separate declarative `@HttpClient` calls the token endpoint. Use BasicAuth for
-the client_id/secret and form-encoded parameters.
+When the token comes from the environment and never changes, no provider is needed:
 
 ```java
-@HttpClient(configPath = "httpClient.auth")
-public interface AuthClient {
+@ConfigSource("auth.api")
+public interface ApiTokenConfig {
 
-    @InterceptWith(BasicAuthHttpClientInterceptor.class)
-    @HttpRoute(method = HttpMethod.POST, path = "/oauth2/token")
-    @Json
-    CompletionStage<TokenResponse> fetchToken(FormUrlEncoded form);
-
-    default CompletionStage<TokenResponse> fetchToken() {
-        return fetchToken(new FormUrlEncoded(
-                new FormUrlEncoded.FormPart("grant_type", "client_credentials")));
-    }
-
-    @Json
-    record TokenResponse(
-            @Json(value = "access_token") String accessToken,
-            @Json(value = "token_type") String tokenType,
-            @Json(value = "expires_in") long expiresIn) {}
+    String token();
 }
 ```
-
-```hocon
-httpClient.auth {
-    url = "https://auth.example.com"
-}
-openapiAuth.basicAuth {
-    username = ${AUTH_CLIENT_ID}
-    password = ${AUTH_CLIENT_SECRET}
-}
-```
-
-The exact `FormUrlEncoded` factory methods are documented in `kora-http-client`;
-adapt the constructor call to your Kora version if it differs.
-
----
-
-## Wiring it together
 
 ```java
 @Module
 public interface BearerAuthModule {
 
-    default BearerAuthHttpClientInterceptor bearerAuther(HttpClientTokenProvider tokenProvider) {
-        return new BearerAuthHttpClientInterceptor(tokenProvider);
+    default BearerAuthHttpClientInterceptor bearerAuthInterceptor(ApiTokenConfig config) {
+        return new BearerAuthHttpClientInterceptor(config.token());
+    }
+}
+```
+
+Declare `token()` non-`@Nullable`: a missing key then fails at startup with `ConfigValueException`
+instead of silently sending unauthenticated requests.
+
+---
+
+## The auth client
+
+The token endpoint is just another declarative client. Client credentials go in `Authorization:
+Basic` via the built-in interceptor, and the body is a form:
+
+```java
+@InterceptWith(BasicAuthHttpClientInterceptor.class)
+@HttpClient("httpClient.auth")
+public interface AuthClient {
+
+    @HttpRoute(method = HttpMethod.POST, path = "/oauth2/token")
+    @Json
+    TokenResponse requestToken(FormUrlEncoded form);
+
+    default TokenResponse requestToken() {
+        return requestToken(new FormUrlEncoded(
+                new FormUrlEncoded.FormPart("grant_type", "client_credentials")));
+    }
+
+    @Json
+    record TokenResponse(
+            @JsonField("access_token") String accessToken,
+            @JsonField("token_type") String tokenType,
+            @JsonField("expires_in") long expiresIn) {}
+}
+```
+
+- `io.koraframework.http.common.form.FormUrlEncoded`, with the nested record
+  `FormUrlEncoded.FormPart(String name, String value)`. The `FormUrlEncoded` request mapper is a
+  `@DefaultComponent` of `HttpClientRequestMapperModule`, so nothing extra is wired.
+- JSON field renaming is `@JsonField("access_token")` from
+  `io.koraframework.json.common.annotation` — **not** `@Json("access_token")`. `@Json` marks the
+  type; `@JsonField` renames a component. The artifact is `io.koraframework:json-common`
+  (`json-module` does not exist in 2.0).
+- The method returns `TokenResponse` directly. `CompletionStage` and `Mono` are not Kora 2.0
+  contracts, and in Kotlin neither is `suspend`.
+- The auth client and the business client are separate `@HttpClient` interfaces with separate
+  config paths. Do not attach the Bearer interceptor to the auth client — that is how you get an
+  infinite token-fetch recursion.
+
+---
+
+## The caching provider
+
+```java
+@Component
+public final class CachingTokenProvider implements HttpClientTokenProvider {
+
+    private final TokenCache cache;
+    private final AuthClient authClient;
+
+    public CachingTokenProvider(TokenCache cache, AuthClient authClient) {
+        this.cache = cache;
+        this.authClient = authClient;
+    }
+
+    @Override
+    public String getToken(HttpClientRequest request) {
+        return cache.getOrRefresh(() -> {
+            var response = authClient.requestToken();
+            return TokenCache.Token.of(response.accessToken(), Duration.ofSeconds(response.expiresIn()));
+        });
+    }
+
+    public void invalidate() {
+        cache.invalidate();
+    }
+}
+```
+
+The fetch blocks the calling virtual thread — correct in 2.0, and cheap. What is **not** optional is
+that concurrent callers must produce one fetch: `TokenCache.getOrRefresh` reads without a lock, then
+takes a `ReentrantLock` and re-checks. See
+[token-cache-reference.md](token-cache-reference.md); do not re-derive it inline.
+
+The token's real lifetime comes from `expires_in`, and the cache refreshes 60 s before it. Never
+hard-code an assumed lifetime.
+
+---
+
+## Wiring
+
+```java
+@Module
+public interface SecureApiAuthModule {
+
+    default BearerAuthHttpClientInterceptor secureApiBearer(HttpClientTokenProvider provider) {
+        return new BearerAuthHttpClientInterceptor(provider);
+    }
+
+    default BasicAuthHttpClientInterceptor authClientBasic(OAuth2Config config) {
+        return new BasicAuthHttpClientInterceptor(config.clientId(), config.clientSecret());
     }
 }
 ```
 
 ```java
-@HttpClient(configPath = "httpClient.secureApi")
+@InterceptWith(BearerAuthHttpClientInterceptor.class)
+@HttpClient("httpClient.secureApi")
 public interface SecureApiClient {
 
-    @InterceptWith(BearerAuthHttpClientInterceptor.class)
     @HttpRoute(method = HttpMethod.GET, path = "/protected")
     @Json
-    CompletionStage<ProtectedResponse> getProtected();
+    ProtectedResponse getProtected();
 }
 ```
 
-`BasicAuthHttpClientInterceptor` is also registered as a component (from a `@Module`
-factory) so the `AuthClient` can reference it through `@InterceptWith`.
+```java
+@KoraApp
+public interface Application extends
+        HoconConfigModule,
+        JsonModule,
+        LogbackModule,
+        OkHttpClientModule,
+        SecureApiAuthModule {
+
+    static void main(String[] args) {
+        KoraApplication.run(ApplicationGraph::graph);
+    }
+}
+```
+
+`SecureApiAuthModule` is hand-written and **must** appear in `@KoraApp extends`. `CachingTokenProvider`
+carries `@Component`, and `AuthClient`, `SecureApiClient` and the `@ConfigSource` interfaces are
+registered by their processors — none of those go in the `extends` list.
+
+---
+
+## Configuration
+
+```hocon
+oauth2 {
+  clientId     = "my-service"
+  clientSecret = ${OAUTH2_CLIENT_SECRET}
+}
+
+httpClient {
+  auth {
+    url = "https://auth.example"
+    requestTimeout = 5s
+  }
+  secureApi {
+    url = "https://api.example"
+    requestTimeout = 10s
+  }
+}
+```
+
+Give the auth client a **shorter** `requestTimeout` than the business client: its call happens
+inside the business request's own budget, under a lock that other callers are queued on.
+
+---
+
+## Retrying a 401
+
+The token can be revoked, or invalidated server-side, before the refresh margin elapses. Handle it
+in a small interceptor that replaces `BearerAuthHttpClientInterceptor` rather than sitting next to
+it — otherwise both write the `Authorization` header:
+
+```java
+@Component
+public final class BearerRetryInterceptor implements HttpClientInterceptor {
+
+    private final CachingTokenProvider tokens;
+
+    public BearerRetryInterceptor(CachingTokenProvider tokens) {
+        this.tokens = tokens;
+    }
+
+    @Override
+    public HttpClientResponse processRequest(InterceptChain chain, HttpClientRequest request) throws Exception {
+        var response = chain.process(authorized(request));
+        if (response.code() != 401) {
+            return response;
+        }
+        response.close();
+        tokens.invalidate();
+        return chain.process(authorized(request));      // exactly one retry
+    }
+
+    private HttpClientRequest authorized(HttpClientRequest request) {
+        return request.toBuilder()
+                .header("authorization", "Bearer " + tokens.getToken(request))
+                .build();
+    }
+}
+```
+
+```java
+@InterceptWith(BearerRetryInterceptor.class)
+@HttpClient("httpClient.secureApi")
+public interface SecureApiClient { … }
+```
+
+Three things this gets right and a naive version does not:
+
+1. **The discarded response is closed.** `HttpClientResponse` is `Closeable`; the generated client
+   only closes the response it finally returns. Skipping `close()` leaks the connection back to the
+   pool's limit.
+2. **The request is rebuilt from the original**, not from the already-authorized one. `header(...)`
+   replaces, so re-authorizing the same object also works — but a query- or cookie-based scheme
+   appends, and rebuilding from the original is the habit that stays correct there.
+3. **One retry, not a loop.** A revoked credential in a retry loop is a request storm against the
+   auth server, and it fails the same way each time.
+
+Do not retry a `403`: that is "this token is not allowed to do this", and a fresh token will be
+just as unauthorized.
+
+---
+
+## Kotlin
+
+```kotlin
+@Component
+class CachingTokenProvider(
+    private val cache: TokenCache,
+    private val authClient: AuthClient
+) : HttpClientTokenProvider {
+
+    override fun getToken(request: HttpClientRequest): String? = cache.getOrRefresh {
+        val response = authClient.requestToken()
+        TokenCache.Token.of(response.accessToken, Duration.ofSeconds(response.expiresIn))
+    }
+
+    fun invalidate() = cache.invalidate()
+}
+```
+
+Declare the return type `String?`. That is what the contract means, and it is required the moment
+the implementation can return null. A non-null `String` return also compiles — narrowing a nullable
+return is ordinary Kotlin variance — so keep `String` only for a provider that always has a token.
+
+The nullability is enforced on the **calling** side instead: `@Nullable` on `getToken` is read from
+the class file, so Kotlin types the result `String?` and
+`val token: String = provider.getToken(request)` fails with
+`initializer type mismatch: expected 'String', actual 'String?'`. Handle it with `?:`, not `!!`.
+
+(At RC1, `http-client-common` carries `@NullMarked` on `module-info.java` and has no
+`package-info.java`, so with the jar on the classpath Kotlin sees *parameters* as platform types —
+`request: HttpClientRequest` and `request: HttpClientRequest?` are both accepted. The per-member
+`@Nullable` on the return value is honoured either way.)
+
+```kotlin
+@InterceptWith(BasicAuthHttpClientInterceptor::class)
+@HttpClient("httpClient.auth")
+interface AuthClient {
+
+    @HttpRoute(method = HttpMethod.POST, path = "/oauth2/token")
+    @Json
+    fun requestToken(form: FormUrlEncoded): TokenResponse
+
+    fun requestToken(): TokenResponse = requestToken(
+        FormUrlEncoded(FormUrlEncoded.FormPart("grant_type", "client_credentials"))
+    )
+
+    @Json
+    data class TokenResponse(
+        @JsonField("access_token") val accessToken: String,
+        @JsonField("token_type") val tokenType: String,
+        @JsonField("expires_in") val expiresIn: Long
+    )
+}
+```
+
+`HttpClientTokenProvider` is a single-method interface, so a trivial one is a SAM lambda:
+`HttpClientTokenProvider { null }`.
 
 ---
 
 ## Testing
 
-```java
-@TestComponent
-public final class TestTokenProvider implements HttpClientTokenProvider {
-    @Override
-    public CompletionStage<String> getToken(HttpClientRequest request) {
-        return CompletableFuture.completedFuture("test-token-12345");
-    }
-}
-```
+Test the provider without a network by replacing the auth client, and test the wiring by replacing
+the provider:
 
 ```java
 @KoraAppTest(Application.class)
-class JwtTokenProviderTest {
+class SecureApiClientTest implements KoraAppTestGraphModifier {
+
+    @Override
+    public KoraGraphModification graph() {
+        return KoraGraphModification.create()
+                .replaceComponent(HttpClientTokenProvider.class,
+                        () -> (HttpClientTokenProvider) request -> "test-token");
+    }
 
     @Test
-    void cachesToken(@TestComponent JwtTokenProvider provider) {
-        var first = provider.getToken(null).toCompletableFuture().join();
-        var second = provider.getToken(null).toCompletableFuture().join();
-        assertThat(first).isEqualTo(second);
+    void callsTheProtectedRoute(@TestComponent SecureApiClient client) {
+        assertThat(client.getProtected()).isNotNull();
     }
 }
 ```
+
+`io.koraframework.test.extension.junit5.{KoraAppTest, TestComponent, KoraAppTestGraphModifier, KoraGraphModification}`.
+`@TestComponent` targets **fields and parameters** — it pulls a component out of the graph; it does
+not declare one. Adding it to a class does nothing.
+
+Asserting that the header actually left the process needs a stub upstream — see
+[kora-testing-blackbox](../../kora-testing-blackbox/SKILL.md).
+
+---
+
+## Porting a 1.x provider
+
+```java
+// Kora 1.x
+@Override
+public CompletionStage<String> getToken(HttpClientRequest request) {
+    var cached = cache.get();
+    if (cached != null && !cache.isExpiringSoon(MARGIN)) {
+        return CompletableFuture.completedFuture(cached);
+    }
+    return authClient.fetchToken()
+            .thenApply(rs -> { cache.set(rs.accessToken(), Duration.ofSeconds(rs.expiresIn())); return rs.accessToken(); });
+}
+```
+
+```java
+// Kora 2.0
+@Override
+public String getToken(HttpClientRequest request) {
+    return cache.getOrRefresh(() -> {
+        var rs = authClient.requestToken();
+        return TokenCache.Token.of(rs.accessToken(), Duration.ofSeconds(rs.expiresIn()));
+    });
+}
+```
+
+| 1.x | 2.0 |
+|---|---|
+| `CompletionStage<String> getToken(...)` | `@Nullable String getToken(...)` |
+| `thenApply` / `thenCompose` refresh chain | straight-line blocking code on a virtual thread |
+| Kotlin `suspend` provider, `Dispatchers.IO` | plain function; no dispatcher, no `runBlocking` |
+| `ru.tinkoff.kora.http.client.common.auth.HttpClientTokenProvider` | `io.koraframework.http.client.common.auth.HttpClientTokenProvider` |
+| `jakarta.annotation.Nullable` | `org.jspecify.annotations.Nullable` (type-use) |
+| `@Json("access_token")` on a component | `@JsonField("access_token")` |
+| `@HttpClient(configPath = "httpClient.auth")` | `@HttpClient("httpClient.auth")` |
+
+The 1.x cache's `getOrRefresh(Supplier<CompletionStage<String>>)` cannot be mechanically unwrapped:
+it took the lock and then returned an *unfinished* future from inside it, so the lock was released
+before the fetch completed and the single-flight guarantee it appeared to give was never real.
+Replace it with the synchronous cache rather than deleting the `CompletionStage` from its signature.
 
 ---
 
 ## See also
 
-- [token-cache-reference.md](token-cache-reference.md)
-- [http-client-auth-reference.md](http-client-auth-reference.md)
-- [oauth2-client-credentials-reference.md](oauth2-client-credentials-reference.md)
+- [token-cache-reference.md](token-cache-reference.md) — the cache this provider is built on
+- [oauth2-client-credentials-reference.md](oauth2-client-credentials-reference.md) — the full flow with scopes
+- [http-client-auth-reference.md](http-client-auth-reference.md) — attaching the interceptor
+- [apikey-interceptor-reference.md](apikey-interceptor-reference.md) — hand-written interceptors

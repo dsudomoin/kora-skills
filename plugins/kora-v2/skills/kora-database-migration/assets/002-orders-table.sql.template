@@ -1,7 +1,34 @@
 -- =============================================================================
 -- Liquibase changeset (formatted SQL) — follow-up change: orders table
--- Reference this file from the master changelog with:
---   --include file:db/changelog/changes/002-orders-table.sql
+-- Kora 2.0
+-- Copy to: src/main/resources/db/changelog/changes/002-orders-table.sql
+--
+-- This file is a CHILD changelog. Reference it from an XML master — `include`
+-- and `includeAll` are core Community features in XML/YAML/JSON changelogs,
+-- but Pro-only as `--include` directives inside a formatted-SQL changelog
+-- (the Community parser aborts with "requires a valid Liquibase license key",
+-- which fails Kora graph initialization).
+--
+--   src/main/resources/db/changelog/db.changelog-master.xml
+--
+--   <?xml version="1.0" encoding="UTF-8"?>
+--   <databaseChangeLog
+--       xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+--       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+--       xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+--           http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+--
+--       <include file="db/changelog/changes/001-initial-schema.sql"/>
+--       <include file="db/changelog/changes/002-orders-table.sql"/>
+--   </databaseChangeLog>
+--
+--   application.conf
+--     liquibase { changelog = "db/changelog/db.changelog-master.xml" }  // the default
+--
+-- Liquibase picks the formatted-SQL parser for an included .sql file from its
+-- extension plus the marker line below, so an XML master with formatted-SQL
+-- children is fully supported. Includes are applied in declaration order —
+-- this file depends on users(id) from 001-initial-schema.sql.
 -- =============================================================================
 
 --liquibase formatted sql

@@ -1,56 +1,172 @@
-# MapStruct Mapper Reference
+# Mapper Reference — discovery, naming, and the MapStruct annotations
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/mapstruct.md`,
-`.kora-agent/kora-examples/examples/java/kora-java-crud/src/main/java/ru/tinkoff/kora/example/crud/model/mapper/PetMapper.java`
+**Verified against** the Kora 2.0 extension sources under `mapping/` at tag `2.0.0.RC1`
+(<https://github.com/kora-projects/kora/tree/2.0.0.RC1/mapping>) and the working examples on
+`kora-examples` branch `migration/2.0`. MapStruct annotation semantics come from MapStruct itself:
+<https://mapstruct.org/documentation/stable/reference/html/>.
 
 ## Contents
 
-- [@Mapper interface discovery](#mapper-interface-discovery)
-- [Mapper interface vs abstract class](#mapper-interface-vs-abstract-class)
-- [@Mapping annotation parameters](#mapping-annotation-parameters)
-- [@MappingTarget for in-place updates](#mappingtarget-for-in-place-updates)
-- [@Named helper methods](#named-helper-methods)
+- [How Kora discovers a mapper](#how-kora-discovers-a-mapper)
+- [Generated implementation names](#generated-implementation-names)
+- [Tagging a mapper](#tagging-a-mapper)
+- [Mappers that need dependencies](#mappers-that-need-dependencies)
+- [Konvert discovery, and how it differs](#konvert-discovery-and-how-it-differs)
+- [Interface vs abstract class](#interface-vs-abstract-class)
+- [@Mapping parameters](#mapping-parameters)
+- [@MappingTarget for PATCH updates](#mappingtarget-for-patch-updates)
+- [@Named helpers](#named-helpers)
 - [@AfterMapping / @BeforeMapping hooks](#aftermapping--beforemapping-hooks)
-- [Complete example](#complete-example)
+- [Complete Java example](#complete-java-example)
 
-## @Mapper interface discovery
+## How Kora discovers a mapper
 
-Kora's MapStruct extension (`MapstructKoraExtension`) automatically discovers and
-registers MapStruct mappers during annotation processing:
+There is **no module to plug into `@KoraApp`** and no `@Component` on the mapper. Discovery is a
+graph-resolution fallback, and it runs in this exact order:
 
-1. Detects the `org.mapstruct.Mapper` annotation on an interface or abstract class
-2. Looks up the MapStruct-generated implementation class (e.g. `CarMapperImpl`)
-3. Wires that generated impl into the DI graph as a component
+1. `GraphBuilder` cannot satisfy a dependency claim for `FooMapper` from declared components,
+   `@Module` methods, templates, `@Nullable` or `Optional`.
+2. It calls `Extensions.findExtension(...)`. Extensions are `ServiceLoader`-discovered from the
+   **processor** classpath (`annotationProcessor` / `ksp`), which is why the aggregate processor
+   artifact is what brings them in.
+3. `MapstructKoraExtensionFactory` returns an extension only if `org.mapstruct.Mapper` resolves on
+   the **compile** classpath. No MapStruct dependency → no extension → the claim just fails.
+4. The extension checks: declared type, kind is interface or class, carries `@Mapper`, and its
+   `@Tag` matches the claim's tag.
+5. It looks up the generated implementation type. Missing → a `ProcessingErrorException` reading
+   *"MapStruct mapper implementation was not generated for `Foo`… Kora expected generated class
+   `pkg.FooImpl`"*.
+6. It requires **exactly one public constructor** on that implementation and binds it, so the
+   constructor's parameters become ordinary graph dependencies. Two or more public constructors →
+   *"Generated class `…` must have exactly one public constructor so Kora can use it as a
+   dependency."*
 
-**No `@Component` needed** — `@Mapper` is sufficient. Kora's extension wires the
-generated impl as an injectable component.
+Two consequences worth internalising:
+
+- **Order of `annotationProcessor` lines is irrelevant.** `KoraAppProcessor` builds the graph only
+  in the final round (`roundEnv.processingOver()`), after every other processor has emitted its
+  sources. Kora's own extension test registers `KoraAppProcessor` *before* MapStruct's
+  `MappingProcessor` and passes.
+- **A declaration of your own always wins**, silently. If you also write a `@Module` method
+  returning `FooMapper`, the extension is never consulted and the generated `FooMapperImpl` is dead
+  code. There is no "duplicate component" error for this — pick one.
 
 ```java
-@Mapper  // ← no @Component needed
+@Mapper  // ← nothing else needed
 public interface CarMapper {
     CarDto toDto(Car car);
 }
 ```
 
-```kotlin
-@Mapper  // ← no @Component needed
-interface CarMapper {
-    fun toDto(car: Car): CarDto
+## Generated implementation names
+
+Kora computes the expected name itself; it does not search. Getting the shape wrong is what produces
+the "was not generated" error.
+
+| Mapper | MapStruct / Kora expects |
+|---|---|
+| top-level `pkg.CarMapper` | `pkg.CarMapperImpl` |
+| nested `pkg.SomeInterface.TestMapper` | `pkg.SomeInterface$TestMapperImpl` |
+
+Enclosing type names are joined with `$` and the suffix `Impl` appended — in both the Java and the
+KSP extension. **Nested `@Mapper` interfaces are supported**; Kora's Java extension has a dedicated
+test for the nested case. (Konvert behaves differently — see below.)
+
+## Tagging a mapper
+
+The extension reads `@Tag` off the mapper declaration and only answers a claim whose tag matches.
+So two mappers producing the same type can coexist:
+
+```java
+import io.koraframework.common.annotation.Tag;
+
+@Tag(Internal.class)
+@Mapper
+public interface InternalCarMapper { CarDto toDto(Car car); }
+```
+
+```java
+public CarService(@Tag(Internal.class) InternalCarMapper mapper) { … }
+```
+
+An untagged mapper answers only untagged claims, and vice versa — a tag mismatch surfaces as an
+ordinary unresolved dependency, not as a MapStruct error.
+
+## Mappers that need dependencies
+
+Because Kora binds the generated implementation's **constructor**, a mapper can pull collaborators
+out of the graph — but only if MapStruct actually emits a constructor for them. By default it does
+not: it instantiates `uses` mappers itself. You have to ask for constructor injection:
+
+```java
+@Component
+public final class DateMapper {
+    public String asString(Date date) { … }
+    public Date asDate(String date) { … }
+}
+
+@Mapper(uses = DateMapper.class,
+        injectionStrategy = org.mapstruct.InjectionStrategy.CONSTRUCTOR,
+        componentModel = "jakarta")
+public interface CarMapper {
+    @Mapping(source = "numberOfSeats", target = "seatCount")
+    CarDto carToCarDto(Car car);
 }
 ```
 
-## Mapper Interface vs Abstract Class
+Kora then resolves `DateMapper` from the graph and passes it to `CarMapperImpl`'s constructor. This
+is the shape Kora's own `testWithDependencies` covers, and it asserts a three-node graph:
+`DateMapper`, the mapper, and the root.
 
-| Form | When to Use |
-|------|-------------|
-| `interface` (preferred) | Standard case — pure mapping, no state |
-| `abstract class` | Need non-trivial helper methods or state |
+`componentModel = "jakarta"` makes MapStruct annotate the generated class with `jakarta.inject`
+annotations, so **`jakarta.inject:jakarta.inject-api` must be on the compile classpath** — Kora's
+extension module adds exactly that dependency to build this test. Kora itself reads none of those
+annotations; only the constructor matters. If you do not need `uses`, leave `componentModel` alone:
+plain `@Mapper` works and the default generated implementation has a single implicit public
+constructor.
+
+## Konvert discovery, and how it differs
+
+`KonvertKoraExtension` follows the same fallback path with three differences that matter:
+
+| | MapStruct extension | Konvert extension |
+|---|---|---|
+| Annotation | `org.mapstruct.Mapper` | `io.mcarle.konvert.api.Konverter` |
+| Accepted kinds | interface **or** class | **interface only** |
+| Generated impl | `Outer$InnerImpl` class, bound via its constructor | top-level `object <SimpleName>Impl`, referenced directly as a singleton |
+| Mapper dependencies | possible (constructor injection) | **none** — the extension binds the object with empty dependency lists |
+
+The naming rule is the sharp edge: Konvert emits a top-level `object <SimpleName>Impl` in the same
+package **even for a nested `@Konverter`**, dropping the enclosing type name. Two nested
+`@Konverter` interfaces with the same simple name in one package therefore collide.
+
+```kotlin
+import io.mcarle.konvert.api.Konverter
+
+@Konverter
+interface CarMapper {
+    fun carToCarDto(car: Car): CarDto
+}
+```
+
+Per-field mapping options are Konvert's own (`@Konvert`, `@Mapping`); see
+<https://mcarleio.github.io/konvert/>. Kora neither adds to nor constrains them — it only binds the
+generated object.
+
+## Interface vs abstract class
+
+| Form | When |
+|---|---|
+| `interface` | Default. Pure mapping, no state |
+| `abstract class` | Non-trivial helpers or state; MapStruct implements the abstract methods |
+
+Both are accepted by the MapStruct extension (it allows `INTERFACE` and `CLASS`). Konvert accepts
+interfaces only.
 
 ```java
 @Mapper
 public abstract class ComplexMapper {
-    // Can have fields and non-trivial helper methods.
-    // A method referenced via qualifiedByName must carry @Named.
+
     @Named("sanitize")
     protected String sanitize(String s) {
         return s == null ? null : s.trim().toLowerCase();
@@ -61,38 +177,42 @@ public abstract class ComplexMapper {
 }
 ```
 
-## @Mapping Annotation Parameters
+## @Mapping parameters
 
 | Parameter | Purpose | Example |
 |-----------|---------|---------|
-| `source` | Source field name | `@Mapping(source = "numberOfSeats", target = "seatCount")` |
-| `target` | Target field name | `@Mapping(target = "id", ignore = true)` |
-| `ignore = true` | Skip this target field | `@Mapping(target = "createdAt", ignore = true)` |
+| `source` | Source property name | `@Mapping(source = "numberOfSeats", target = "seatCount")` |
+| `target` | Target property name | `@Mapping(target = "id", ignore = true)` |
+| `ignore = true` | Skip this target | `@Mapping(target = "createdAt", ignore = true)` |
 | `expression` | Inline Java expression | `@Mapping(target = "id", expression = "java(java.util.UUID.randomUUID())")` |
-| `defaultValue` | Used when source is null | `@Mapping(target = "status", defaultValue = "PENDING")` |
-| `constant` | Fixed value | `@Mapping(target = "type", constant = "INTERNAL")` |
-| `qualifiedByName` | Dispatch to `@Named` helper | `@Mapping(source = "status", target = "status", qualifiedByName = "statusToString")` |
+| `defaultValue` | Used when the source is null | `@Mapping(target = "status", defaultValue = "PENDING")` |
+| `constant` | Fixed value, source ignored | `@Mapping(target = "type", constant = "INTERNAL")` |
+| `qualifiedByName` | Dispatch to a `@Named` helper | `@Mapping(source = "status", target = "status", qualifiedByName = "statusToString")` |
 | `dateFormat` | Date ↔ String format | `@Mapping(source = "date", target = "dateStr", dateFormat = "yyyy-MM-dd")` |
 | `numberFormat` | Number ↔ String format | `@Mapping(source = "amount", target = "amountStr", numberFormat = "$0.00")` |
 
-## @MappingTarget for In-Place Updates
+`@Mapper(unmappedTargetPolicy = ReportingPolicy.IGNORE)` silences unmapped-target reports. Every
+MapStruct mapper in `kora-examples` uses it. It changes nothing about how Kora binds the
+implementation.
 
-Use for PATCH semantics — updates an existing instance instead of creating a new one:
+## @MappingTarget for PATCH updates
+
+Updates an existing instance instead of building a new one:
 
 ```java
+@BeanMapping(nullValuePropertyMappingStrategy = NullValuePropertyMappingStrategy.IGNORE)
 @Mapping(target = "id", ignore = true)
 @Mapping(target = "createdAt", ignore = true)
-@BeanMapping(nullValuePropertyMappingStrategy = NullValuePropertyMappingStrategy.IGNORE)
 void applyPatch(@MappingTarget Order existing, PatchOrderDto patch);
 ```
 
-**Key points:**
-- `NullValuePropertyMappingStrategy.IGNORE` skips null source fields
-- Combine with `JsonNullable<T>` from `kora-json` to distinguish "absent" from "explicitly null"
+- `NullValuePropertyMappingStrategy.IGNORE` skips null source properties — PATCH semantics.
+- To distinguish "field absent" from "explicitly null" in the request body, pair it with
+  `JsonNullable<T>` from [`kora-json`](../../kora-json/SKILL.md).
+- `@MappingTarget` needs a **mutable** target. Java records and Kotlin `val` data classes cannot be
+  patched in place; map to a new instance instead.
 
-## @Named Helper Methods
-
-Define custom mapping logic for specific fields:
+## @Named helpers
 
 ```java
 @Mapping(source = "status", target = "status", qualifiedByName = "statusToString")
@@ -104,17 +224,9 @@ static String statusToString(OrderStatus s) {
 }
 ```
 
-For symmetric enum ↔ String, define both directions:
+For a symmetric enum ↔ String pair, declare both directions and reference each by name.
 
-```java
-@Named("statusToString")
-static String statusToString(OrderStatus s) { return s.name().toLowerCase(); }
-
-@Named("stringToStatus")
-static OrderStatus stringToStatus(String s) { return OrderStatus.valueOf(s.toUpperCase()); }
-```
-
-## @AfterMapping / @BeforeMapping Hooks
+## @AfterMapping / @BeforeMapping hooks
 
 ```java
 @AfterMapping
@@ -123,9 +235,10 @@ default void postProcess(@MappingTarget OrderDto out, Order in) {
 }
 ```
 
-**Warning:** Don't overuse. Three or more `@AfterMapping` hooks suggests a hand-written mapper would be clearer.
+Hooks run inside the generated implementation as plain synchronous code. Three or more of them is a
+signal that a hand-written mapper would read better.
 
-## Complete Example
+## Complete Java example
 
 ```java
 package com.example.app.mapper;
@@ -133,11 +246,13 @@ package com.example.app.mapper;
 import com.example.app.dto.CreateOrderDto;
 import com.example.app.dto.OrderDto;
 import com.example.app.entity.Order;
+import com.example.app.entity.OrderStatus;
 import org.mapstruct.Mapper;
 import org.mapstruct.Mapping;
 import org.mapstruct.Named;
+import org.mapstruct.ReportingPolicy;
 
-@Mapper
+@Mapper(unmappedTargetPolicy = ReportingPolicy.IGNORE)
 public interface OrderMapper {
 
     @Mapping(target = "id", expression = "java(java.util.UUID.randomUUID())")
@@ -154,3 +269,6 @@ public interface OrderMapper {
     }
 }
 ```
+
+Mapper methods are ordinary synchronous methods. Kora 2.0 has no reactive, `CompletionStage` or
+`suspend` contracts — never give a mapper one.

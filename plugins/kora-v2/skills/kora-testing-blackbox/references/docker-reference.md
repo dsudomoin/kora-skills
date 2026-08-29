@@ -1,182 +1,248 @@
-# Docker for Kora Applications
+# Docker Images for Kora 2.0 Applications
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/guides/testing-black-box.md` (Dockerfile setup), `.kora-agent/kora-docs/mkdocs/docs/en/documentation/probes.md` (readiness/liveness paths)
-**Example:** `.kora-agent/kora-examples/guides/java/kora-java-guide-database-jdbc-app/Dockerfile`
+Building and running a packaged Kora 2.0 application in Docker, for black-box tests and for
+deployment.
 
-Building and running a packaged Kora application in Docker for black-box tests.
+**JDK 25 is a hard floor.** `kora-bom` declares `java.version = 25` and the published artifacts are
+class-file major 69, so a `21-jre` base image fails at startup with `UnsupportedClassVersionError`
+before Kora logs anything.
 
-## Table of Contents
+## Contents
 
-1. [Basic Dockerfile](#basic-dockerfile)
-2. [Multi-stage Dockerfile](#multi-stage-dockerfile)
-3. [Comparison of approaches](#comparison-of-approaches)
-4. [Usage in CI/CD](#usage-in-cicd)
-5. [Docker Compose for tests](#docker-compose-for-tests)
+1. [Runtime Dockerfile over a prebuilt archive](#runtime-dockerfile-over-a-prebuilt-archive)
+2. [`distTar` vs `installDist`](#disttar-vs-installdist)
+3. [Multi-stage Dockerfile](#multi-stage-dockerfile)
+4. [GraalVM native-image Dockerfile](#graalvm-native-image-dockerfile)
+5. [Choosing between them](#choosing-between-them)
+6. [Reusing a prebuilt image in tests](#reusing-a-prebuilt-image-in-tests)
+7. [CI/CD](#cicd)
+8. [`.dockerignore`](#dockerignore)
+9. [Verifying an image by hand](#verifying-an-image-by-hand)
 
 ---
 
-## Basic Dockerfile
+## Runtime Dockerfile over a prebuilt archive
 
-**File:** `Dockerfile`
-
-Uses the pre-built distribution from `build/distributions/`. Requires a prior build on the host.
+This is the shape the migrated Kora 2.0 examples ship, and the one `ImageFromDockerfile` builds in
+a black-box test. It packages the archive Gradle already produced; it does not build anything.
 
 ```dockerfile
-ARG RUN_IMAGE=eclipse-temurin:25-jre-jammy
-FROM ${RUN_IMAGE}
+FROM eclipse-temurin:25-jre-jammy
 
 ARG TARGET_DIR=/opt/app
-ARG SOURCE_DIR=build/distributions
 
-COPY $SOURCE_DIR/*.tar application.tar
-
-RUN mkdir $TARGET_DIR && \
-    tar -xf application.tar -C $TARGET_DIR && \
-    rm application.tar
+COPY build/distributions/application.tar /application.tar
+RUN mkdir -p ${TARGET_DIR}
+RUN tar -xf /application.tar -C ${TARGET_DIR}
+RUN rm /application.tar
 
 ARG DOCKER_USER=app
-RUN groupadd -r $DOCKER_USER && useradd -rg $DOCKER_USER $DOCKER_USER
-USER $DOCKER_USER
+RUN groupadd -r ${DOCKER_USER} && useradd -rg ${DOCKER_USER} ${DOCKER_USER}
+USER ${DOCKER_USER}
 
+# 8080 public API, 8085 system API (/system/readiness, /system/liveness, /metrics)
 EXPOSE 8080/tcp
 EXPOSE 8085/tcp
-
-CMD [ "/opt/app/application/bin/application" ]
+CMD ["/opt/app/application/bin/application"]
 ```
 
-### Building the image
+It expects the Gradle `application` plugin configured so the archive and the launcher have stable
+names:
+
+```groovy
+application {
+    applicationName = "application"
+    mainClass = "com.example.Application"
+}
+distTar { archiveFileName = "application.tar" }
+```
+
+`CMD` then points at `/opt/app/application/bin/application` — `<TARGET_DIR>/<applicationName>/bin/<applicationName>`.
+
+### Building and running it
 
 ```bash
-# 1. Build the distribution
-./gradlew installDist
-
-# 2. Build the Docker image
+./gradlew distTar
 docker build -t myapp:1.0.0 .
-
-# 3. Run
 docker run -p 8080:8080 -p 8085:8085 myapp:1.0.0
+curl -f http://localhost:8085/system/readiness
 ```
 
-### When to use
+---
 
-- Local development (fast rebuilds)
-- CI/CD with Gradle caching
-- When you need control over the JDK version used for the build
+## `distTar` vs `installDist`
+
+They are different tasks with different outputs, and a Dockerfile can only consume one of them:
+
+| Task | Output |
+|---|---|
+| `distTar` | `build/distributions/<archiveFileName>` — a **tar archive** |
+| `installDist` | `build/install/<applicationName>/` — an **exploded directory** |
+
+`COPY build/distributions/*.tar` requires `distTar`. Running `installDist` and then building that
+Dockerfile fails with `COPY failed: no source files were specified`, which reads like a Docker
+problem and is really a Gradle one. In a black-box module, wire it explicitly:
+
+```groovy
+test {
+    dependsOn ":my-service-app:distTar"
+    inputs.file("../my-service-app/Dockerfile")
+    inputs.file("../my-service-app/build/distributions/application.tar")
+}
+```
+
+The `inputs.file(...)` declarations are what make Gradle re-run the tests when the image inputs
+change, instead of reporting `UP-TO-DATE` against a stale archive.
 
 ---
 
 ## Multi-stage Dockerfile
 
-**File:** `Dockerfile.self-build` (Java) or `Dockerfile.self-build-kotlin` (Kotlin)
+Builds the application inside Docker, so the host needs no JDK or Gradle. The build stage must also
+be JDK 25 — Kora's annotation processor and KSP run against the Kora artifacts, which are Java 25
+bytecode.
 
-Builds inside Docker. No JDK/Gradle required on the host.
-
-### For Java projects (JDK 25, Alpine)
+> The migrated Kora 2.0 examples do **not** build inside Docker: they build with Gradle on the host
+> and the image only packages the result. Treat this variant as a convenience, and check the
+> builder image tag against your registry before relying on it.
 
 ```dockerfile
-# Stage 1: Build (JDK 25, Alpine)
-FROM gradle:9.5.1-jdk25-alpine AS build
+# syntax=docker/dockerfile:1
 
-WORKDIR /home/gradle/src
+ARG BUILD_IMAGE=eclipse-temurin:25-jdk-jammy
+ARG RUN_IMAGE=eclipse-temurin:25-jre-jammy
 
-# Cache dependencies
-COPY build.gradle* settings.gradle* gradle.properties* ./
+FROM ${BUILD_IMAGE} AS build
+WORKDIR /src
+
+# copy the wrapper and build scripts first so the dependency layer caches
+COPY gradlew gradlew.bat ./
 COPY gradle/ ./gradle/
-RUN gradle dependencies --no-daemon || true
+COPY settings.gradle* build.gradle* gradle.properties* ./
+RUN ./gradlew --no-daemon dependencies || true
 
-# Build
 COPY . .
-RUN gradle installDist --no-daemon
+RUN ./gradlew --no-daemon distTar
 
-# Stage 2: Runtime (JRE 25, Jammy)
-FROM eclipse-temurin:25-jre-jammy
+FROM ${RUN_IMAGE}
 
 ARG TARGET_DIR=/opt/app
-COPY --from=build /home/gradle/src/build/distributions/*.tar application.tar
+COPY --from=build /src/build/distributions/*.tar /application.tar
+RUN mkdir -p ${TARGET_DIR} \
+ && tar -xf /application.tar -C ${TARGET_DIR} \
+ && rm /application.tar
 
-RUN mkdir $TARGET_DIR && \
-    tar -xf application.tar -C $TARGET_DIR && \
-    rm application.tar
+ARG DOCKER_USER=app
+RUN groupadd -r ${DOCKER_USER} && useradd -rg ${DOCKER_USER} ${DOCKER_USER}
+USER ${DOCKER_USER}
+
+EXPOSE 8080/tcp
+EXPOSE 8085/tcp
+CMD ["/opt/app/application/bin/application"]
+```
+
+Kotlin needs the same JDK 25 build stage — nothing about Kotlin lowers the floor. The migrated
+Kotlin examples set `jvmToolchain(25)` and a Java toolchain of 25 side by side, and KSP runs on the
+same JVM.
+
+### A note on Alpine
+
+`eclipse-temurin:*-jre-alpine` images are much smaller but use musl libc. Native components —
+some JDBC drivers, compression and crypto libraries, GraalVM output — can behave differently there.
+The migrated examples all use the glibc `jammy` images. If you switch to Alpine, the black-box
+suite is exactly the test that will tell you whether it worked.
+
+---
+
+## GraalVM native-image Dockerfile
+
+This is what the migrated GraalVM examples build, and what their black-box tests run through the
+same `AppContainer`:
+
+```dockerfile
+FROM ghcr.io/graalvm/native-image-community:25 AS builder
+
+ARG TARGET_DIR=/opt/app
+ARG SOURCE_DIR=build/libs
+WORKDIR $TARGET_DIR
+
+COPY $SOURCE_DIR/*-all.jar $TARGET_DIR/application.jar
+
+RUN native-image --no-fallback -classpath $TARGET_DIR/application.jar
+
+FROM ubuntu:noble-20240212 AS runner
+
+ARG TARGET_DIR=/opt/app
+WORKDIR $TARGET_DIR
+
+COPY --from=builder $TARGET_DIR/application $TARGET_DIR/application
 
 ARG DOCKER_USER=app
 RUN groupadd -r $DOCKER_USER && useradd -rg $DOCKER_USER $DOCKER_USER
+RUN chmod +x application
 USER $DOCKER_USER
 
 EXPOSE 8080/tcp
 EXPOSE 8085/tcp
-
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8085/system/readiness || exit 1
-
-CMD [ "/opt/app/application/bin/application" ]
+CMD "/opt/app/application"
 ```
 
-### Building the image
+The builder stage consumes a **fat jar** (`*-all.jar`, produced by the Shadow plugin), not the
+`distTar` archive. On the Gradle side that means `assemble.dependsOn shadowJar` and, for the
+`nativeCompile` task, the plain `jar` task must stay **enabled** — `nativeCompile` builds its
+classpath from the project's own artifacts, so the 1.x habit of `jar.enabled = false` breaks it.
 
-```bash
-# One command for everything
-docker build -t myapp:1.0.0 -f Dockerfile.self-build .
+Two things about this stage decide whether the image works at all:
 
-# Run
-docker run -p 8080:8080 -p 8085:8085 myapp:1.0.0
-```
+- **Metadata file names are load-bearing.** Only `reflect-config.json`, `resource-config.json`,
+  `proxy-config.json`, `serialization-config.json`, `jni-config.json`, `native-image.properties`
+  and `reachability-metadata.json` under `META-INF/native-image/<group>/` are read.
+  `reflection-config.json` — with the extra `ion` — is ignored silently and the build still
+  succeeds. Renaming the group directory during a package migration is the moment this breaks.
+- **A green build is not a passing test.** Run the five-point acceptance set from
+  [blackbox-integration-reference.md](blackbox-integration-reference.md#native-image-acceptance):
+  the binary survives, `/system/readiness` is 200, `/metrics` returns real series, the scenario runs
+  against a real dependency, and the startup log has no stack traces.
 
-### When to use
-
-- CI/CD without JDK/Gradle setup
-- Reproducible builds
-- Different JDK versions for build and runtime
-- Teams without Java on local machines
-
-### For Kotlin projects (JDK 17, Alpine)
-
-```dockerfile
-# Stage 1: Build (JDK 17, Alpine — recommended for Kotlin)
-FROM gradle:9.5.1-jdk17-alpine AS build
-
-# ... (same as the Java version)
-
-# Stage 2: Runtime (JRE 25, Jammy — unified for Java and Kotlin)
-FROM eclipse-temurin:25-jre-jammy
-```
-
-**Why JDK 17 for Kotlin:**
-- Stable Kotlin compiler support
-- Compatibility with most Kotlin libraries
-- Recommended in the Kotlin documentation
+Native containers start more slowly than JVM ones; the migrated native examples allow 50–60 s of
+startup timeout against 30 s for the JVM image.
 
 ---
 
-## Comparison of approaches
+## Choosing between them
 
-| Characteristic | Basic | Multi-stage (Java) | Multi-stage (Kotlin) |
-|----------------|-------|--------------------|----------------------|
-| **Requires JDK on host** | Yes | No | No |
-| **Requires Gradle on host** | Yes | No | No |
-| **JDK for build** | Your JDK | JDK 25 (Alpine) | JDK 17 (Alpine) |
-| **JRE for runtime** | Your choice | JRE 25 (Jammy) | JRE 25 (Jammy) |
-| **Build speed (with cache)** | Fast | Slower | Slower |
-| **Reproducibility** | Depends on host | Guaranteed | Guaranteed |
-| **Build image size** | N/A | ~250 MB (gradle:9.5.1-jdk25-alpine) | ~220 MB (gradle:9.5.1-jdk17-alpine) |
-| **Final image size** | ~200 MB | ~200 MB | ~200 MB |
-| **CI/CD setup** | More complex | Simpler | Simpler |
-| **Local development** | More convenient | Requires Docker | Requires Docker |
-
-> **Why Jammy for runtime:**
-> - Full glibc compatibility (native libraries, JDBC drivers)
-> - More debugging tools (bash, curl, ps)
-> - Larger image size (~70 MB vs Alpine)
-> - Slower pull in CI/CD (~45 s vs ~10 s)
-
-> **Advantages of Alpine:**
-> - Image size smaller by **~85-90%** compared to Debian
-> - Fast download in CI/CD
-> - Smaller attack surface (minimal packages)
-> - Possible compatibility issues (musl libc instead of glibc)
+| | Runtime-only | Multi-stage | GraalVM native |
+|---|---|---|---|
+| JDK/Gradle needed on host | yes | no | yes (for the fat jar) |
+| Build time | fastest | slower | slowest by far |
+| Image size | ~JRE + app | ~JRE + app | smallest |
+| Startup | JVM | JVM | fastest |
+| Risk profile | packaging only | packaging only | **runtime metadata defects that build green** |
+| Used by the migrated examples | yes | no | yes |
 
 ---
 
-## Usage in CI/CD
+## Reusing a prebuilt image in tests
+
+Building the image inside the test is convenient locally and wasteful in CI, where the image is
+usually built and pushed by an earlier job. Branch the container construction on an environment
+variable and keep everything else identical:
+
+```java
+public static AppContainer build() {
+    var appImage = System.getenv("APP_IMAGE");
+    return (appImage != null && !appImage.isBlank())
+            ? new AppContainer(DockerImageName.parse(appImage))
+            : new AppContainer();   // ImageFromDockerfile(...)
+}
+```
+
+The exposed ports and the `/system/readiness` wait must not differ between the branches — if they
+do, CI stops testing what you debugged locally.
+
+---
+
+## CI/CD
 
 ### GitHub Actions
 
@@ -190,240 +256,102 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+
+      - uses: actions/setup-java@v4
         with:
-          java-version: '17'
+          java-version: '25'
           distribution: 'temurin'
-      
-      - name: Build with Gradle
-        run: ./gradlew installDist
-      
-      - name: Build Docker image
+
+      - name: Build distribution
+        run: ./gradlew distTar
+
+      - name: Build image
         run: docker build -t myapp:${{ github.sha }} .
-      
-      - name: Run tests with Testcontainers
+
+      - name: Black-box tests against the prebuilt image
         run: ./gradlew test
         env:
           APP_IMAGE: myapp:${{ github.sha }}
-      
-      - name: Push to registry
+
+      - name: Push
         if: github.ref == 'refs/heads/main'
         run: |
           docker tag myapp:${{ github.sha }} registry.example.com/myapp:latest
           docker push registry.example.com/myapp:latest
 ```
 
-### GitLab CI
+Two things bite in CI specifically:
 
-```yaml
-stages:
-  - build
-  - test
-  - deploy
-
-build:
-  stage: build
-  image: gradle:8.5-jdk17
-  script:
-    - gradle installDist
-    - docker build -t myapp:$CI_COMMIT_SHA .
-  artifacts:
-    paths:
-      - build/distributions/
-
-test:
-  stage: test
-  image: docker:24-dind
-  services:
-    - docker:24-dind
-  script:
-    - docker build -t myapp:$CI_COMMIT_SHA .
-    - export APP_IMAGE=myapp:$CI_COMMIT_SHA
-    - docker run --rm -v $(pwd):/app -w /app \
-        -e APP_IMAGE \
-        eclipse-temurin:25-jre-jammy \
-        ./gradlew test
-
-deploy:
-  stage: deploy
-  script:
-    - docker push registry.example.com/myapp:$CI_COMMIT_SHA
-  only:
-    - main
-```
+- **The Gradle JVM, not just the toolchain, must be 25+.** `io.koraframework:openapi-generator`
+  lands on the buildscript classpath, which is resolved by the JVM running Gradle itself. On JDK 21
+  configuration fails with `Dependency requires at least JVM runtime version 25. This build uses a
+  Java 21 JVM.` A `java { toolchain { ... } }` block does not fix that.
+- **Testcontainers needs a Docker daemon in the test job.** Docker-in-Docker or a mounted socket;
+  a plain JDK runner will fail at container start, not at compile time.
 
 ---
 
-## Docker Compose for tests
+## `.dockerignore`
 
-### App + PostgreSQL
+Keeps the build context small and, more importantly, keeps stale local `build/` output from being
+copied into a multi-stage build.
 
-```yaml
-version: '3.8'
-
-services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile.self-build
-    ports:
-      - "8080:8080"
-      - "8085:8085"
-    environment:
-      - APP_CONFIG_DATABASE_URL=jdbc:postgresql://postgres:5432/myapp
-      - APP_CONFIG_DATABASE_USER=app
-      - APP_CONFIG_DATABASE_PASSWORD=secret
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8085/system/readiness"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  postgres:
-    image: postgres:15-alpine
-    environment:
-      - POSTGRES_DB=myapp
-      - POSTGRES_USER=app
-      - POSTGRES_PASSWORD=secret
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U app"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-volumes:
-  postgres_data:
-```
-
-### App + Kafka
-
-```yaml
-version: '3.8'
-
-services:
-  app:
-    build:
-      context: .
-      dockerfile: Dockerfile.self-build
-    ports:
-      - "8080:8080"
-      - "8085:8085"
-    environment:
-      - APP_CONFIG_KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-    depends_on:
-      kafka:
-        condition: service_healthy
-
-  kafka:
-    image: apache/kafka:3.5.1
-    ports:
-      - "9092:9092"
-    environment:
-      - KAFKA_NODE_ID=1
-      - KAFKA_PROCESS_ROLES=broker,controller
-      - KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093
-      - KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093
-      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      - KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER
-      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
-    healthcheck:
-      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-```
-
----
-
-## .dockerignore
-
-Always create `.dockerignore` to speed up builds:
-
-```dockerfile
-# Gradle
+```gitignore
 .gradle/
 build/
+!build/distributions/
 !gradle/wrapper/
 
-# IDE
 .idea/
 *.iml
 .vscode/
-
-# OS
 .DS_Store
-Thumbs.db
 
-# Logs
 *.log
 logs/
 
-# Test results
-test-results/
-build/reports/tests/
-
-# Local config
 application-local.conf
 *.local
 .env
 
-# Docker (do not copy Dockerfile into the image)
 Dockerfile*
 .dockerignore
 docker-compose*.yml
 
-# Documentation
 *.md
 docs/
-
-# Git
 .git/
-.gitignore
 ```
+
+The `!build/distributions/` re-inclusion is required by the runtime-only Dockerfile, which copies
+the archive out of the context. Drop it for the multi-stage variant, which builds its own.
 
 ---
 
-## Environment variables
+## Verifying an image by hand
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `RUN_IMAGE` | Runtime image | `eclipse-temurin:25-jre-jammy` |
-| `TARGET_DIR` | Installation directory | `/opt/app` |
-| `SOURCE_DIR` | Distribution directory | `build/distributions` |
-| `DOCKER_USER` | User inside the container | `app` |
-
-### Configuring RUN_IMAGE
+Before wiring a new image into a black-box suite, confirm the two things the test depends on:
 
 ```bash
-# For ARM/M1 Mac
-docker build --build-arg RUN_IMAGE=eclipse-temurin:25-jre-jammy-arm64 -t myapp:1.0.0 .
+docker inspect myapp:1.0.0 --format '{{json .Config.ExposedPorts}}'
+# expect both 8080/tcp and 8085/tcp
 
-# For Alpine (smaller size)
-docker build --build-arg RUN_IMAGE=eclipse-temurin:25-jre-alpine -t myapp:1.0.0 .
+docker run -d --name kora-check -p 8080:8080 -p 8085:8085 myapp:1.0.0
+curl -sf http://localhost:8085/system/liveness   && echo "liveness ok"
+curl -sf http://localhost:8085/system/readiness  && echo "readiness ok"
+curl -s  http://localhost:8085/metrics | head -5
+docker logs kora-check | grep -i exception
+docker rm -f kora-check
 ```
+
+If `/metrics` answers `# Metric Scraper disabled`, the application has no `MetricsScraper` in its
+graph — add `io.koraframework:micrometer-module`. If it answers with JVM series only, component
+metrics are still at their default `false`; set `httpServer.telemetry.metrics.enabled = true`.
 
 ---
 
-## Verifying the image
+## Related
 
-```bash
-# Check exposed ports
-docker inspect myapp:1.0.0 | grep -A 10 ExposedPorts
-
-# Check health check
-docker inspect myapp:1.0.0 | grep -A 5 Healthcheck
-
-# Run and verify
-docker run -d --name test myapp:1.0.0
-docker logs -f test
-curl http://localhost:8085/system/liveness
-docker stop test && docker rm test
-```
+- [blackbox-integration-reference.md](blackbox-integration-reference.md) — the tests that run these images
+- [testcontainers-reference.md](testcontainers-reference.md) — Testcontainers coordinates and API
+- [docker-compose-reference.md](docker-compose-reference.md) — Compose as a local/CI environment

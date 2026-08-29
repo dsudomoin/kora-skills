@@ -1,386 +1,467 @@
 # Resilience Configuration Reference
 
-**Module:** `resilient-kora`  
-**Package:** `ru.tinkoff.kora.resilient`
+**Artifact:** `io.koraframework:resilient-kora` · **Module:** `io.koraframework.resilient.ResilientModule`
 
 ## Contents
 
 - [Module Setup](#module-setup)
-- [Full Configuration Example](#full-configuration-example)
-- [YAML Configuration](#yaml-configuration)
-- [Configuration Keys Reference](#configuration-keys-reference)
-- [Custom Predicates](#custom-predicates)
-- [Combining Resilience Patterns](#combining-resilience-patterns)
-- [High-Throughput Configuration](#high-throughput-configuration)
+- [How a Config Path Is Chosen](#how-a-config-path-is-chosen)
+- [Full Example](#full-example)
+- [YAML](#yaml)
+- [Complete Key Reference](#complete-key-reference)
+- [Telemetry](#telemetry)
+- [Predicates](#predicates)
+- [Combining Aspects](#combining-aspects)
+- [Testing](#testing)
+- [Migrating 1.x Configuration](#migrating-1x-configuration)
 
 ---
 
 ## Module Setup
 
-### Dependency
-
 ```groovy
 dependencies {
-    // Java — mandatory processor that generates the AOP proxies
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
-    // Kotlin instead uses: ksp "ru.tinkoff.kora:symbol-processors"
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")   // koraVersion=2.0.0.RC1
+    annotationProcessor "io.koraframework:annotation-processors" // Kotlin: ksp "io.koraframework:symbol-processors"
 
-    implementation "ru.tinkoff.kora:resilient-kora"
+    implementation "io.koraframework:resilient-kora"
+    implementation "io.koraframework:config-hocon"               // or config-yaml
 }
 ```
-
-### Enable ResilientModule
 
 ```java
 @KoraApp
 public interface Application extends
         HoconConfigModule,
         LogbackModule,
-        ResilientModule { } // enables the resilience aspects
+        ResilientModule { }
 ```
 
 ```kotlin
 @KoraApp
-interface Application :
-    HoconConfigModule,
-    LogbackModule,
-    ResilientModule // enables the resilience aspects
+interface Application : HoconConfigModule, LogbackModule, ResilientModule
 ```
+
+`ResilientModule` aggregates `CircuitBreakerModule`, `RetryModule`, `TimeoutModule`,
+`FallbackModule` and `RateLimiterModule`, and supplies the `ResilientConfig` read from
+`resilient.telemetry`. Every generated spec module injects `ResilientConfig`, so **omitting
+`ResilientModule` from the `@KoraApp` interface makes the graph fail to build.**
+
+You never extend the generated `$<Spec>_Module` yourself; `@KoraApp` collects `@Module`-annotated
+interfaces produced in the same compilation.
 
 ---
 
-## Full Configuration Example
+## How a Config Path Is Chosen
+
+The path is whatever string you put in the spec annotation. **Nothing in the framework enforces a
+`resilient.` prefix** — `@CircuitBreakerSpec("payment")` reading a top-level `payment { … }` block
+is valid. The only path the framework owns is `resilient.telemetry`.
+
+The convention used across `kora-examples` is
+`resilient.<aspect>.<name>`, with `circuitbreaker` spelled as one lowercase word:
+
+```
+resilient.circuitbreaker.<name>
+resilient.retry.<name>
+resilient.timeout.<name>
+resilient.ratelimiter.<name>
+```
+
+Follow it unless you have a reason not to; it keeps `resilient { … }` as the single place a reader
+looks. Two rules hold regardless of the path you pick:
+
+1. **One spec interface per path**, shared by every class that needs it. Two interfaces on the same
+   path are two independent runtime instances with independent state.
+2. **Sections do not inherit from each other.** `resilient.retry.payment` never merges with
+   `resilient.retry.default`; unset keys take the *type's* defaults, and a `default` section no spec
+   points at is dead config.
+
+---
+
+## Full Example
 
 ```hocon
 resilient {
-  # ========== TIMEOUT ==========
-  timeout {
-    default {
-      duration = "1s"
-      enabled = true
-    }
-    "payment.process" {
-      duration = "5s"
-    }
-    "report.generate" {
-      duration = "30s"
-    }
-    "health.check" {
-      duration = "100ms"
-    }
-  }
-  
-  # ========== RETRY ==========
-  retry {
-    default {
-      delay = "100ms"       # Initial delay
-      attempts = 3          # Retry attempts
-      delayStep = "100ms"   # Increment per attempt
-      enabled = true
-    }
-    "user.read" {
-      attempts = 5
-      delayStep = "200ms"
-    }
-    "external.api" {
-      delay = "200ms"
-      attempts = 4
-      delayStep = "400ms"   # 200ms → 600ms → 1000ms → 1400ms
-      failurePredicateName = "TransientErrorsOnly"
-    }
-  }
-  
-  # ========== CIRCUIT BREAKER ==========
+
   circuitbreaker {
-    default {
-      slidingWindowSize = 100
-      minimumRequiredCalls = 10
+    payment {
+      type = FIXED_WINDOW
+      countBased.windowSize = 50
+      minimumRequiredCalls = 25
       failureRateThreshold = 50
-      waitDurationInOpenState = "30s"
-      permittedCallsInHalfOpenState = 5
-      enabled = true
+      waitDurationInOpenState = "25s"
+      permittedCallsInHalfOpenState = 10
     }
-    "order.service" {
-      slidingWindowSize = 50
-      minimumRequiredCalls = 5
-      failureRateThreshold = 30
-      waitDurationInOpenState = "60s"
-      failurePredicateName = "IgnoreBusinessErrors"
+    catalog {
+      type = RING_BUFFER              # exact last-N window, closest to a 1.x sliding window
+      countBased.windowSize = 100
+      minimumRequiredCalls = 20
+      failureRateThreshold = 40
+      waitDurationInOpenState = "10s"
+      permittedCallsInHalfOpenState = 5
+      telemetry.metrics.enabled = true
+    }
+    hotpath {
+      type = STRIPED_APPROX           # the default; approximate CLOSED statistics
+      countBased {
+        windowSize = 1000
+        stripedApprox.stripes = 32
+      }
+      minimumRequiredCalls = 100
+      failureRateThreshold = 60
+      waitDurationInOpenState = "10s"
+      permittedCallsInHalfOpenState = 10
+    }
+    slowdown {
+      type = TIME_BASED               # needs timeBased, NOT countBased
+      timeBased {
+        windowDuration = "30s"
+        sampleCount = 30
+      }
+      minimumRequiredCalls = 20
+      failureRateThreshold = 50
+      waitDurationInOpenState = "15s"
+      permittedCallsInHalfOpenState = 5
     }
   }
-  
-  # ========== FALLBACK ==========
-  fallback {
-    default {
-      enabled = true
+
+  retry {
+    payment {
+      delay = "100ms"
+      attempts = 3
+      delayStep = "100ms"             # linear: 100ms, 200ms, 300ms
     }
-    "product.read" {
-      failurePredicateName = "CacheableErrors"
+    external {
+      delay = "100ms"
+      attempts = 5
+      backoff { multiplier = 2.0, delayMax = "5s" }   # replaces delayStep
+      jitter  { type = FULL, ratio = 0.5 }
+      retryBudget { ratio = 0.1, tokensMax = 100 }
     }
+  }
+
+  timeout {
+    fast     { duration = "100ms" }
+    payment  { duration = "5s" }
+    report   { duration = "30s" }
+  }
+
+  ratelimiter {
+    notifications { limitForPeriod = 100, limitRefreshPeriod = "1s" }
+  }
+
+  telemetry {
+    circuitBreaker.metrics.enabled = true
+    retry.metrics.enabled = true
+    timeout.metrics.enabled = true
+    fallback.metrics.enabled = true
+    rateLimiter.metrics.enabled = true
   }
 }
 ```
 
+Note the casing split: **aspect sections are lowercase** (`circuitbreaker`, `ratelimiter`) because
+you chose those paths, while **`resilient.telemetry` sub-keys are camelCase**
+(`circuitBreaker`, `rateLimiter`) because they are accessor names on the framework's
+`ResilientConfig`. This is not a typo.
+
 ---
 
-## YAML Configuration
+## YAML
 
 ```yaml
 resilient:
-  timeout:
-    default:
-      duration: "1s"
-      enabled: true
-    payment.process:
-      duration: "5s"
-    report.generate:
-      duration: "30s"
+  circuitbreaker:
+    payment:
+      type: FIXED_WINDOW
+      countBased:
+        windowSize: 50
+      minimumRequiredCalls: 25
+      failureRateThreshold: 50
+      waitDurationInOpenState: "25s"
+      permittedCallsInHalfOpenState: 10
   retry:
-    default:
+    payment:
       delay: "100ms"
       attempts: 3
       delayStep: "100ms"
-      enabled: true
-  circuitbreaker:
-    default:
-      slidingWindowSize: 100
-      minimumRequiredCalls: 10
-      failureRateThreshold: 50
-      waitDurationInOpenState: "30s"
-      permittedCallsInHalfOpenState: 5
-      enabled: true
-  fallback:
-    default:
-      enabled: true
+  timeout:
+    payment:
+      duration: "5s"
+  ratelimiter:
+    notifications:
+      limitForPeriod: 100
+      limitRefreshPeriod: "1s"
+  telemetry:
+    circuitBreaker:
+      metrics:
+        enabled: true
 ```
+
+Requires `io.koraframework:config-yaml` and `YamlConfigModule` instead of the HOCON pair.
 
 ---
 
-## Configuration Keys Reference
+## Complete Key Reference
 
-### Timeout
+Derived from the config interfaces in `resilient-kora`. "required" means the accessor has no
+default — the section must set it or the graph fails to build.
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `duration` | Duration | - | Timeout duration (required) |
-| `enabled` | Boolean | `true` | Enable/disable |
+### `resilient.circuitbreaker.<name>` — `CircuitBreakerConfig`
 
-### Retry
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | boolean | `true` | `false` bypasses the breaker entirely |
+| `type` | enum | `STRIPED_APPROX` | `FIXED_WINDOW`, `STRIPED_APPROX`, `RING_BUFFER`, `TIME_BASED` |
+| `failureRateThreshold` | int | **required** | percent, 1..100 |
+| `minimumRequiredCalls` | int | **required** | ≥ 1, and ≤ `countBased.windowSize` for count-based types |
+| `waitDurationInOpenState` | Duration | **required** | must be non-negative |
+| `permittedCallsInHalfOpenState` | int | **required** | 1..65535 |
+| `countBased.windowSize` | int | **required** for count-based types | ≥ 1; ≤ 2^22 for `RING_BUFFER`; ≤ `stripes * 65535` for `STRIPED_APPROX` |
+| `countBased.stripedApprox.stripes` | int | `16` | 1..64, `STRIPED_APPROX` only |
+| `timeBased.windowDuration` | Duration | **required** for `TIME_BASED` | > 0 |
+| `timeBased.sampleCount` | int | `16` | 1..1024 |
+| `timeBased.counterStripes` | int | `16` | 1..64 |
+| `timeBased.counterType` | enum | `ATOMIC` | `ATOMIC`, `LONG_ADDER` |
+| `telemetry.*` | object | inherits `resilient.telemetry.circuitBreaker` | see [Telemetry](#telemetry) |
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `delay` | Duration | - | Initial delay before first retry |
-| `attempts` | Integer | - | Number of retry attempts |
-| `delayStep` | Duration | - | Increment per attempt |
-| `enabled` | Boolean | `true` | Enable/disable |
-| `failurePredicateName` | String | - | Custom predicate name |
+Exactly one of `countBased` / `timeBased` is required, selected by `type`. Omitting the one your
+`type` needs is **not** a config error — it fails later, during graph initialisation, with
+`IllegalArgumentException: CircuitBreaker '<SpecSimpleName>' property 'countBased' is not configured`,
+because `KoraCircuitBreaker`'s constructor validates the config before choosing an implementation.
 
-### Circuit Breaker
+### `resilient.retry.<name>` — `RetryConfig`
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `slidingWindowSize` | Integer | 100 | Window size for failure calculation |
-| `minimumRequiredCalls` | Integer | 10 | Minimum calls before evaluation |
-| `failureRateThreshold` | Integer | 50 | Failure % to trip (1-100) |
-| `waitDurationInOpenState` | Duration | 30s | Time before HALF_OPEN |
-| `permittedCallsInHalfOpenState` | Integer | 5 | Test calls in HALF_OPEN |
-| `enabled` | Boolean | `true` | Enable/disable |
-| `failurePredicateName` | String | - | Custom predicate name |
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | boolean | `true` | `false` calls straight through |
+| `delay` | Duration | **required** | base delay |
+| `attempts` | int | **required** | number of **retries**, not total invocations |
+| `delayStep` | Duration | `0` | linear increment; **ignored when `backoff` is set** |
+| `backoff.type` | enum | `EXPONENTIAL` | only value |
+| `backoff.multiplier` | double | `2.0` | |
+| `backoff.delayMax` | Duration | none | optional cap |
+| `jitter.type` | enum | `NONE` | `NONE`, `FULL` |
+| `jitter.ratio` | double | `1.0` | fraction of the delay that may be shaved off |
+| `retryBudget.enabled` | boolean | `true` | the block itself is optional; absent = no budget |
+| `retryBudget.ratio` | double | `0.1` | retries allowed per success |
+| `retryBudget.tokensMax` | int | `100` | |
+| `retryBudget.tokensInitial` | int | `10` | |
+| `retryBudget.minTokensPerSecond` | double | `0.0` | |
+| `telemetry.*` | object | inherits `resilient.telemetry.retry` | |
+
+### `resilient.timeout.<name>` — `TimeoutConfig`
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | boolean | `true` | |
+| `duration` | Duration | **required** | |
+| `telemetry.*` | object | inherits `resilient.telemetry.timeout` | |
+
+### `resilient.ratelimiter.<name>` — `RateLimiterConfig`
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `enabled` | boolean | `true` | |
+| `limitForPeriod` | int | **required** | permits per period |
+| `limitRefreshPeriod` | Duration | **required** | fixed window length |
+| `telemetry.*` | object | inherits `resilient.telemetry.rateLimiter` | |
 
 ### Fallback
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `enabled` | Boolean | `true` | Enable/disable |
-| `failurePredicateName` | String | - | Custom predicate name |
+**No per-fallback configuration exists.** `@Fallback` has no spec, no name and no config section.
+Only `resilient.telemetry.fallback` applies.
+
+### Keys that no longer exist
+
+| Removed key | Replacement |
+|---|---|
+| `slidingWindowSize` | `countBased.windowSize` (+ pick a `type`) |
+| `failurePredicateName` | a `@Component` predicate bound with `@Tag(<Spec>.class)` |
+| `resilient.fallback.<name>` | nothing — fallbacks are not configurable |
+| `minimumNumberOfCalls` | never existed in Kora; the key is `minimumRequiredCalls` |
 
 ---
 
-## Custom Predicates
+## Telemetry
 
-### Retry Predicate
+**All resilient telemetry is off by default** — logging and metrics inherit the framework default of
+`false`, and the resilient tracing configs explicitly override the framework's `true` back to
+`false`. An example that claims to show resilience metrics must enable them.
 
-```java
-@Component
-public final class RetryOnlyTransientErrors implements RetryPredicate {
-    
-    @Override
-    public String name() {
-        return "TransientErrorsOnly";
-    }
-    
-    @Override
-    public boolean test(Throwable throwable) {
-        return throwable instanceof SocketTimeoutException
-            || throwable instanceof ConnectException
-            || throwable instanceof TransientSystemException;
-    }
-}
-```
+Two levels, with the per-spec value winning when it is set:
 
 ```hocon
-resilient.retry."external.api" {
-  failurePredicateName = "TransientErrorsOnly"
+resilient.telemetry {                 # global default per aspect
+  circuitBreaker { logging.enabled = true, metrics.enabled = true, tracing.enabled = true }
+  retry          { logging.enabled = true, metrics.enabled = true }
+  timeout        { metrics.enabled = true }
+  fallback       { metrics.enabled = true }
+  rateLimiter    { metrics.enabled = true }
+}
+
+resilient.circuitbreaker.payment.telemetry {   # per-spec override
+  logging.enabled = false
+  metrics { slo = ["10ms", "100ms", "1s"], tags { team = "payments" } }
 }
 ```
 
-### Circuit Breaker Predicate
+Per level: `logging.enabled`, `metrics.enabled`, `metrics.slo`, `metrics.tags`,
+`tracing.enabled`, `tracing.attributes`. Anything left unset at the spec level falls through to the
+global aspect level.
 
-```java
-@Component
-public final class IgnoreBusinessErrors implements CircuitBreakerPredicate {
-    
-    @Override
-    public String name() {
-        return "IgnoreBusinessErrors";
-    }
-    
-    @Override
-    public boolean test(Throwable throwable) {
-        if (throwable instanceof HttpClientResponseException httpEx) {
-            return httpEx.code() >= 500;  // Server errors only
-        }
-        return true;  // All other exceptions count
-    }
-}
-```
+### Metric families
 
-```hocon
-resilient.circuitbreaker."order.service" {
-  failurePredicateName = "IgnoreBusinessErrors"
-}
-```
+Every metric carries a `name` tag. For the four spec-based aspects that tag is **the config path**
+you gave the spec annotation; for `@Fallback` it is `<fully.qualified.Class>.<method>`.
+Exception messages, by contrast, name the spec interface's **simple name** — the two identifiers
+differ on purpose.
 
-### Fallback Predicate
+| Metric | Type | Extra tags |
+|---|---|---|
+| `resilient.circuitbreaker.state` | gauge — `0` CLOSED, `1` HALF_OPEN, `2` OPEN | — |
+| `resilient.circuitbreaker.transition` | counter | `state` |
+| `resilient.circuitbreaker.call.acquire` | counter | `state`, acquire status |
+| `resilient.circuitbreaker.call.result` | counter | `state`, call result |
+| `resilient.retry.attempts` | counter | — |
+| `resilient.retry.exhausted` | counter | `reason` = `EXHAUSTED_ATTEMPTS` / `EXHAUSTED_BUDGET` |
+| `resilient.timeout.exhausted` | counter | — |
+| `resilient.ratelimiter.acquire` | counter | — |
+| `resilient.fallback.attempts` | counter | — |
 
-```java
-@Component
-public final class CacheableErrors implements FallbackPredicate {
-    
-    @Override
-    public String name() {
-        return "CacheableErrors";
-    }
-    
-    @Override
-    public boolean test(Throwable throwable) {
-        // Trigger fallback on database errors
-        return throwable instanceof SQLException
-            || throwable instanceof DatabaseException;
-    }
-}
-```
-
-```hocon
-resilient.fallback."product.read" {
-  failurePredicateName = "CacheableErrors"
-}
-```
+Metrics need `io.koraframework:micrometer-module` in the graph; tracing needs the OpenTelemetry
+modules. Without them the factories degrade to no-ops even with `enabled = true`.
 
 ---
 
-## Combining Resilience Patterns
+## Predicates
 
-### Recommended Order (Outer → Inner)
+Only the circuit breaker and retry have predicates in 2.0. `@Timeout`, `@RateLimited` and
+`@Fallback` have none — `FallbackPredicate` was removed, and `@Fallback` filters by the
+`@Fallback.Reason` parameter type instead.
 
-```java
-@Component
-public class PaymentClient {
-    
-    // Order (outer → inner):
-    // 1. @Fallback — degraded response if everything fails
-    // 2. @CircuitBreaker — fail fast if repeatedly failing
-    // 3. @Retry — retry transient failures
-    // 4. @Timeout — bound each attempt
-    
-    @Fallback(value = "payment.charge", method = "chargeFallback(request)")
-    @CircuitBreaker("payment.charge")
-    @Retry("payment.charge")
-    @Timeout("payment.charge")
-    public PaymentResult charge(PaymentRequest request) {
-        return httpClient.post("/payments", request);
-    }
-    
-    protected PaymentResult chargeFallback(PaymentRequest request) {
-        return PaymentResult.pendingManualReview();
-    }
-}
-```
+| Contract | Method | Bound by |
+|---|---|---|
+| `io.koraframework.resilient.circuitbreaker.CircuitBreakerPredicate` | `boolean isCircuitBreakerFailure(Throwable)` | `@Tag(<CircuitBreakerSpec>.class)` on a `@Component` |
+| `io.koraframework.resilient.retry.RetryPredicate` | `boolean isRetryFailure(Throwable)` | `@Tag(<RetrySpec>.class)` on a `@Component` |
 
-### Execution Flow
-
-1. `@Timeout` bounds the actual HTTP call
-2. `@Retry` repeats on transient failures (up to N attempts)
-3. `@CircuitBreaker` opens if failures exceed threshold
-4. `@Fallback` returns degraded response if circuit is open or all retries fail
-
-### Per-Attempt Timeout
-
-For timeout on each retry attempt (not the whole chain):
+Both are `@FunctionalInterface`s: the 1.x `name()` + `test(Throwable)` shape is gone, and so is the
+`failurePredicateName` config key that used to select one.
 
 ```java
+@Tag(PaymentCircuitBreaker.class)
 @Component
-public class SearchService {
-    
-    @Retry("search.query")
-    @Timeout("search.query.perAttempt")
-    public List<SearchResult> search(String query) {
-        return searchEngine.search(query);
+public final class PaymentFailurePredicate implements CircuitBreakerPredicate {
+
+    @Override
+    public boolean isCircuitBreakerFailure(Throwable throwable) {
+        return !(throwable instanceof HttpClientResponseException e) || e.getCode() >= 500;
     }
 }
 ```
 
-```hocon
-resilient {
-  retry."search.query" {
-    attempts = 3
-    delay = "50ms"
-  }
-  timeout."search.query.perAttempt" {
-    duration = "2s"  // Each retry gets 2s
-  }
-}
-```
+The generated spec module injects the predicate as `@Nullable`, so it is optional — and an
+**untagged** predicate component is simply never found. When present, a tagged predicate replaces
+the `isFailure` default the spec interface may define.
 
 ---
 
-## High-Throughput Configuration
+## Combining Aspects
 
-For services handling >1000 req/s:
+Declaration order is application order: **first-listed is outermost, last-listed is innermost.**
 
-```hocon
-resilient {
-  circuitbreaker {
-    high_throughput {
-      slidingWindowSize = 1000
-      minimumRequiredCalls = 100
-      failureRateThreshold = 60
-      permittedCallsInHalfOpenState = 10
-      waitDurationInOpenState = "10s"
+```java
+@Fallback(method = "chargeFallback(request)")   // 4. outermost
+@CircuitBreakable(PaymentCircuitBreaker.class)  // 3.
+@Retryable(PaymentRetry.class)                  // 2.
+@Timeout(PaymentTimeouter.class)                // 1. innermost — one attempt
+public PaymentResult charge(PaymentRequest request) { … }
+```
+
+| Goal | Order |
+|---|---|
+| Timeout each attempt | `@Retryable` above `@Timeout` |
+| One budget for the whole retry chain | `@Timeout` above `@Retryable` |
+| Circuit breaker counts one failure per logical call | `@CircuitBreakable` above `@Retryable` |
+| Circuit breaker counts every attempt | `@Retryable` above `@CircuitBreakable` |
+| Degrade instead of failing | `@Fallback` first, above everything |
+
+Putting `@Fallback` last makes it innermost, so it swallows the exception before the circuit breaker
+records anything and the breaker never opens.
+
+---
+
+## Testing
+
+`@KoraAppTest` builds the real graph, which means the resilience config must be valid or the test
+fails at graph init rather than in an assertion. HOCON embedded in a test source counts as
+configuration and is missed by every scanner that only reads `.conf`/`.yaml` files — including the
+window block:
+
+```java
+@KoraAppTest(Application.class)
+class PaymentServiceTest implements KoraAppTestConfigModifier {
+
+    @Override
+    public KoraConfigModification config() {
+        return KoraConfigModification.ofString("""
+            resilient {
+              circuitbreaker.payment {
+                type = FIXED_WINDOW
+                countBased.windowSize = 2
+                minimumRequiredCalls = 2
+                failureRateThreshold = 100
+                waitDurationInOpenState = "200ms"
+                permittedCallsInHalfOpenState = 1
+              }
+              retry.payment   { delay = "20ms", attempts = 2 }
+              timeout.payment { duration = "100ms" }
+            }
+            """);
     }
-  }
-  
-  retry {
-    high_throughput {
-      attempts = 2
-      delay = "50ms"
-      delayStep = "50ms"
-    }
-  }
-  
-  timeout {
-    high_throughput {
-      duration = "200ms"
-    }
-  }
+
+    @TestComponent
+    private PaymentService paymentService;
+
+    @Test
+    void breakerOpensAfterTwoFailures() { … }
 }
 ```
+
+Tune the numbers down hard — `windowSize = 1..2`, `minimumRequiredCalls = 1..2`,
+`failureRateThreshold = 100`, sub-second `waitDurationInOpenState` — so a test trips the breaker in
+two or three calls instead of a hundred. Assert on invocation counts against a fake collaborator
+rather than on wall-clock timing.
+
+---
+
+## Migrating 1.x Configuration
+
+1. Collect every string name from `@CircuitBreaker("…")`, `@Retry("…")`, `@Timeout("…")`,
+   `@Fallback(value = "…")`. In 1.x the name was the last segment of the config path.
+2. Note which names are used by **more than one class** — each gets exactly one shared spec
+   interface, not one per class.
+3. For each name, declare the spec interface and point it at the existing section path.
+4. Circuit-breaker sections: replace `slidingWindowSize = N` with `type = …` plus
+   `countBased.windowSize = N`. `RING_BUFFER` preserves 1.x semantics; `FIXED_WINDOW` is what the
+   migrated examples use; the default `STRIPED_APPROX` is deliberately approximate.
+5. Fill every named section completely — required circuit-breaker keys are no longer inherited from
+   `default`. A section that used to set one key now needs all of them.
+6. Delete `failurePredicateName` keys and rewrite each predicate as a `@Tag`-bound `@Component`.
+7. Delete `resilient.fallback.*` sections; only `resilient.telemetry.fallback` survives.
+8. Delete a `default` section once no spec points at it.
+9. Re-check embedded HOCON in tests, not just resource files.
+
+An unrecognised HOCON key is ignored silently, so a leftover `slidingWindowSize` produces no warning
+at all — the breaker simply fails on the missing `countBased` block instead.
 
 ---
 
 ## See Also
 
-- [retry-reference.md](retry-reference.md) — @Retry details
-- [circuit-breaker-reference.md](circuit-breaker-reference.md) — @CircuitBreaker details
-- [timeout-reference.md](timeout-reference.md) — @Timeout details
-- [fallback-reference.md](fallback-reference.md) — @Fallback details
+- [circuit-breaker-reference.md](circuit-breaker-reference.md)
+- [retry-reference.md](retry-reference.md)
+- [timeout-reference.md](timeout-reference.md)
+- [rate-limiter-reference.md](rate-limiter-reference.md)
+- [fallback-reference.md](fallback-reference.md)

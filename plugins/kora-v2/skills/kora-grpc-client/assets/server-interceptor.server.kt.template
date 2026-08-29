@@ -1,24 +1,47 @@
 package ${package}
 
-import io.grpc.*
-import ru.tinkoff.kora.common.Component
+import io.grpc.Metadata
+import io.grpc.ServerCall
+import io.grpc.ServerCallHandler
+import io.grpc.ServerInterceptor
+import io.grpc.Status
+import io.koraframework.common.annotation.Component
+import org.slf4j.LoggerFactory
 
 /**
- * Server interceptor for gRPC services.
- * Use for logging, metrics, authentication, or exception handling.
+ * Server interceptor for the counterpart gRPC server (Kora 2.0).
+ * The authoritative server guidance is the kora-grpc-server skill.
+ *
+ * Unlike a CLIENT interceptor, this one carries NO @Tag. GrpcServerFactoryModule collects
+ * All<ValueOf<ServerInterceptor>> through Tag.Factory, which resolves to the enclosing factory
+ * module's own tag — and GrpcServerModule declares that factory untagged. So a plain @Component
+ * is collected and applies to every service on the server.
  */
 @Component
 class GrpcLoggingInterceptor : ServerInterceptor {
 
-    override fun <ReqT, RespT> interceptCall(
+    private val logger = LoggerFactory.getLogger(GrpcLoggingInterceptor::class.java)
+
+    override fun <ReqT : Any?, RespT : Any?> interceptCall(
         serverCall: ServerCall<ReqT, RespT>,
         metadata: Metadata,
         serverCallHandler: ServerCallHandler<ReqT, RespT>
     ): ServerCall.Listener<ReqT> {
-        // Add custom logic here (logging, auth validation, metrics, etc.)
-        // Example: log method name
-        // println("gRPC call: " + serverCall.methodDescriptor.fullMethodName)
+        logger.debug("gRPC call: {}", serverCall.methodDescriptor.fullMethodName)
+
+        // Rejecting a call means closing it and returning a listener that ignores everything —
+        // returning null or throwing here breaks the call in ways the client cannot interpret.
+        val authorization = metadata.get(AUTHORIZATION)
+        if (authorization == null) {
+            serverCall.close(Status.UNAUTHENTICATED.withDescription("Missing credentials"), Metadata())
+            return object : ServerCall.Listener<ReqT>() {}
+        }
 
         return serverCallHandler.startCall(serverCall, metadata)
+    }
+
+    companion object {
+        private val AUTHORIZATION: Metadata.Key<String> =
+            Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER)
     }
 }

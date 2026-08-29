@@ -1,130 +1,81 @@
 package ${package};
 
-import jakarta.annotation.Nullable;
+import io.koraframework.database.common.UpdateCount;
+import io.koraframework.database.common.annotation.Batch;
+import io.koraframework.database.common.annotation.Id;
+import io.koraframework.database.common.annotation.Query;
+import io.koraframework.database.common.annotation.Repository;
+import io.koraframework.database.jdbc.JdbcRepository;
+import org.jspecify.annotations.Nullable;
+
 import java.util.List;
-import ru.tinkoff.kora.database.common.UpdateCount;
-import ru.tinkoff.kora.database.common.annotation.Batch;
-import ru.tinkoff.kora.database.common.annotation.Id;
-import ru.tinkoff.kora.database.common.annotation.Query;
-import ru.tinkoff.kora.database.common.annotation.Repository;
-import ru.tinkoff.kora.database.jdbc.JdbcRepository;
 
 /**
- * CRUD repository with single-field ID and SQL macros.
+ * CRUD repository with a single-field id, driven by SQL macros.
  *
- * Extends JdbcRepository for base functionality.
- * Uses SQL macros for automatic query generation at compile time.
+ * Kora 2.0 generates $${repository_name}_Impl at compile time — no reflection, no proxies.
+ * Repository contracts are synchronous: no suspend, no Mono/Flux, no CompletionStage.
  *
- * SQL macros used:
- * - %{return#selects}: Generates column list for SELECT (e.g., "id, email, name")
- * - %{return#table}: Generates table name from entity's @Table annotation
- * - %{entity#inserts}: Generates INSERT statement with values
- * - %{entity#updates}: Generates UPDATE statement with SET clause
- * - %{entity#table}: Generates table name for INSERT/UPDATE
+ * Macros used here:
+ *   %{return#selects}      column list of the return entity
+ *   %{return#table}        the entity's @Table name
+ *   %{entity#inserts}      table(columns) VALUES (:entity.field, ...)
+ *   %{entity#updates}      column = :entity.field, ... — @Id fields are excluded automatically
+ *   %{entity#where = @id}  WHERE over the @Id field(s)
+ *   %{entity#selects = @id} the @Id column(s), for an ON CONFLICT target
  *
- * Best practices:
- * - Use @Nullable for nullable return types (not Optional)
- * - Use @Batch for batch operations (required for List parameters)
- * - Prefer sync signatures with Virtual Threads
- * - Use macros for standard CRUD, write explicit SQL for complex queries
- * - Add @Id to insert methods to return generated ID
+ * A macro target must exist in the annotated method. `%{entity#table}` inside deleteById(id) has
+ * no `entity` parameter and fails to compile with "Query macro target `entity` cannot be
+ * resolved" — that is why the delete queries below name the table literally.
  *
- * ID type must match entity's @Id field type exactly (Long, UUID, String, etc.)
+ * The id parameter type must match the entity's @Id field type exactly.
  */
 @Repository
 public interface ${repository_name} extends JdbcRepository {
 
-    /**
-     * Find entity by ID.
-     *
-     * @param id entity ID (type must match entity's @Id field)
-     * @return entity or null if not found
-     */
+    /** Returns null when the row does not exist — preferred over Optional (no allocation). */
     @Query("SELECT %{return#selects} FROM %{return#table} WHERE id = :id")
     @Nullable
     ${entity_name} findById(${id_type} id);
 
-    /**
-     * Find all entities.
-     *
-     * @return list of all entities (empty list if none found)
-     */
+    /** Empty list when nothing matches, never null. */
     @Query("SELECT %{return#selects} FROM %{return#table}")
     List<${entity_name}> findAll();
 
-    /**
-     * Insert single entity.
-     * Uses macro to generate INSERT with all fields.
-     *
-     * @param entity entity to insert
-     * @return update count (should be 1)
-     */
     @Query("INSERT INTO %{entity#inserts}")
     UpdateCount insert(${entity_name} entity);
 
     /**
-     * Insert single entity and return generated ID.
-     * Use for auto-generated IDs (sequence/identity).
-     *
-     * @param entity entity to insert (ID can be null)
-     * @return generated ID
+     * Insert and return the key the database assigned.
+     * @Id on the method makes the generated code prepare the statement with RETURN_GENERATED_KEYS
+     * and read Statement.getGeneratedKeys(). Exclude the key column from the INSERT itself.
      */
-    @Query("INSERT INTO %{entity#inserts-= @id} RETURNING id")
+    @Query("INSERT INTO %{entity#inserts -= @id}")
     @Id
     ${id_type} insertAndGetId(${entity_name} entity);
 
-    /**
-     * Insert multiple entities in batch.
-     *
-     * @param entities list of entities to insert
-     * @return update count (number of rows inserted)
-     */
+    /** @Batch goes on the parameter (@Target(PARAMETER)), never on the method. */
     @Query("INSERT INTO %{entity#inserts}")
-    UpdateCount insertBatch(@Batch List<${entity_name}> entities);
+    UpdateCount insertBatch(@Batch List<${entity_name}> entity);
 
-    /**
-     * Insert multiple entities and return generated IDs.
-     *
-     * @param entities list of entities to insert
-     * @return list of generated IDs in same order as input
-     */
-    @Query("INSERT INTO %{entity#inserts-= @id} RETURNING id")
+    /** Generated keys work for batches too, returning them in input order. */
+    @Query("INSERT INTO %{entity#inserts -= @id}")
     @Id
-    List<${id_type}> insertBatchAndGetIds(@Batch List<${entity_name}> entities);
+    List<${id_type}> insertBatchAndGetIds(@Batch List<${entity_name}> entity);
 
-    /**
-     * Update single entity by ID.
-     * Uses macro to generate UPDATE with SET clause.
-     *
-     * @param entity entity to update (ID must be set)
-     * @return update count (should be 1)
-     */
     @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
     UpdateCount update(${entity_name} entity);
 
-    /**
-     * Update multiple entities in batch.
-     *
-     * @param entities list of entities to update
-     * @return update count (number of rows updated)
-     */
     @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
-    UpdateCount updateBatch(@Batch List<${entity_name}> entities);
+    UpdateCount updateBatch(@Batch List<${entity_name}> entity);
 
-    /**
-     * Delete entity by ID.
-     *
-     * @param id entity ID
-     * @return update count (1 if deleted, 0 if not found)
-     */
-    @Query("DELETE FROM %{entity#table} WHERE id = :id")
+    /** PostgreSQL upsert; the ON CONFLICT target is the @Id column(s). */
+    @Query("INSERT INTO %{entity#inserts} ON CONFLICT (%{entity#selects = @id}) DO UPDATE SET %{entity#updates}")
+    UpdateCount upsert(${entity_name} entity);
+
+    @Query("DELETE FROM ${table_name} WHERE id = :id")
     UpdateCount deleteById(${id_type} id);
 
-    /**
-     * Delete all entities.
-     *
-     * @return update count (number of rows deleted)
-     */
-    @Query("DELETE FROM %{entity#table}")
+    @Query("DELETE FROM ${table_name}")
     UpdateCount deleteAll();
 }

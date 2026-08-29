@@ -1,63 +1,169 @@
-// Kotlin Quartz scheduled jobs (scheduling-quartz).
-// @ScheduleWithCron / @ScheduleWithTrigger / @DisallowConcurrentExecution / @PersistJobDataAfterExecution.
-// For plain fixed-rate/fixed-delay/once timers use the sibling skill kora-aop-scheduling-jdk.
-// Kora generates a separate Job wrapper at compile time, so the class need not be `open`
-// (the canonical Kotlin examples use a plain `class`). Only method-wrapping aspects
-// (@Log, @Retry) require `open`; it is left in here so the same class also works with them.
+// Kora 2.0 Quartz scheduled jobs (Kotlin) — artifact io.koraframework:scheduling-quartz.
+// Annotations live in io.koraframework.scheduling.quartz (flat package, no `.annotation`).
+// For fixed-rate / fixed-delay / run-once timers, and for cron with no extra dependency,
+// use the sibling skill kora-aop-scheduling-jdk instead.
+//
+// The class does NOT need to be `open`: Kora generates a separate $ScheduledJobs_<method>_Job
+// wrapper that holds a reference to this component and calls the function directly — it is not
+// an AOP proxy. Kora's own KSP tests and the migrated Kotlin example both use a plain `class`.
+// Add `open` only when you also stack a method-wrapping aspect (@Log, @Retryable, @Timeout).
+//
+// Scheduled functions must NOT be `suspend` — KSP rejects them with
+// "Suspend methods are not supported by the scheduling generator".
+//
 // Replace `com.example.app.jobs` with your package.
 
 package com.example.app.jobs
 
+import io.koraframework.common.annotation.Component
+import io.koraframework.scheduling.quartz.DisallowConcurrentExecution
+import io.koraframework.scheduling.quartz.ScheduleWithCron
+import io.koraframework.scheduling.quartz.ScheduleWithTrigger
+import org.quartz.JobExecutionContext
 import org.slf4j.LoggerFactory
-import ru.tinkoff.kora.common.Component
-import ru.tinkoff.kora.scheduling.quartz.ScheduleWithCron
-import ru.tinkoff.kora.scheduling.quartz.DisallowConcurrentExecution
+import java.time.Duration
+import java.time.Instant
 
 @Component
-open class ScheduledJobs {
+class ScheduledJobs {
 
-    private val log = LoggerFactory.getLogger(ScheduledJobs::class.java)
-
-    /**
-     * Cron: runs at times specified by a Quartz cron expression.
-     * Requires QuartzModule on the @KoraApp interface.
-     * Use for: daily reports, hourly checks, complex schedules.
-     */
-    @DisallowConcurrentExecution                                  // prevent overlap
-    @ScheduleWithCron("0 0 3 * * ?")                              // daily at 03:00
-    open fun nightlyReport() {
-        if (Thread.currentThread().isInterrupted) return          // graceful shutdown
+    /** Inline Quartz cron: 6 or 7 fields, one of day-of-month / day-of-week must be `?`. */
+    @DisallowConcurrentExecution
+    @ScheduleWithCron("0 0 3 * * ?")
+    fun nightlyReport() {
         log.info("Generating nightly report")
-        // ... generate report ...
     }
 
     /**
-     * Cron with config: cron expression read from configuration.
-     * Config has priority over the annotation value.
+     * Cron from configuration. The node may be a bare string or an object with a `cron` field;
+     * the object form also accepts a per-job `telemetry` block.
+     *
+     * Kotlin caveat: unlike the Java processor, KSP has no "no cron source" guard. Omitting
+     * both `value` and `config` compiles and then fails at graph init on an empty expression.
      */
     @ScheduleWithCron(config = "jobs.hourly")
-    open fun hourlyCheck() {
+    fun hourlyCheck() {
         log.info("Running hourly check")
-        // ... perform check ...
+    }
+
+    /**
+     * Custom trigger. The class passed to @ScheduleWithTrigger is a TAG: the graph must supply
+     * an org.quartz.Trigger under @Tag(ScheduledJobs::class). Kora 1.x wrote
+     * @ScheduleWithTrigger(Tag(X::class)) — that no longer compiles, the attribute is KClass.
+     * See the @KoraApp snippet at the bottom of this file.
+     */
+    @ScheduleWithTrigger(ScheduledJobs::class)
+    fun customTrigger() {
+        log.info("Fired by the tagged Trigger")
+    }
+
+    /**
+     * A scheduled function may take a single org.quartz.JobExecutionContext.
+     *
+     * Shutdown does NOT interrupt a Quartz worker thread — Thread.currentThread().isInterrupted
+     * is never true here. Bound the work with a deadline instead so shutdown, which waits for
+     * running jobs by default, has an upper bound.
+     */
+    @DisallowConcurrentExecution
+    @ScheduleWithCron("0 */5 * * * ?")
+    fun boundedBatch(ctx: JobExecutionContext) {
+        val deadline = Instant.now().plus(BUDGET)
+        log.info("Batch fired at {}, next fire {}", ctx.fireTime, ctx.nextFireTime)
+
+        while (hasWork()) {
+            if (Instant.now().isAfter(deadline)) {
+                log.info("Budget exhausted, resuming on the next fire")
+                return
+            }
+            processNext()
+        }
+    }
+
+    private fun hasWork(): Boolean = false
+
+    private fun processNext() {
+    }
+
+    private companion object {
+        private val log = LoggerFactory.getLogger(ScheduledJobs::class.java)
+        private val BUDGET: Duration = Duration.ofSeconds(30)
     }
 }
 
-// ============== CONFIGURATION ==============
-
-// application.conf snippet (HOCON):
+// ============== @KoraApp WIRING ==============
 //
-// quartz {
-//   "org.quartz.scheduler.instanceName" = "MyScheduler"
-//   "org.quartz.threadPool.threadCount"  = "10"
+// import io.koraframework.application.graph.KoraApplication
+// import io.koraframework.common.annotation.KoraApp
+// import io.koraframework.common.annotation.Tag
+// import io.koraframework.config.hocon.HoconConfigModule
+// import io.koraframework.logging.logback.LogbackModule
+// import io.koraframework.scheduling.quartz.QuartzModule
+// import org.quartz.SimpleScheduleBuilder
+// import org.quartz.Trigger
+// import org.quartz.TriggerBuilder
+//
+// @KoraApp
+// interface Application : HoconConfigModule, LogbackModule, QuartzModule {
+//
+//     @Tag(ScheduledJobs::class)                     // must match @ScheduleWithTrigger(ScheduledJobs::class)
+//     fun scheduledJobsTrigger(): Trigger = TriggerBuilder.newTrigger()
+//         .withIdentity("scheduledJobs")
+//         .startNow()
+//         .withSchedule(
+//             SimpleScheduleBuilder.simpleSchedule()
+//                 .withIntervalInSeconds(5)
+//                 .repeatForever()
+//         )
+//         .build()
 // }
 //
+// fun main() {
+//     KoraApplication.run { ApplicationGraph.graph() }
+// }
+
+// ============== CONFIGURATION ==============
+
+// application.conf (HOCON):
+//
 // scheduling {
-//   waitForJobComplete = true    # block shutdown until the running job finishes
+//   quartz {
+//     # raw org.quartz.* passthrough — Kora 1.x put these at the root `quartz { }`, which 2.0 ignores
+//     properties {
+//       "org.quartz.threadPool.threadCount" = "10"
+//     }
+//     waitForJobComplete = true    # default true; shutdown blocks until running jobs finish
+//   }
+//
 //   telemetry {
-//     logging.enabled = false
-//     metrics.enabled = true
-//     tracing.enabled = true
+//     logging.enabled = true       # default false
+//     metrics.enabled = true       # default false — needs a MeterRegistry in the graph
+//     tracing.enabled = true       # default true  — needs a Tracer in the graph
 //   }
 // }
 //
-// jobs.hourly.cron = "0 0 * * * ?"
+// jobs.hourly {
+//   cron = "0 0 * * * ?"
+//   telemetry.logging.enabled = true    # per-job override, only for the `config` form
+// }
+
+// application.yaml (YAML):
+//
+// scheduling:
+//   quartz:
+//     properties:
+//       org.quartz.threadPool.threadCount: "10"
+//     waitForJobComplete: true
+//   telemetry:
+//     logging:
+//       enabled: true
+//     metrics:
+//       enabled: true
+//     tracing:
+//       enabled: true
+//
+// jobs:
+//   hourly:
+//     cron: "0 0 * * * ?"
+//     telemetry:
+//       logging:
+//         enabled: true

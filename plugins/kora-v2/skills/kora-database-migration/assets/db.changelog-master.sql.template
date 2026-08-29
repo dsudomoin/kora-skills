@@ -1,16 +1,39 @@
 -- =============================================================================
--- Liquibase master changelog (formatted SQL)
--- Kora Framework
--- File: src/main/resources/db/changelog/db.changelog-master.sql
+-- Liquibase master changelog (formatted SQL) — Kora 2.0
+-- Copy to: src/main/resources/db/changelog/db.changelog-master.sql
 --
--- Wire it in application.conf:
---   liquibase {
---     changelog = "db/changelog/db.changelog-master.sql"
---   }
+-- Wiring required for this file to run on startup:
 --
--- The first line below is mandatory for formatted-SQL changelogs.
--- Each change is declared with --changeset <author>:<id> and may carry a
--- --rollback directive (one per statement).
+--   build.gradle
+--     implementation "io.koraframework:database-jdbc"
+--     implementation "io.koraframework:database-liquibase"
+--     // no per-database artifact is needed: liquibase-core bundles
+--     // liquibase-standard, which carries the mainstream dialects
+--
+--   @KoraApp extends JdbcDatabaseModule, LiquibaseJdbcDatabaseModule
+--
+--   application.conf
+--     jdbc { jdbcUrl = ..., username = ..., password = ... }
+--     liquibase { changelog = "db/changelog/db.changelog-master.sql" }
+--
+-- `changelog` is a CLASSPATH resource path (ClassLoaderResourceAccessor),
+-- relative to src/main/resources/ — not a filesystem path, no leading slash.
+-- The default is db/changelog/db.changelog-master.xml, so pointing at a .sql
+-- master always requires the config key above.
+--
+-- LiquibaseConfig has NO `enabled` key: the interceptor runs update()
+-- unconditionally. To stop in-app migration, remove LiquibaseJdbcDatabaseModule
+-- from the @KoraApp interface.
+--
+-- This master must stay SELF-CONTAINED. `--include` / `--includeAll` inside a
+-- formatted-SQL changelog are Pro-only in Liquibase 5 and the Community parser
+-- aborts the changelog ("requires a valid Liquibase license key"), which fails
+-- graph initialization. To split across files, use an XML master instead —
+-- see assets/002-orders-table.sql.template.
+--
+-- The first line below is mandatory for formatted-SQL changelogs. Each change
+-- is declared with --changeset <author>:<id> and may carry --rollback
+-- directives (one per statement, in reverse order of application).
 -- =============================================================================
 
 --liquibase formatted sql

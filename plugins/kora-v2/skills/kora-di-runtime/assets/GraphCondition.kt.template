@@ -1,0 +1,65 @@
+package ${packagePath}
+
+import io.koraframework.application.graph.GraphCondition
+import io.koraframework.common.annotation.Component
+import io.koraframework.common.annotation.Tag
+
+/**
+ * Making a component's existence depend on a runtime condition. New in Kora 2.0.
+ *
+ * Two halves:
+ * - a `GraphCondition` component carrying a tag, which decides;
+ * - `@Conditional(tag = ThatTag::class)` on the components it guards.
+ *
+ * The annotation attribute is named **`tag`**: `@Conditional(tag = X::class)`, not
+ * `@Conditional(X::class)`.
+ *
+ * At graph init the condition is evaluated once per refresh cycle and cached. On `Failed` the
+ * guarded component's factory is never invoked: no instance, no `Lifecycle.init()`, no interceptors.
+ * Reading such a node throws
+ * "Graph node value was not initialized because condition failed: <reason>".
+ *
+ * Where several candidates of one type are all `@Conditional`, **exactly one** must match —
+ * otherwise `NoneOfConditionalNodeMatches` or `MoreThanOneConditionalNodeMatches` at startup, each
+ * listing every candidate with its reason. Write the reason strings for whoever reads that failure.
+ *
+ * This decides whether a node exists; it is not a live feature flag. Config changed without a graph
+ * refresh changes nothing.
+ */
+class ${ConditionTag} private constructor()
+
+@Tag(${ConditionTag}::class)
+@Component
+class ${ConditionName}(
+    private val config: ${ConfigType}
+) : GraphCondition {
+
+    override fun eval(): GraphCondition.ConditionResult =
+        if (config.${configProperty}()) {
+            GraphCondition.ConditionResult.matched("${configProperty} = true")
+        } else {
+            GraphCondition.ConditionResult.failed("${configProperty} = false")
+        }
+}
+
+// ---------------------------------------------------------------------------
+// Guarding a component
+// ---------------------------------------------------------------------------
+//
+// import io.koraframework.common.annotation.Conditional
+// import io.koraframework.common.annotation.Root
+//
+// @Conditional(tag = ${ConditionTag}::class)
+// @Root
+// @Component
+// class NightlyExportJob : Lifecycle { … }
+//
+// Exactly one GraphCondition may carry a given tag; two produce
+// "Multiple GraphCondition components match condition tag", none produces
+// "Component condition cannot be resolved".
+//
+// GraphCondition.and(...) / .or(...) compose conditions. Nested conditional components inherit their
+// parents' conditions, combined with GraphCondition.and.
+//
+// Choosing between @Conditional, @DefaultComponent and @Nullable, and the compile-time
+// rules for declaring conditions, are covered by the kora-di-compile skill.

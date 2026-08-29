@@ -1,38 +1,44 @@
 package ${packagePath}.publisher
 
+import io.koraframework.common.annotation.Component
+import io.koraframework.common.annotation.Tag
+import io.koraframework.json.common.JsonWriter
+import io.koraframework.json.common.annotation.Json
+import io.koraframework.kafka.common.annotation.KafkaPublisher
+import io.koraframework.kafka.common.annotation.KafkaPublisher.Topic
+import org.apache.kafka.clients.producer.ProducerRecord
+import org.apache.kafka.common.serialization.Serializer
 import java.time.Instant
-import ru.tinkoff.kora.json.common.annotation.Json
-import ru.tinkoff.kora.kafka.common.annotation.KafkaPublisher
-import ru.tinkoff.kora.kafka.common.annotation.KafkaPublisher.Topic
 
 /**
- * Example Kafka producer with JSON serialization.
+ * Kafka publisher with JSON serialization.
  *
- * The @Json annotation automatically serializes a data class into JSON.
+ * @Json on the payload selects the generated JsonWriter through JsonKafkaSerializer; the consumer
+ * side reads it back with @Json on the listener parameter.
  */
-@KafkaPublisher("kafka.producer.jsonPublisher")
-interface JsonMessagePublisher {
-    
-    /**
-     * DTO for JSON messages
-     */
+@KafkaPublisher("kafka.producer.${publisherName}")
+interface ${publisherName} {
+
     @Json
-    data class MyEvent(
-        val id: String,
-        val name: String,
-        val code: Int,
-        val timestamp: Instant
-    )
-    
-    /**
-     * Send a JSON event
-     */
-    @Topic("kafka.producer.events")
-    fun sendEvent(event: MyEvent)
+    data class ${eventClassName}(val id: String, val type: String, val timestamp: Instant)
+
+    @Topic("kafka.producer.${publisherName}.${topicName}")
+    fun send(@Json event: ${eventClassName})
+
+    @Topic("kafka.producer.${publisherName}.${topicName}")
+    fun send(key: String, @Json event: ${eventClassName})
+
+    fun send(record: ProducerRecord<String, @Json ${eventClassName}>)
 
     /**
-     * Send a JSON event with a key
+     * Custom serializer instead of @Json: register a tagged Serializer @Component and reference the
+     * same tag on the payload. Match the @NullMarked contract exactly, or Kotlin reports
+     * "'serialize' overrides nothing" without mentioning nullability.
      */
-    @Topic("kafka.producer.events")
-    fun sendEvent(key: String, event: MyEvent)
+    @Tag(${eventClassName}::class)
+    @Component
+    class ${eventClassName}Serializer(private val writer: JsonWriter<${eventClassName}>) : Serializer<${eventClassName}> {
+
+        override fun serialize(topic: String, data: ${eventClassName}): ByteArray = writer.toByteArray(data)
+    }
 }

@@ -1,63 +1,163 @@
 {
   "evals": [
     {
-      "id": "kora-database-migration-flyway-quickstart",
+      "id": "kora-database-migration-flyway-quickstart-java",
       "skills": ["kora-database-migration"],
-      "query": "Set up Flyway database migrations on startup for a new Kora service: add the dependency, enable the module, and create the first migration with a users table (id, email, created_at).",
+      "query": "Set up Flyway database migrations on startup for a new Kora 2.0 Java service: add the dependencies, enable the module, and create the first migration with a users table (id, email, created_at).",
       "expected_behavior": [
-        "Adds the ru.tinkoff.kora:database-flyway dependency alongside ru.tinkoff.kora:database-jdbc",
-        "Includes annotationProcessor \"ru.tinkoff.kora:annotation-processors\" (or ksp \"ru.tinkoff.kora:symbol-processors\" for Kotlin) and the kora-parent BOM",
-        "Plugs FlywayJdbcDatabaseModule into the @KoraApp interface",
+        "Adds io.koraframework:database-flyway alongside io.koraframework:database-jdbc, versioned through the io.koraframework:kora-bom platform",
+        "Also adds an explicit per-database Flyway dialect artifact such as org.flywaydb:flyway-database-postgresql, with its own version because kora-bom constrains only Kora's own modules",
+        "Includes annotationProcessor \"io.koraframework:annotation-processors\"",
+        "Extends BOTH JdbcDatabaseModule and FlywayJdbcDatabaseModule on the @KoraApp interface, importing io.koraframework.database.flyway.FlywayJdbcDatabaseModule",
         "Creates src/main/resources/db/migration/V1__*.sql with CREATE TABLE users",
-        "Does not rely on classpath autoconfiguration or field injection; uses @KoraApp and constructor injection"
+        "Writes the datasource config under a jdbc { } section, never db { }",
+        "Does not use the ru.tinkoff.kora group, the kora-parent BOM, or any ru.tinkoff.kora.* import"
       ],
-      "tags": ["flyway", "basic"]
+      "tags": ["flyway", "basic", "java"]
     },
     {
-      "id": "kora-database-migration-flyway-config",
+      "id": "kora-database-migration-flyway-quickstart-kotlin",
       "skills": ["kora-database-migration"],
-      "query": "Configure Flyway in my Kora app to use the location db/migration/custom and validate checksums before migrating.",
+      "query": "Add Flyway startup migrations to my Kora 2.0 Kotlin service.",
       "expected_behavior": [
-        "Sets flyway.locations = [\"db/migration/custom\"] in the flyway config section",
-        "Sets flyway.validateOnMigrate = true",
-        "Keeps the keys within the real FlywayConfig surface (enabled, locations, executeInTransaction, validateOnMigrate, mixed, configurationProperties)",
-        "Does not invent non-existent keys such as cleanDisabled or a per-script transactional comment"
+        "Applies the com.google.devtools.ksp plugin and adds ksp(\"io.koraframework:symbol-processors\") rather than annotationProcessor or kapt",
+        "Adds implementation(\"io.koraframework:database-flyway\") and implementation(\"io.koraframework:database-jdbc\") through the kora-bom platform",
+        "Adds the dialect artifact org.flywaydb:flyway-database-postgresql with an explicit version",
+        "Declares interface Application : JdbcDatabaseModule, FlywayJdbcDatabaseModule with @KoraApp",
+        "Uses KoraApplication.run(ApplicationGraph::graph) as the entry point",
+        "Puts migration scripts under src/main/resources/db/migration"
+      ],
+      "tags": ["flyway", "basic", "kotlin"]
+    },
+    {
+      "id": "kora-database-migration-missing-dialect-artifact",
+      "skills": ["kora-database-migration"],
+      "query": "My Kora 2.0 service dies on startup with 'org.flywaydb.core.api.FlywayException: Unsupported Database: PostgreSQL 16.2'. Postgres is definitely running and the app connects fine without Flyway.",
+      "expected_behavior": [
+        "Identifies the cause as a missing Flyway per-database artifact, not an unsupported PostgreSQL version and not a connectivity problem",
+        "States that io.koraframework:database-flyway ships only org.flywaydb:flyway-core, and that since Flyway 10 database support lives in separate artifacts",
+        "Adds org.flywaydb:flyway-database-postgresql to the application's own dependencies with an explicit version",
+        "Notes that kora-bom does not constrain third-party artifacts, so the version must be written out and kept equal to the flyway-core version database-flyway resolves",
+        "Suggests verifying the resolved versions, e.g. ./gradlew dependencies --configuration runtimeClasspath | grep flyway",
+        "Does not suggest downgrading PostgreSQL, changing the JDBC URL, or disabling validation"
+      ],
+      "tags": ["flyway", "troubleshooting", "regression"]
+    },
+    {
+      "id": "kora-database-migration-legacy-db-section",
+      "skills": ["kora-database-migration"],
+      "query": "I moved my Kora service to 2.0 and kept my old application.conf with a db { jdbcUrl, username, password } block and a flyway { locations } block. Startup fails with ConfigValueException: Config expected value, but got null at path: 'ROOT.jdbc.username'. Fix it.",
+      "expected_behavior": [
+        "Renames the datasource section from db { } to jdbc { }, matching JdbcDatabaseModule's config path in Kora 2.0",
+        "Leaves the flyway section name unchanged — it is still flyway in 2.0",
+        "Points out that the same rename applies to HOCON embedded in test sources via KoraConfigModification.ofString",
+        "Does not invent a compatibility alias or suggest a config key mapping layer"
+      ],
+      "tags": ["config", "troubleshooting", "regression"]
+    },
+    {
+      "id": "kora-database-migration-flyway-config-surface",
+      "skills": ["kora-database-migration"],
+      "query": "Configure Flyway in my Kora 2.0 app: use the location db/migration/custom, validate checksums before migrating, and set the default schema to app_schema and baselineOnMigrate to true.",
+      "expected_behavior": [
+        "Sets flyway.locations to db/migration/custom and flyway.validateOnMigrate = true",
+        "Recognises that defaultSchema and baselineOnMigrate are NOT keys of FlywayConfig and routes them through flyway.configurationProperties",
+        "Writes the configurationProperties keys as quoted, flat, flyway-prefixed strings, e.g. \"flyway.defaultSchema\" = \"app_schema\" and \"flyway.baselineOnMigrate\" = \"true\"",
+        "Explains that an unquoted dotted key makes HOCON build a nested object, which the flat Map<String, String> mapper rejects",
+        "Keeps the typed keys within the real FlywayConfig surface: enabled, mode, locations, executeInTransaction, validateOnMigrate, mixed, configurationProperties",
+        "Does not place cleanDisabled, schemas, table, url, user or password directly in the flyway section"
+      ],
+      "tags": ["flyway", "config", "regression"]
+    },
+    {
+      "id": "kora-database-migration-flyway-mode",
+      "skills": ["kora-database-migration"],
+      "query": "I want my Kora 2.0 integration-test app to drop and recreate the schema from the Flyway scripts on every start. Is there a setting for that?",
+      "expected_behavior": [
+        "Uses flyway.mode = CLEAN_MIGRATE, the enum value introduced by FlywayConfig in Kora 2.0",
+        "Writes the value in exact uppercase, noting that the enum mapper is case-sensitive and a lowercase value fails with 'Unknown enum value'",
+        "Lists the available modes as MIGRATE, REPAIR and CLEAN_MIGRATE",
+        "Warns that CLEAN_MIGRATE drops the schema and must never be configured for a deployed environment",
+        "Does not invent a clean/cleanOnStart/cleanDisabled boolean in the flyway section"
       ],
       "tags": ["flyway", "config"]
     },
     {
+      "id": "kora-database-migration-pool-size",
+      "skills": ["kora-database-migration"],
+      "query": "My Kora 2.0 service hangs during startup with no error. It has jdbc.maxPoolSize = 1 and FlywayJdbcDatabaseModule enabled. What is happening?",
+      "expected_behavior": [
+        "Identifies that in-app Flyway needs two connections at once — one for the migration and one for the schema-history lock — so a pool of 1 cannot satisfy it",
+        "Raises jdbc.maxPoolSize to at least 2",
+        "Explains that the hang happens inside graph initialization while the FlywayJdbcDatabaseInterceptor runs, before the service starts listening",
+        "Notes Liquibase needs only one connection, so the same setting is not a problem there",
+        "Does not attribute the hang to the JDBC driver, the database, or connectionTimeout alone"
+      ],
+      "tags": ["flyway", "troubleshooting"]
+    },
+    {
       "id": "kora-database-migration-liquibase-sql",
       "skills": ["kora-database-migration"],
-      "query": "Use Liquibase with SQL changesets in my Kora service instead of Flyway. Set up the dependency, the module, and a master changelog with an orders table and a rollback.",
+      "query": "Use Liquibase with SQL changesets in my Kora 2.0 service instead of Flyway. Set up the dependency, the module, and a master changelog with an orders table and a rollback.",
       "expected_behavior": [
-        "Adds ru.tinkoff.kora:database-liquibase plus ru.tinkoff.kora:database-jdbc",
-        "Plugs LiquibaseJdbcDatabaseModule into the @KoraApp interface",
-        "Sets liquibase.changelog to the master changelog path",
+        "Adds io.koraframework:database-liquibase plus io.koraframework:database-jdbc via the kora-bom platform",
+        "Adds no per-database Liquibase artifact and says none is needed, because liquibase-core bundles liquibase-standard",
+        "Extends both JdbcDatabaseModule and LiquibaseJdbcDatabaseModule on the @KoraApp interface",
+        "Sets liquibase.changelog to the master changelog path, noting the default is db/changelog/db.changelog-master.xml so a .sql master requires the key",
         "Writes a formatted-SQL changelog starting with --liquibase formatted sql and using --changeset <author>:<id> plus --rollback",
         "Does not plug FlywayJdbcDatabaseModule in at the same time"
       ],
       "tags": ["liquibase", "basic"]
     },
     {
+      "id": "kora-database-migration-liquibase-no-enabled-key",
+      "skills": ["kora-database-migration"],
+      "query": "How do I turn off the in-app Liquibase migration in my Kora 2.0 service for the production profile? I tried liquibase.enabled = false and it still migrates.",
+      "expected_behavior": [
+        "States plainly that LiquibaseConfig has exactly one key, changelog, and no enabled key — so liquibase.enabled is an unrecognised key that is silently ignored",
+        "Explains that LiquibaseJdbcDatabaseInterceptor.afterInit calls update() unconditionally",
+        "Says the only way to disable it is to remove LiquibaseJdbcDatabaseModule from the @KoraApp interface (for example by using a different @KoraApp for that build)",
+        "Contrasts with Flyway, which does expose flyway.enabled",
+        "Does not invent a config key or claim the section supports a toggle"
+      ],
+      "tags": ["liquibase", "config", "regression"]
+    },
+    {
+      "id": "kora-database-migration-liquibase-split-changelog",
+      "skills": ["kora-database-migration"],
+      "query": "My Kora 2.0 app fails at startup with 'IllegalStateException: Liquibase migration failed' caused by 'ChangeLogParseException: Using include in Formatted SQL changelog requires a valid Liquibase license key'. I split my db.changelog-master.sql with --include file: lines.",
+      "expected_behavior": [
+        "Identifies --include / --includeAll inside a formatted-SQL changelog as Pro-only in Liquibase 5, unavailable with the Community liquibase-core that database-liquibase ships",
+        "Replaces the formatted-SQL master with an XML (or YAML/JSON) master using <include file=\"...\"/> elements, which are core Community features",
+        "Keeps the child .sql files as formatted-SQL changelogs, each still starting with --liquibase formatted sql",
+        "Updates liquibase.changelog to point at the XML master",
+        "Mentions that --rollbackSqlFile and --tagDatabase: are gated the same way",
+        "Does not suggest buying a license as the only option or disabling the changelog parser"
+      ],
+      "tags": ["liquibase", "troubleshooting", "regression"]
+    },
+    {
       "id": "kora-database-migration-mixed-concurrent-index",
       "skills": ["kora-database-migration"],
-      "query": "My Flyway migration with CREATE INDEX CONCURRENTLY on PostgreSQL fails because it cannot run inside a transaction. How do I fix it in Kora?",
+      "query": "My Flyway migration with CREATE INDEX CONCURRENTLY on PostgreSQL fails because it cannot run inside a transaction. How do I fix it in Kora 2.0?",
       "expected_behavior": [
         "Explains that CREATE INDEX CONCURRENTLY cannot run inside a transaction",
         "Sets flyway.mixed = true so the whole run executes without a transaction",
-        "Notes this is controlled by config (mixed / executeInTransaction), not a per-script comment",
-        "Stays within real FlywayConfig keys and does not invent a non-Kora migration property"
+        "Notes this is controlled by the flyway config (mixed / executeInTransaction) for the entire run, not by a per-script comment, because the interceptor passes one builder configuration for all scripts",
+        "Suggests moving that single script to an out-of-process run as the alternative to making every migration non-transactional",
+        "Stays within the real FlywayConfig keys and does not invent a Kora migration property"
       ],
       "tags": ["flyway", "advanced"]
     },
     {
       "id": "kora-database-migration-checksum-error",
       "skills": ["kora-database-migration"],
-      "query": "On startup my Kora app fails with 'Validation failed. Checksum changed' from Flyway. What went wrong and how do I recover?",
+      "query": "On startup my Kora 2.0 app fails with 'Validation failed. Checksum changed' from Flyway. What went wrong and how do I recover?",
       "expected_behavior": [
-        "Identifies that an already-applied migration script was edited",
+        "Identifies that an already-applied migration script was edited after it ran",
         "Advises never editing applied scripts and adding a new versioned V*.sql instead",
-        "Mentions repairing the history out-of-process (Flyway repair) to realign checksums",
+        "Recommends repairing flyway_schema_history out-of-process (flywayRepair / flyway repair) to realign checksums",
+        "May mention flyway.mode = REPAIR as a deliberate one-off, while making clear it repairs INSTEAD of migrating for that startup and must not be left in the config",
         "Treats disabling validateOnMigrate as a last resort, not the recommended fix"
       ],
       "tags": ["flyway", "troubleshooting"]
@@ -65,28 +165,43 @@
     {
       "id": "kora-database-migration-horizontal-scaling",
       "skills": ["kora-database-migration"],
-      "query": "Our Kora service runs with 5 replicas in Kubernetes and the in-app Flyway migrations race on deploy. What is the recommended migration strategy?",
+      "query": "Our Kora 2.0 service runs with 5 replicas in Kubernetes and the in-app Flyway migrations all fire on deploy. What is the recommended migration strategy?",
       "expected_behavior": [
-        "Recommends running migrations out-of-process for horizontally scaled services",
-        "Sets flyway.enabled = false (or removes the module) in the app",
-        "Proposes a Kubernetes Job with restartPolicy: Never run once before rollout, or a CI step",
-        "Mentions the Flyway Gradle plugin (flywayMigrate) for local development",
-        "Does not recommend keeping per-replica startup migrations as the production approach"
+        "Explains the mechanism: the module contributes a GraphInterceptor<JdbcDataSource> whose afterInit runs during graph initialization, so every replica migrates on every rollout and startup is blocked until it finishes",
+        "Recommends running migrations out-of-process, once, before the app starts",
+        "Sets flyway.enabled = false in the application (and notes that for Liquibase the module must be removed instead, since there is no enabled key)",
+        "Proposes a Kubernetes Job with restartPolicy: Never before rollout, or a CI step",
+        "Mentions the org.flywaydb.flyway Gradle plugin (flywayMigrate) for local development, with its dialect artifact on the buildscript classpath and the plugin and dialect versions kept equal",
+        "Does not recommend per-replica startup migrations as the production approach"
       ],
       "tags": ["production", "advanced"]
     },
-
     {
       "id": "kora-database-migration-choose-tool",
       "skills": ["kora-database-migration"],
-      "query": "Should I pick Flyway or Liquibase for migrations in my new Kora service?",
+      "query": "Should I pick Flyway or Liquibase for migrations in my new Kora 2.0 service?",
       "expected_behavior": [
-        "Defaults to Flyway (database-flyway / FlywayJdbcDatabaseModule) as the simplest SQL-only option",
-        "Recommends Liquibase (database-liquibase / LiquibaseJdbcDatabaseModule) when declarative rollback or an existing changelog is needed",
-        "States that exactly one module should be plugged into @KoraApp",
-        "Frames the choice in Kora module terms, not third-party framework starters"
+        "Defaults to Flyway (io.koraframework:database-flyway / FlywayJdbcDatabaseModule) as the simplest SQL-only option",
+        "Recommends Liquibase (io.koraframework:database-liquibase / LiquibaseJdbcDatabaseModule) when declarative rollback or an existing changelog is needed",
+        "Names the concrete trade-offs: Flyway needs an extra dialect artifact and has flyway.enabled; Liquibase needs none and can only be disabled by removing the module",
+        "States that exactly one module should be plugged into @KoraApp, since both attach to the same JdbcDataSource node",
+        "Frames the choice in Kora 2.0 module terms with io.koraframework coordinates, not third-party framework starters"
       ],
       "tags": ["decision", "basic"]
+    },
+    {
+      "id": "kora-database-migration-testing-config",
+      "skills": ["kora-database-migration"],
+      "query": "Write a Kora 2.0 JUnit test that starts the app graph against a PostgreSQL Testcontainer so my Flyway migrations create the schema before the test runs.",
+      "expected_behavior": [
+        "Uses @KoraAppTest with a TestApplication and implements KoraAppTestConfigModifier",
+        "Returns KoraConfigModification.ofString with a jdbc { } block — not db { } — plus a flyway { locations = \"db/migration\" } block",
+        "Feeds the container's JDBC URL, username and password in via withSystemProperty and HOCON substitution",
+        "Adds io.koraframework:database-flyway AND the org.flywaydb:flyway-database-postgresql dialect artifact to the test configuration",
+        "Relies on the interceptor running during graph initialization rather than invoking Flyway manually in a @BeforeAll",
+        "Uses synchronous assertions; does not use Mono, CompletionStage or suspend repository contracts"
+      ],
+      "tags": ["testing", "flyway", "regression"]
     }
   ]
 }

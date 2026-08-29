@@ -3,110 +3,208 @@
     {
       "id": "kora-aop-validation-basic-dto",
       "skills": ["kora-aop-validation"],
-      "query": "I have a CreateUserRequest record in my Kora service. How do I validate that name is not blank, email matches a regex, and age is between 18 and 120?",
+      "query": "I have a CreateUserRequest record in my Kora 2.0 service. How do I validate that name is not blank, email matches a regex, and age is between 18 and 120?",
       "expected_behavior": [
-        "Annotates the record type with @Valid from ru.tinkoff.kora.validation.common.annotation",
-        "Uses @NotBlank on name, @Pattern(\"...\") on email (value is the unnamed attribute), and @Range(from = 18, to = 120) on age",
-        "Notes that @Valid generates a Validator<CreateUserRequest> component in the graph",
-        "Does not use jakarta.validation / JSR-380 annotations and does not introduce a @NotNull constraint (nullability is implicit)"
+        "Annotates the record type with @Valid from io.koraframework.validation.common.annotation",
+        "Uses @NotBlank on name, @Pattern(\"...\") on email (value is the unnamed attribute, there is no regexp attribute), and @Range(from = 18, to = 120) on age",
+        "Notes that @Valid generates $CreateUserRequest_Validator and registers Validator<CreateUserRequest> in the graph, and that the interface is what you inject",
+        "Uses the io.koraframework group and never ru.tinkoff.kora, jakarta.validation or javax.validation",
+        "Does not introduce a @NotNull constraint — nullability is implicit and opted out with JSpecify @Nullable"
       ],
-      "tags": ["dto", "constraints", "basic"]
+      "tags": ["dto", "constraints", "basic", "java"]
+    },
+    {
+      "id": "kora-aop-validation-jakarta-regression",
+      "skills": ["kora-aop-validation"],
+      "query": "I added jakarta.validation @NotBlank and @Email to my Kora record and the annotation processor runs fine, but the DTO is never validated at runtime. Why?",
+      "expected_behavior": [
+        "Identifies that Kora validation is NOT Jakarta/JSR-380 — jakarta.validation.* and javax.validation.* annotations are unrecognised, produce no generated code and no diagnostic",
+        "Replaces them with io.koraframework.validation.common.annotation.* constraints",
+        "States there is no @Email constraint in Kora and maps it to @Pattern with an email regex",
+        "Does not suggest adding a jakarta.validation-api dependency, a Hibernate Validator provider, or a jakarta ConstraintValidator",
+        "Does not claim the annotation processor would have reported an error"
+      ],
+      "tags": ["regression", "jakarta", "constraints", "basic"]
+    },
+    {
+      "id": "kora-aop-validation-constraint-set",
+      "skills": ["kora-aop-validation"],
+      "query": "Which validation constraints ship with Kora 2.0? I need a minimum value, a UUID check and an enum-like set of allowed strings.",
+      "expected_behavior": [
+        "Does not claim the constraint set is only @NotBlank/@NotEmpty/@Pattern/@Range/@Size — Kora 2.0 ships 22 constraints",
+        "Uses @Min (long value) for the minimum, @UUID for the identifier and @OneOf({\"A\",\"B\"}) for the allowed set, all from io.koraframework.validation.common.annotation",
+        "Mentions further built-ins that exist, such as @Max, @Positive/@Negative, @Digits, @AssertTrue/@AssertFalse, @Past/@Future, @Url and @Uri",
+        "States that @Valid on an enum is a compile error (\"Validation can't be generated for enum\") so @OneOf is applied to the raw string",
+        "Does not invent constraints such as @Email, @NotNull, @CreditCardNumber or jakarta equivalents"
+      ],
+      "tags": ["constraints", "coverage", "intermediate"]
     },
     {
       "id": "kora-aop-validation-method-validate",
       "skills": ["kora-aop-validation"],
-      "query": "How do I make a Kora service method validate its arguments before it runs?",
+      "query": "How do I make a Kora 2.0 service method validate its arguments before it runs?",
       "expected_behavior": [
         "Adds @Validate to the method and annotates parameters (e.g. @Valid on a DTO param, @NotBlank/@Pattern on scalars)",
-        "Explains the aspect throws ru.tinkoff.kora.validation.common.ViolationException before the body when validation fails",
-        "States the enclosing class must be non-final (Java) / open (Kotlin) for the aspect to subclass it",
-        "Does not rely on field injection and does not invent a @Validated annotation (Kora has only @Validate)"
+        "Explains the aspect throws io.koraframework.validation.common.ViolationException before the body when validation fails",
+        "States the class must be non-final with a non-private constructor and the method non-final and non-private (Java), or open (Kotlin), because the proxy is $Name__AopProxy extends Name",
+        "Does not invent a @Validated annotation — Kora has only @Validate — and does not rely on field injection"
       ],
       "tags": ["method-validation", "aop", "basic"]
     },
     {
-      "id": "kora-aop-validation-optional-field",
+      "id": "kora-aop-validation-final-class-error",
       "skills": ["kora-aop-validation"],
-      "query": "In my Kora DTO some fields are optional but Kora keeps rejecting them as null. How do I make a field optional?",
+      "query": "My Kora 2.0 Java build fails with \"AOP aspect cannot be applied to class 'com.example.OrdersService' because the class is final\". I only added @Validate to one method.",
       "expected_behavior": [
-        "Explains every field is implicitly required and Kora generates a null check for each",
-        "Marks the optional field with a @Nullable annotation (jakarta/javax/jetbrains) in Java, or a nullable type in Kotlin",
-        "Clarifies there is no @NotNull constraint in Kora; nullability is the default and @Nullable opts out",
-        "Does not suggest jakarta.validation @NotNull or @NotNull(required = false)"
+        "Explains that a final class, a final method or a private method carrying @Validate is a hard compile error in Java, because the generated $Name__AopProxy must extend the class and override the method",
+        "Fixes it by removing final from the class (and from the method), keeping the method at least package-private and leaving a non-private constructor",
+        "Notes Kotlin behaves the same way, reporting \"AOP aspect cannot be applied to class '...' because the class is not open\"",
+        "Does not claim that Java silently skips a final class or that javac exits 0 — that is only true for an abstract class or an interface, which Java skips without a diagnostic while Kotlin rejects it",
+        "Does not suggest enabling a runtime proxy, a CGLIB/ByteBuddy setting, or an extra compiler flag — Kora AOP is compile-time only",
+        "Does not tell the user to reference the generated $Name__AopProxy class directly"
       ],
-      "tags": ["nullability", "constraints", "basic"]
+      "tags": ["regression", "aop", "compile-error", "java"]
+    },
+    {
+      "id": "kora-aop-validation-kotlin-open",
+      "skills": ["kora-aop-validation"],
+      "query": "KSP fails on my Kora Kotlin service with \"AOP aspect cannot be applied to class 'com.example.OrdersService' because the class is not open\". I only added @Validate to one function.",
+      "expected_behavior": [
+        "Marks BOTH the class `open class` and the annotated function `open fun` — either one alone is insufficient",
+        "Explains the generated proxy subclasses the service, which is why Kotlin's default final classes and members break it",
+        "Keeps ksp(\"io.koraframework:symbol-processors\") as the processor rather than a Java annotationProcessor",
+        "Does not suggest all-open/kotlin-allopen compiler plugins or making the class abstract",
+        "Does not claim the error can be ignored"
+      ],
+      "tags": ["kotlin", "aop", "regression", "basic"]
+    },
+    {
+      "id": "kora-aop-validation-kotlin-dto",
+      "skills": ["kora-aop-validation"],
+      "query": "I added Kora validation annotations to my Kotlin data class but nothing is ever validated. The build is green.",
+      "expected_behavior": [
+        "Identifies the missing @field: use-site target and rewrites the constraints as @field:NotBlank, @field:Size(...), @field:Pattern(...)",
+        "Explains the constraint annotations declare METHOD/FIELD/PARAMETER targets but not PROPERTY, so Kotlin's default puts them on the constructor parameter where the generated validator does not look",
+        "Uses Kotlin nullable types (String?) for optional fields instead of any @Nullable annotation, and writes @Range attributes as doubles (from = 18.0, to = 120.0)",
+        "Notes a data class is fine for class validation; open is only needed when the class hosts a @Validate method",
+        "Does not use jakarta.validation annotations or ru.tinkoff.kora packages"
+      ],
+      "tags": ["kotlin", "dto", "regression", "intermediate"]
+    },
+    {
+      "id": "kora-aop-validation-pojo-getters",
+      "skills": ["kora-aop-validation"],
+      "query": "I put @NotBlank and @Range on the getters of a plain (non-record) Kora class annotated with @Valid, and the generated validator does nothing.",
+      "expected_behavior": [
+        "Explains that for a plain class the processor reads constraints from the FIELDS, and constraints on getters are silently ignored — the generated validator contains only the root null check",
+        "Moves the constraints onto the fields while keeping JavaBean getters, which is what the generated validator calls (value.getName())",
+        "Notes that records are different: the component annotation is propagated to the backing field and the accessor used is name()",
+        "Does not suggest switching to reflection, adding @Target(METHOD) manually, or annotating the constructor parameters instead"
+      ],
+      "tags": ["regression", "dto", "silent-failure", "intermediate"]
     },
     {
       "id": "kora-aop-validation-nested",
       "skills": ["kora-aop-validation"],
-      "query": "My OrderRequest contains a Customer object and a List of OrderItem. How do I get Kora to validate the nested objects and collection elements too?",
+      "query": "My OrderRequest contains a Customer object and a List of OrderItem. How do I get Kora 2.0 to validate the nested objects and collection elements too?",
       "expected_behavior": [
         "Marks each nested type (Customer, OrderItem) with @Valid so a Validator<T> is generated for each",
-        "Adds @Valid on the nested field/parameter (including the List) so the parent validator recurses",
-        "Explains violation paths are dotted, e.g. customer.address.city via Violation.path().full()",
-        "Does not rely on jakarta.validation cascade semantics or reflection-based traversal"
+        "Adds @Valid on the nested field/parameter including the List, and explains ValidatorModule derives Validator<List<T>>/Validator<Set<T>>/Validator<Collection<T>> from Validator<T>",
+        "Explains violation paths are dotted with bracketed indices, e.g. customer.address.city and items.[0].productId via Violation.path().full()",
+        "Does not rely on jakarta.validation cascade semantics or on reflective traversal"
       ],
       "tags": ["nested", "object-graph", "intermediate"]
     },
     {
       "id": "kora-aop-validation-http-400",
       "skills": ["kora-aop-validation"],
-      "query": "When a request fails validation in my Kora HTTP service it returns 500. How do I turn ViolationException into a structured 400 response?",
+      "query": "When a request fails validation in my Kora 2.0 HTTP service it returns 500. I already have ValidationModule on my @KoraApp. How do I turn ViolationException into a structured 400 response?",
       "expected_behavior": [
-        "Uses the validation-module artifact with ValidationModule (not just validation-common)",
-        "Registers a ValidationHttpServerInterceptor tagged with @Tag(HttpServerModule.class) plus a ViolationExceptionHttpServerResponseMapper that returns HttpServerResponse.of(400, ...)",
-        "Builds the error body from exception.getViolations(), using Violation.message() and Violation.path().full()",
-        "Does not catch jakarta.validation.ConstraintViolationException or hand-roll a try/catch in each controller method instead of the interceptor"
+        "Explains ValidationModule declares ValidationHttpServerInterceptor as an untagged @DefaultComponent, so nothing picks it up — the router collects @Tag(HttpServer.class) All<HttpServerInterceptor>",
+        "Overrides the module method with @Tag(HttpServer.class) where HttpServer is io.koraframework.http.server.common.HttpServer, and supplies a ViolationExceptionHttpServerResponseMapper that returns HttpServerResponse.of(400, HttpBody.json(...))",
+        "Describes the two roles correctly: ValidationHttpServerInterceptor is the HttpServerInterceptor that catches ViolationException; ViolationExceptionHttpServerResponseMapper is an optional collaborator that shapes the body, and without it the interceptor still answers 400 with HttpServerResponseException.of(400, message)",
+        "Builds the error body from exception.getViolations() using Violation.message() and Violation.path().full(), and serialises with JsonWriter.toByteArray(...) — never toByteArrayUnchecked",
+        "Does not use @Tag(HttpServerModule.class), which is the Kora 1.x tag that still compiles while the interceptor silently never runs",
+        "Does not hand-roll a try/catch in every controller method, and does not register the mapper as an HttpServerResponseMapper"
       ],
-      "tags": ["error-handling", "http", "intermediate"]
+      "tags": ["error-handling", "http", "regression", "intermediate"]
+    },
+    {
+      "id": "kora-aop-validation-kotlin-interceptor-override",
+      "skills": ["kora-aop-validation"],
+      "query": "In my Kora 2.0 Kotlin app I am overriding validationHttpServerInterceptor to tag it for the HTTP server, but the compiler says \"'validationHttpServerInterceptor' overrides nothing\".",
+      "expected_behavior": [
+        "Identifies the nullability mismatch: the Java module declares the parameter @Nullable under JSpecify, so the Kotlin override must be ViolationExceptionHttpServerResponseMapper?",
+        "Shows the corrected override with @Tag(HttpServer::class) and the nullable parameter type",
+        "Notes the error message never mentions nullability, which is why the cause is easy to miss",
+        "Does not suggest removing the override keyword, adding @JvmName, or carrying Java nullability annotations into Kotlin"
+      ],
+      "tags": ["kotlin", "http", "nullability", "advanced"]
+    },
+    {
+      "id": "kora-aop-validation-non-http-module",
+      "skills": ["kora-aop-validation"],
+      "query": "I need Kora 2.0 validation in a batch job with no HTTP server. Which artifact and module should I use, and will validation-module drag an HTTP server onto my classpath?",
+      "expected_behavior": [
+        "Recommends io.koraframework:validation-common with io.koraframework.validation.common.constraint.ValidatorModule for a non-HTTP application",
+        "States correctly that validation-module does NOT bring http-server-common with it — the dependency is compileOnly (requires static in module-info) and the published 2.0.0.RC1 POM and Gradle module metadata list only validation-common and jspecify",
+        "Notes that ValidationModule extends ValidatorModule and would still compile in a non-HTTP app (the untagged interceptor is simply pruned), but ValidatorModule is the right choice for intent",
+        "Keeps the mandatory processor: annotationProcessor \"io.koraframework:annotation-processors\" (or ksp \"io.koraframework:symbol-processors\") and resolves versions through io.koraframework:kora-bom",
+        "Does not claim ValidationModule transitively pulls in an HTTP server artifact, and does not tell the user to exclude http-server-common"
+      ],
+      "tags": ["dependencies", "modules", "regression", "intermediate"]
     },
     {
       "id": "kora-aop-validation-fail-fast",
       "skills": ["kora-aop-validation"],
-      "query": "Can Kora validation stop at the first error instead of collecting all violations?",
+      "query": "Can Kora 2.0 validation stop at the first error instead of collecting all violations?",
       "expected_behavior": [
         "For methods, uses @Validate(failFast = true)",
-        "For manual validation, builds ValidationContext.builder().failFast(true).build() (or ValidationContext.failFast()) and passes it to validator.validate(value, context)",
-        "Explains the default (Full) mode collects all violations before throwing one ViolationException",
-        "Does not invent a validation-group mechanism or a failOnFirst property (Kora validation has no groups)"
+        "For manual validation, uses ValidationContext.failFast() or ValidationContext.builder().failFast(true).build() and passes it to validator.validate(value, context) / validateAndThrow(value, context)",
+        "Explains the default collects every violation into one ViolationException, and that the fail-fast flag propagates into nested validators and collection elements through the context",
+        "Clarifies that ValidationContext is validation-scoped path/fail-fast state, not the Kora 1.x Context propagation type, which no longer exists in Kora 2.0",
+        "Does not invent validation groups or a failOnFirst property"
       ],
       "tags": ["fail-fast", "context", "intermediate"]
     },
     {
       "id": "kora-aop-validation-custom-constraint",
       "skills": ["kora-aop-validation"],
-      "query": "I need a custom IBAN constraint annotation in Kora. How do I build one?",
+      "query": "I need a custom Kora 2.0 constraint annotation @Prefixed(prefix = \"ME\", minLength = 4) for String fields. How do I build one?",
       "expected_behavior": [
-        "Implements Validator<Iban> returning List<Violation> via context.violates(...)",
-        "Declares a ValidatorFactory<Iban> sub-interface and registers it as a @KoraApp default method returning IbanValidator::new",
-        "Creates the annotation with @Retention(RetentionPolicy.CLASS), a @Target, and @ValidatedBy(IbanValidatorFactory.class) from ru.tinkoff.kora.validation.common.annotation",
-        "Does not assume ValidatorFactory.create() can receive annotation attributes, and does not use jakarta ConstraintValidator / @Constraint"
+        "Implements Validator<String> returning List<Violation> built with context.violates(...) and handling null",
+        "Declares a named ValidatorFactory sub-interface with a create(String prefix, int minLength) overload — one parameter per annotation attribute, in declaration order — because Kora 2.0 does pass annotation attributes to the factory",
+        "Registers the factory as a @KoraApp default method returning PrefixedValidator::new, on a module that still extends ValidatorModule or ValidationModule",
+        "Declares the annotation with @Retention(RetentionPolicy.CLASS), a @Target covering METHOD/FIELD/PARAMETER, and @ValidatedBy(PrefixedValidatorFactory.class) from io.koraframework.validation.common.annotation",
+        "Does not claim annotation attributes cannot reach the validator, and does not use jakarta ConstraintValidator / @Constraint",
+        "Mentions the compile error on arity mismatch: \"Expected PrefixedValidatorFactory#create() method with 2 parameters, but was didn't find such\""
       ],
       "tags": ["custom-validator", "validated-by", "advanced"]
     },
     {
       "id": "kora-aop-validation-result-validation",
       "skills": ["kora-aop-validation"],
-      "query": "How do I validate the return value of a Kora method, like ensuring the returned List has at least one element and each element is valid?",
+      "query": "How do I validate the return value of a Kora 2.0 method — the returned List must have at least one element and each element must be valid?",
       "expected_behavior": [
-        "Puts @Validate on the method to enable the aspect, @Valid on the method to validate returned objects, and @Size(min = 1) on the method to constrain the list",
-        "Explains result validation runs after the body produces the value",
-        "Mentions supported return signatures (T, Optional<T>, Mono/Flux<T> in Java; T, suspend, Flow<T> in Kotlin)",
-        "Does not invent a class-level @Validated annotation or a return-value interceptor from another framework"
+        "Puts @Validate on the method to enable the aspect, @Valid on the method to validate the returned objects, and @Size on the method to constrain the list, supplying max because @Size.max() has no default",
+        "Explains result validation runs after the body produces the value and that constraints for the result go on the METHOD, not the parameters",
+        "States that Kora 2.0 contracts are synchronous: Publisher (Mono/Flux) and Future return types are rejected by @Validate with a processing error; Kotlin additionally supports suspend and Flow<T>",
+        "Does not present Mono/Flux or reactive repositories as a supported Kora 2.0 contract, and does not invent a class-level @Validated annotation"
       ],
       "tags": ["result-validation", "method-validation", "advanced"]
     },
     {
-      "id": "kora-aop-validation-kotlin-dto",
+      "id": "kora-aop-validation-config",
       "skills": ["kora-aop-validation"],
-      "query": "How do I add Kora validation to a Kotlin data class?",
+      "query": "Can I validate my Kora 2.0 @ConfigSource configuration so a bad application.conf fails at startup instead of at first use?",
       "expected_behavior": [
-        "Annotates the data class with @Valid and uses the @field: prefix on constraints (e.g. @field:NotBlank, @field:Size)",
-        "Uses Kotlin nullable types (String?) for optional fields instead of @NotNull",
-        "Notes a data class is fine for class validation; open is only needed when the class hosts a @Validate method",
-        "Wires ksp \"ru.tinkoff.kora:symbol-processors\" rather than the Java annotationProcessor, and avoids jakarta.validation annotations"
+        "Adds @Valid to the @ConfigSource (or @ConfigMapper) interface alongside the constraint annotations on its accessor methods",
+        "Explains the generated config mapper then calls validateAndThrow on the parsed value, so an invalid config fails during graph build with a ViolationException",
+        "Notes @Valid on a plain interface is a compile error (\"Validation can't be generated for non sealed interface\") — config interfaces and sealed interfaces are the supported interface shapes",
+        "Keeps the config annotations as io.koraframework.config.common.annotation.@ConfigSource / @ConfigMapper and does not mention the removed Kora 1.x @ConfigValueExtractor",
+        "Does not confuse the constraint io.koraframework.validation.common.annotation.Size with the config value type io.koraframework.common.util.Size"
       ],
-      "tags": ["kotlin", "dto", "intermediate"]
+      "tags": ["config", "startup", "advanced"]
     }
   ]
 }

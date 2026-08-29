@@ -1,3 +1,17 @@
+# Example OpenAPI 3.x contract for the Kora 2.x `kora` generator.
+#
+# Notes that drive the generated Kora 2.0 client:
+#   * The `tags:` value below decides the generated API class name and therefore the config key:
+#     tag `items` -> ItemsApi -> @HttpClient("<clientConfigPrefix>.itemsApi") - first letter
+#     lower-cased. Rename a tag and the HOCON section moves with it.
+#   * `Item.status` shows the enum trap: wire values are `active`/`inactive`/`archived` while the
+#     generated constants are ACTIVE/INACTIVE/ARCHIVED, so only `fromValue(raw)` parses them.
+#   * `Task` shows oneOf + allOf + discriminator; the generator emits a sealed base interface with
+#     @JsonDiscriminatorField. Set openapiNormalizer = [DISABLE_ALL: "true"] so plugin >= 7.0.0
+#     does not flatten it via SIMPLIFY_ONEOF_ANYOF.
+#   * `apiKeyAuth` below generates ApiSecurity.ApiKeyAuth (tag, first letter capitalised) reading
+#     the credential from `<securityConfigPrefix>.apiKeyAuth` (config key, verbatim scheme name).
+
 openapi: 3.0.3
 info:
   title: My API
@@ -5,6 +19,8 @@ info:
   version: 1.0.0
 servers:
   - url: http://localhost:8080/api/v1
+security:
+  - apiKeyAuth: []
 paths:
   /items:
     get:
@@ -146,6 +162,15 @@ paths:
         '400':
           description: Invalid request
 components:
+  securitySchemes:
+    # type: apiKey -> the generator emits both the ApiSecurity.ApiKeyAuth tag AND a
+    # @DefaultComponent HttpClientTokenProvider that reads the credential from config.
+    # A `bearer` or `oauth2` scheme would emit the tag only; the application must then supply
+    # its own @Tag(ApiSecurity.<Scheme>.class) HttpClientTokenProvider or the graph fails to build.
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-KEY
   schemas:
     Item:
       type: object

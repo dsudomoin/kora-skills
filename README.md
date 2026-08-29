@@ -6,19 +6,37 @@ AI coding agent skills for Kora Framework development.
 
 ## What Is This?
 
-This repository ships skill packages for **Kora Framework**. The current package is `kora-v1`, built for the Kora 1.x line.
+This repository ships skill packages for **Kora Framework**. There are two, one per framework line,
+and they are installed and versioned independently:
 
-The `kora-v1` name is intentional: it leaves room for a future `kora-v2` package when Kora 2.x needs separate guidance, while `kora-1x` and `kora-1.x` remain searchable aliases in metadata.
+| Package | Framework | Group | Use it when |
+| --- | --- | --- | --- |
+| [`kora-v2`](plugins/kora-v2) | Kora 2.x | `io.koraframework` | New services, and any project already on 2.x |
+| [`kora-v1`](plugins/kora-v1) | Kora 1.x | `ru.tinkoff.kora` | Existing services still on 1.x |
+
+They can be installed side by side. Sub-skills are namespaced by plugin
+(`kora-v2:kora-http-server` vs `kora-v1:kora-http-server`), so nothing collides.
+
+**Which one do I want?** Look at the project's `build.gradle`. `ru.tinkoff.kora` → `kora-v1`.
+`io.koraframework` → `kora-v2`. Greenfield → `kora-v2`.
+
+Kora 2.0 is not a compatible upgrade of 1.x: the group changed, contracts became synchronous on
+virtual threads, `Context` was removed, R2DBC and Vert.x were dropped, and resilience moved from
+string names to typed specifications. Each package teaches its own line natively; neither is a
+migration tool. The upstream migration corpus lives in
+[kora-examples `migration/2.0`](https://github.com/kora-projects/kora-examples/tree/migration/2.0/migration).
 
 ## Quick Start
 
 ```bash
 git clone <repository-url> kora-skills
 cd kora-skills
-./plugins/kora-v1/install.sh
+./plugins/kora-v2/install.sh     # Kora 2.x
+./plugins/kora-v1/install.sh     # Kora 1.x
 ```
 
-This is the recommended universal path for agents: clone the repo, run the installer, restart the target coding agent.
+This is the recommended universal path for agents: clone the repo, run the installer for the line
+you need, restart the target coding agent.
 
 ## Install With Agent UIs
 
@@ -35,13 +53,13 @@ If your Claude Code or OpenClaude build supports plugins:
 1. Open Claude Code.
 2. Run `/plugin`.
 3. Add this repository as a plugin marketplace.
-4. Install the `kora-v1` plugin.
+4. Install the `kora-v2` plugin (or `kora-v1`, or both).
 5. Restart or reload plugins.
 
 If the plugin UI is unavailable, use the shell installer:
 
 ```bash
-./plugins/kora-v1/install.sh
+./plugins/kora-v2/install.sh
 ```
 
 ### OpenAI Codex
@@ -52,49 +70,51 @@ Codex uses a separate repo-local marketplace manifest:
 .agents/plugins/marketplace.json
 ```
 
-From the repository root, add this repository marketplace and install `kora-v1`:
+From the repository root, add this repository marketplace and install the package you need:
 
 ```bash
 codex plugin marketplace add .
-codex plugin add kora-v1@kora-skills
+codex plugin add kora-v2@kora-skills
+codex plugin add kora-v1@kora-skills   # only if you also maintain 1.x services
 ```
 
 If Codex CLI plugin commands are unavailable in your build, use the shell installer:
 
 ```bash
-./plugins/kora-v1/install.sh
+./plugins/kora-v2/install.sh
 ```
 
 ### Local Skill Directories
 
-The installer targets these local skill locations:
+The installer targets these local skill locations (`<pkg>` is `kora-v2` or `kora-v1`):
 
 | Agent | Target |
 | --- | --- |
-| Claude Code | `~/.claude/skills/kora-v1` |
-| OpenAI Codex | `~/.agents/skills/kora-v1` |
-| Pi Coding Agent | `~/.pi/skills/kora-v1` |
-| OMP | `~/.omp/skills/kora-v1` |
-| Cursor | `~/.cursor/skills/kora-v1` |
-| OpenClaude / OpenClaw | `~/.openclaude/skills/kora-v1` |
+| Claude Code | `~/.claude/skills/<pkg>` |
+| OpenAI Codex | `~/.agents/skills/<pkg>` |
+| Pi Coding Agent | `~/.pi/skills/<pkg>` |
+| OMP | `~/.omp/skills/<pkg>` |
+| Cursor | `~/.cursor/skills/<pkg>` |
+| OpenClaude / OpenClaw | `~/.openclaude/skills/<pkg>` |
 
 Manual fallback for any SKILL.md-compatible agent:
 
 ```bash
-mkdir -p ~/.local/share/skills/kora-v1
-cp -r plugins/kora-v1/SKILL.md plugins/kora-v1/skills ~/.local/share/skills/kora-v1/
+mkdir -p ~/.local/share/skills/kora-v2
+cp -r plugins/kora-v2/SKILL.md plugins/kora-v2/references plugins/kora-v2/skills \
+      ~/.local/share/skills/kora-v2/
 ```
 
-When the package is published to a skills registry:
+When a package is published to a skills registry:
 
 ```bash
-npx skills add kora-projects/kora-v1
+npx skills add kora-projects/kora-v2
 ```
 
 After installation, restart your AI coding agent and ask:
 
 ```text
-Help me create a Kora 1.x microservice with HTTP endpoints.
+Help me create a Kora microservice with HTTP endpoints.
 Add a JDBC repository to this Kora service.
 Create a Kora SOAP/WSDL client.
 Debug this Kora DI graph error.
@@ -107,41 +127,51 @@ kora-skills/
   README.md
   README.ru.md
   .claude-plugin/
-    marketplace.json
+    marketplace.json          # lists both plugins
   .agents/
     plugins/
-      marketplace.json
+      marketplace.json        # Codex; lists both plugins
+  scripts/
+    version.py                # per-plugin version sync (see scripts/README.md)
   plugins/
-    kora-v1/
-    SKILL.md
-    skill.json
-    install.sh
-    README.md
-    README.ru.md
-    .claude-plugin/
-      plugin.json
-    .codex-plugin/
-      plugin.json
-    skills/
-      kora-core-master-meta-skill/
-      kora-di-compile/
-      ...
+    kora-v2/                  # Kora 2.x package
+      SKILL.md
+      skill.json
+      install.sh
+      README.md
+      README.ru.md
+      .claude-plugin/plugin.json
+      .codex-plugin/plugin.json
+      references/
+        kora-docs-map.md
+      skills/
+        kora-starter/
+        kora-di-compile/
+        ...
+    kora-v1/                  # Kora 1.x package, same layout
 ```
 
 ## Instructions For AI Agents
 
 If you are an AI coding agent reading this README and the user asks to install Kora skills:
 
-1. Prefer `./plugins/kora-v1/install.sh` from the repository root.
-2. If shell execution is blocked, copy `plugins/kora-v1/SKILL.md` and `plugins/kora-v1/skills/` into the agent-specific target directory from the table above.
-3. For Claude Code or OpenClaude plugin installs, use `/plugin` when available and add this repository as the marketplace from `.claude-plugin/marketplace.json`.
-4. For Codex plugin installs, use `.agents/plugins/marketplace.json`, then run `codex plugin marketplace add .` and `codex plugin add kora-v1@kora-skills`.
-5. After installation, tell the user to restart or reload the target agent.
-6. Do not rename the installed skill. Keep `kora-v1` as the directory and skill name.
+1. Determine the framework line first. `ru.tinkoff.kora` in the project's build files → `kora-v1`.
+   `io.koraframework` → `kora-v2`. Nothing to inspect (new project) → `kora-v2`. If it is genuinely
+   ambiguous, ask; do not guess.
+2. Prefer `./plugins/<pkg>/install.sh` from the repository root.
+3. If shell execution is blocked, copy `plugins/<pkg>/SKILL.md`, `plugins/<pkg>/references/` and
+   `plugins/<pkg>/skills/` into the agent-specific target directory from the table above.
+4. For Claude Code or OpenClaude plugin installs, use `/plugin` when available and add this
+   repository as the marketplace from `.claude-plugin/marketplace.json`.
+5. For Codex plugin installs, use `.agents/plugins/marketplace.json`, then run
+   `codex plugin marketplace add .` and `codex plugin add <pkg>@kora-skills`.
+6. After installation, tell the user to restart or reload the target agent.
+7. Do not rename an installed package, and do not install one over the other. `kora-v1` and
+   `kora-v2` are separate directories for separate framework versions.
 
 ## Package Contents
 
-`kora-v1` contains **39 domain skills plus one Codex meta-skill**:
+Each package contains **39 domain skills plus one Codex meta-skill**:
 
 - Core: `kora-di-compile`, `kora-di-runtime`, `kora-config-hocon`, `kora-config-yaml`, `kora-json`
 - Project setup: `kora-project-setup-java`, `kora-project-setup-kotlin`, `kora-project-dependencies`
@@ -153,11 +183,28 @@ If you are an AI coding agent reading this README and the user asks to install K
 - AOP: `kora-aop-caching`, `kora-aop-resilient`, `kora-aop-logging`, `kora-aop-scheduling-jdk`, `kora-aop-scheduling-quartz`, `kora-aop-validation`
 - Testing: `kora-testing-junit-java`, `kora-testing-junit-kotlin`, `kora-testing-blackbox`
 - Tools and learning: `kora-s3`, `kora-mapstruct`, `kora-journal`, `kora-teacher`
-- Agent compatibility: `kora-core-master-meta-skill`
+- Agent compatibility: `kora-starter`
+
+The two packages share this skill *layout*, not their content — every skill is written against its
+own framework line.
+
+## Maintaining Versions
+
+Each plugin carries its own version. Never hand-edit it; use the helper:
+
+```bash
+python scripts/version.py            # print every plugin version
+python scripts/version.py check      # CI / pre-commit gate
+python scripts/version.py bump patch kora-v2
+```
+
+`set` and `bump` require an explicit plugin name so one line is never bumped while you meant the
+other. Details: [`scripts/README.md`](scripts/README.md).
 
 ## Supported Agents
 
-The package is prepared for agents and runtimes that understand `SKILL.md`-style skills or local skill folders:
+The packages are prepared for agents and runtimes that understand `SKILL.md`-style skills or local
+skill folders:
 
 - Claude Code
 - OpenAI Codex
@@ -170,10 +217,17 @@ The package is prepared for agents and runtimes that understand `SKILL.md`-style
 
 ## Documentation
 
-| Resource | Link |
-| --- | --- |
-| Kora Framework docs | https://kora-projects.github.io/kora-docs |
-| Official examples | https://github.com/kora-projects/kora-examples |
-| Java template | https://github.com/kora-projects/kora-java-template |
-| Kotlin template | https://github.com/kora-projects/kora-kotlin-template |
-| SKILL.md specification | https://agentskills.io/specification |
+| Resource | Line | Link |
+| --- | --- | --- |
+| Framework source (2.x release) | 2.x | https://github.com/kora-projects/kora/tree/2.0.0.RC1 |
+| Migrated example applications | 2.x | https://github.com/kora-projects/kora-examples/tree/migration/2.0 |
+| 1.x → 2.0 migration corpus | 2.x | https://github.com/kora-projects/kora-examples/tree/migration/2.0/migration |
+| Kora Framework docs | 1.x | https://kora-projects.github.io/kora-docs |
+| Official examples | 1.x | https://github.com/kora-projects/kora-examples |
+| Java template | 1.x | https://github.com/kora-projects/kora-java-template |
+| Kotlin template | 1.x | https://github.com/kora-projects/kora-kotlin-template |
+| SKILL.md specification | — | https://agentskills.io/specification |
+
+There is no Kora 2.0 documentation site yet. `kora-docs` and both `kora-*-template` repositories
+still describe 1.x, so they are listed under that line and must not be used as an API authority
+for 2.x.

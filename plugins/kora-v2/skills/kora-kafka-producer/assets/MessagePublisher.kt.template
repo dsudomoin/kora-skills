@@ -2,49 +2,52 @@ package ${packagePath}.publisher
 
 import java.util.concurrent.CompletionStage
 import java.util.concurrent.Future
+import kotlinx.coroutines.Deferred
+import org.apache.kafka.clients.producer.Callback
 import org.apache.kafka.clients.producer.RecordMetadata
-import ru.tinkoff.kora.kafka.common.annotation.KafkaPublisher
-import ru.tinkoff.kora.kafka.common.annotation.KafkaPublisher.Topic
+import org.apache.kafka.common.header.Headers
+import io.koraframework.kafka.common.annotation.KafkaPublisher
+import io.koraframework.kafka.common.annotation.KafkaPublisher.Topic
 
-/**
- * Example Kafka producer with a typed interface.
- *
- * Available method signatures:
- * - send: basic send without return value
- * - sendWithMeta: send with RecordMetadata return
- * - sendAsync: asynchronous send with Future
- * - sendStage: asynchronous send with CompletionStage
- */
+// Every send signature the Kora 2.0 publisher KSP processor accepts with @Topic.
+// A @Topic value starting with "." is resolved against the @KafkaPublisher path,
+// so ".topic" below means kafka.producer.myPublisher.topic.
+//
+// Unit and RecordMetadata BLOCK until the broker acks and throw KafkaPublishException
+// on failure; Future/CompletionStage/Deferred and suspend return without blocking.
+//
+// sendSuspend and sendDeferred generate kotlinx.coroutines.future.await/asDeferred,
+// which need an explicit dependency — io.koraframework:kafka does not bring coroutines:
+//     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-jdk8:1.10.2")
+// Without it compileKotlin fails on the generated $MessagePublisher_Impl.kt with
+// "Unresolved reference 'kotlinx'". Drop both methods if you do not want the dependency.
 @KafkaPublisher("kafka.producer.myPublisher")
 interface MessagePublisher {
-    
-    /**
-     * Basic message send (no return value)
-     */
-    @Topic("kafka.producer.myTopic")
+
+    @Topic(".topic")
     fun send(value: String)
 
-    /**
-     * Send a message with a key
-     */
-    @Topic("kafka.producer.myTopic")
+    @Topic(".topic")
     fun send(key: String, value: String)
 
-    /**
-     * Send with metadata return (synchronous)
-     */
-    @Topic("kafka.producer.myTopic")
+    @Topic(".topic")
+    fun send(key: String, value: String, headers: Headers)
+
+    @Topic(".topic")
+    fun send(value: String, callback: Callback)
+
+    @Topic(".topic")
     fun sendWithMeta(value: String): RecordMetadata
 
-    /**
-     * Asynchronous send with Future
-     */
-    @Topic("kafka.producer.myTopic")
+    @Topic(".topic")
     fun sendAsync(value: String): Future<RecordMetadata>
 
-    /**
-     * Asynchronous send with CompletionStage
-     */
-    @Topic("kafka.producer.myTopic")
+    @Topic(".topic")
     fun sendStage(value: String): CompletionStage<RecordMetadata>
+
+    @Topic(".topic")
+    suspend fun sendSuspend(value: String): RecordMetadata
+
+    @Topic(".topic")
+    fun sendDeferred(value: String): Deferred<RecordMetadata>
 }

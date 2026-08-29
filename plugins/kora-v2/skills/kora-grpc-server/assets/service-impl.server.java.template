@@ -1,147 +1,160 @@
 package ${package};
 
-import ${proto_package}.${service_name}Grpc;
-import ${proto_package}.${request_class};
-import ${proto_package}.${response_class};
 import com.google.protobuf.Timestamp;
 import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
+import io.koraframework.common.annotation.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import ru.tinkoff.kora.common.Component;
 
-import java.time.OffsetDateTime;
-import java.util.UUID;
+import java.time.ZoneOffset;
 
 /**
- * gRPC service implementation for ${service_name}.
- * Extend the generated ${service_name}ImplBase and annotate with @Component.
+ * gRPC handler for ${service_name}.
  *
- * Handler patterns:
- * - Unary: method(request, responseObserver)
- * - Server streaming: method(request, responseObserver) with multiple onNext()
- * - Client streaming: method(responseObserver) returns StreamObserver<Request>
- * - Bidi streaming: method(responseObserver) returns StreamObserver<Request> with multiple onNext()
+ * <p>Registration — all three are required and each fails differently:
+ * <ul>
+ *   <li>{@code @Component} from {@code io.koraframework.common.annotation} — otherwise the class is
+ *       never in the graph and the RPC answers {@code UNIMPLEMENTED};</li>
+ *   <li>extends the generated {@code ${service_name}Grpc.${service_name}ImplBase}, which is an
+ *       {@code io.grpc.BindableService} — that is what GrpcServerModule collects;</li>
+ *   <li><b>no {@code @Tag(...)} on the class</b> — the collection claim is untagged, so a tagged
+ *       component silently drops out and the RPC answers {@code UNIMPLEMENTED}.</li>
+ * </ul>
+ *
+ * <p>Execution model: Kora 2.0 contracts are synchronous. Each call runs on a virtual thread
+ * supplied by the module, so blocking JDBC / HTTP calls in these methods are correct style. There
+ * is no {@code suspend}, no {@code Mono}/{@code Flux}/{@code CompletionStage}, and the Kora
+ * {@code Context} type does not exist in 2.0 — use {@code io.grpc.Context} (gRPC's own, unrelated
+ * type) for per-call state.
+ *
+ * <p>Send exactly ONE terminal signal per call: {@code onCompleted()} or {@code onError(...)},
+ * never both, never twice, and never {@code onNext} after either.
  */
 @Component
-public class ${service_name}Service extends ${service_name}Grpc.${service_name}ImplBase {
+public final class ${service_name}GrpcHandler extends ${service_name}Grpc.${service_name}ImplBase {
 
-    private final Logger logger = LoggerFactory.getLogger(getClass());
+    private static final Logger logger = LoggerFactory.getLogger(${service_name}GrpcHandler.class);
 
-    /**
-     * Unary RPC - One request, one response
-     */
+    private final ${service_name}Service service;
+
+    public ${service_name}GrpcHandler(${service_name}Service service) {
+        this.service = service;
+    }
+
+    /** Unary — one request, one response. */
     @Override
     public void ${method_name}(${request_class} request, StreamObserver<${response_class}> responseObserver) {
         try {
-            logger.info("Processing ${method_name} request");
+            logger.info("Processing ${method_name}");
 
-            // TODO: Implement business logic here
-            // Example: var result = service.someMethod(request.getParam());
+            var result = service.${method_name}(request.getName(), request.getEmail());
 
-            ${response_class} response = ${response_class}.newBuilder()
-                // .setField(value)
-                .build();
-
-            responseObserver.onNext(response);
+            responseObserver.onNext(toGrpcResponse(result));
             responseObserver.onCompleted();
-
+        } catch (StatusRuntimeException e) {
+            // Already carries a gRPC status — pass it through unchanged.
+            responseObserver.onError(e);
         } catch (IllegalArgumentException e) {
-            logger.error("Invalid argument", e);
-            responseObserver.onError(
-                Status.INVALID_ARGUMENT
+            responseObserver.onError(Status.INVALID_ARGUMENT
                     .withDescription(e.getMessage())
-                    .asRuntimeException()
-            );
+                    .asRuntimeException());
         } catch (Exception e) {
-            logger.error("Internal error", e);
-            responseObserver.onError(
-                Status.INTERNAL
+            // withCause is server-side only; it never reaches the client.
+            logger.error("Failed to process ${method_name}", e);
+            responseObserver.onError(Status.INTERNAL
                     .withDescription("Failed to process request")
                     .withCause(e)
-                    .asRuntimeException()
-            );
+                    .asRuntimeException());
         }
     }
 
-    /**
-     * Server streaming example - One request, multiple responses
-     * Uncomment and adapt for streaming use cases:
-     */
-    /*
+    /* --- Server streaming: one request, many onNext, exactly one onCompleted. ---
     @Override
-    public void listItems(ListItemsRequest request, StreamObserver<Item> responseObserver) {
+    public void listAll(Empty request, StreamObserver<${response_class}> responseObserver) {
         try {
-            var items = service.findAll(request.getPage(), request.getSize());
-
-            for (var item : items) {
-                responseObserver.onNext(toGrpcItem(item));
+            for (var item : service.listAll()) {
+                responseObserver.onNext(toGrpcResponse(item));
             }
-
             responseObserver.onCompleted();
         } catch (Exception e) {
-            responseObserver.onError(
-                Status.INTERNAL
-                    .withDescription("Failed to list items")
-                    .withCause(e)
-                    .asRuntimeException()
-            );
+            responseObserver.onError(Status.INTERNAL
+                    .withDescription("Failed to stream items").withCause(e).asRuntimeException());
         }
     }
     */
 
-    /**
-     * Client streaming example - Multiple requests, one response
-     * Uncomment and adapt for batch upload use cases:
-     */
-    /*
+    /* --- Client streaming: return the request observer, reply from onCompleted.
+           Needs java.util.List and java.util.ArrayList on the import list. ---
     @Override
-    public StreamObserver<CreateItemRequest> createItems(StreamObserver<CreateItemsResponse> responseObserver) {
-        return new StreamObserver<CreateItemRequest>() {
-            private final List<ItemRequest> batch = new ArrayList<>();
+    public StreamObserver<${request_class}> createAll(StreamObserver<${response_class}> responseObserver) {
+        return new StreamObserver<>() {
+            private final List<${request_class}> batch = new ArrayList<>();
 
             @Override
-            public void onNext(CreateItemRequest request) {
-                batch.add(new ItemRequest(request.getName(), request.getValue()));
+            public void onNext(${request_class} value) {
+                batch.add(value);
             }
 
             @Override
             public void onError(Throwable t) {
+                // Inbound notification: the client failed or cancelled. The call is already over,
+                // so do not try to answer here.
                 logger.error("Client streaming failed", t);
             }
 
             @Override
             public void onCompleted() {
                 try {
-                    var ids = service.createAll(batch);
-                    var response = CreateItemsResponse.newBuilder()
-                        .addAllItemIds(ids)
-                        .setCreatedCount(ids.size())
-                        .build();
-                    responseObserver.onNext(response);
+                    var created = service.createAll(batch);
+                    responseObserver.onNext(toGrpcResponse(created));
                     responseObserver.onCompleted();
                 } catch (Exception e) {
-                    responseObserver.onError(
-                        Status.INTERNAL
-                            .withDescription("Failed to create items")
-                            .withCause(e)
-                            .asRuntimeException()
-                    );
+                    responseObserver.onError(Status.INTERNAL
+                            .withDescription("Failed to create items").withCause(e).asRuntimeException());
                 }
             }
         };
     }
     */
 
-    /**
-     * Convert domain object to gRPC message
-     */
-    private ${response_class} toGrpcResponse(/* DomainType domain */) {
+    /* --- Bidirectional streaming: same shape, but answer inside onNext.
+           StreamObserver is not thread-safe — synchronise if several sources may emit. ---
+    @Override
+    public StreamObserver<${request_class}> updateAll(StreamObserver<${response_class}> responseObserver) {
+        return new StreamObserver<>() {
+            @Override
+            public void onNext(${request_class} value) {
+                try {
+                    responseObserver.onNext(toGrpcResponse(service.update(value)));
+                } catch (StatusRuntimeException e) {
+                    responseObserver.onError(e);
+                }
+            }
+
+            @Override
+            public void onError(Throwable t) {
+                logger.error("Bidirectional streaming failed", t);
+            }
+
+            @Override
+            public void onCompleted() {
+                responseObserver.onCompleted();
+            }
+        };
+    }
+    */
+
+    private ${response_class} toGrpcResponse(${service_name}Result result) {
         return ${response_class}.newBuilder()
-            // .setId(domain.getId())
-            // .setCreatedAt(Timestamp.newBuilder()
-            //     .setSeconds(domain.getCreatedAt().toEpochSecond())
-            //     .build())
-            .build();
+                .setId(result.id())
+                .setName(result.name())
+                .setEmail(result.email())
+                .setCreatedAt(Timestamp.newBuilder()
+                        .setSeconds(result.createdAt().toEpochSecond(ZoneOffset.UTC))
+                        .setNanos(result.createdAt().getNano())
+                        .build())
+                .build();
     }
 }

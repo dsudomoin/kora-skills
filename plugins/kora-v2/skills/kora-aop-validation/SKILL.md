@@ -1,63 +1,119 @@
 ---
 name: kora-aop-validation
-description: "Kora declarative validation — @Valid/@Validate with Kora's own constraints (@NotBlank/@Pattern/@Range/@Size) and custom @ValidatedBy. Use when validating DTOs or service args. Kora validation is NOT Jakarta/JSR-380."
+description: "Kora 2.0 declarative validation — @Valid generates a Validator<T> for records/classes/sealed types, @Validate weaves argument and result validation via AOP, with Kora's own 22 constraint annotations from io.koraframework.validation.common.annotation (@NotBlank, @NotEmpty, @Size, @Range, @Pattern, @Min, @Max, @Positive, @Digits, @Past, @Future, @Url, @Uri, @UUID, @OneOf, @AssertTrue, ...). Covers ValidatorModule (validation-common) vs ValidationModule (validation-module), custom constraints via @ValidatedBy + a parameterised ValidatorFactory, ViolationException, and mapping it to HTTP 400 through ValidationHttpServerInterceptor + ViolationExceptionHttpServerResponseMapper. Use when validating request DTOs, enforcing argument/return rules, validating @ConfigSource config, or building custom constraints. Kora validation is NOT Jakarta/JSR-380."
+license: Apache-2.0
+metadata:
+  kora-version: "2.x"
 ---
 
 # Kora AOP Validation
 
-> **Kora sub-skill — obey the [kora-v1 meta rules](../../SKILL.md) on every task:** **R0** ensure `.kora-agent/` docs+examples are cloned · **R1** read this sub-skill before writing code · **R2** Kora APIs only — no Spring/Micronaut/Quarkus, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
+> **Kora sub-skill — obey the [kora-v2 meta rules](../../SKILL.md) on every task:** **R0** ground the workspace on Kora 2.0 refs before starting (framework source at tag `2.0.0.RC1` + `kora-examples` at `migration/2.0`; `kora-docs` is 1.x only) · **R1** read this sub-skill before writing code · **R2** Kora 2.0 APIs only — no Spring/Micronaut/Quarkus, no Kora 1.x APIs, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
 
-Kora validates classes/records and method arguments/results at compile time using its **own** constraint annotations and generated `Validator<T>` components. There is no reflection: `@Valid` generates a `Validator<T>`, `@Validate` weaves an aspect into a method.
+| | |
+|---|---|
+| **Artifacts** | `io.koraframework:validation-common` (constraints + `Validator<T>`) · `io.koraframework:validation-module` (adds HTTP-server error mapping) |
+| **Modules** | `io.koraframework.validation.common.constraint.ValidatorModule` · `io.koraframework.validation.module.ValidationModule extends ValidatorModule` |
+| **Annotations** | `io.koraframework.validation.common.annotation.*` |
+| **Processor** | Java `annotationProcessor "io.koraframework:annotation-processors"` · Kotlin `ksp "io.koraframework:symbol-processors"` |
+| **Version** | `2.0.0.RC1` from `mavenCentral()` via `io.koraframework:kora-bom` · Java 25 · Kotlin 2.4 + KSP |
 
-**Key fact:** Kora validation annotations come from `ru.tinkoff.kora.validation.common.annotation`, NOT from `jakarta.validation` / JSR-380. The full constraint set is only these five: `@NotBlank`, `@NotEmpty`, `@Pattern`, `@Range`, `@Size`. There is **no** `@NotNull` constraint — every field/argument is implicitly required (null fails) unless marked `@Nullable`.
+Validation is generated at compile time, with no reflection: `@Valid` on a type emits a
+`$Name_Validator` class implementing `Validator<T>` and registers it in the DI graph; `@Validate` on
+a method emits an AOP proxy that validates arguments before the body and the result after it.
+
+## Key fact — this is not Jakarta / JSR-380
+
+Kora ships **its own** constraint annotations in `io.koraframework.validation.common.annotation`.
+`jakarta.validation.*` and `javax.validation.*` annotations are not recognised, produce no code and
+no diagnostic — the DTO simply goes unvalidated.
+
+There is **no `@NotNull`**: every field and argument is implicitly required and the generated code
+emits its own null check. Opt out with `@Nullable` (JSpecify in Java, a `T?` type in Kotlin).
+
+The constraint set has **22** annotations, not the five of the Kora 1.x skill:
+
+`@NotBlank` `@NotEmpty` `@Size` `@Pattern` `@Range` `@Min` `@Max` `@Positive` `@PositiveOrZero`
+`@Negative` `@NegativeOrZero` `@Digits` `@AssertTrue` `@AssertFalse` `@Past` `@PastOrPresent`
+`@Future` `@FutureOrPresent` `@Url` `@Uri` `@UUID` `@OneOf`
+
+plus the structural `@Valid`, `@Validate` and `@ValidatedBy`. Supported target types and attributes
+per constraint: [references/validation-annotations-reference.md](references/validation-annotations-reference.md).
+
+> `io.koraframework.validation.common.annotation.Size` is the constraint. It is a different type
+> from `io.koraframework.common.util.Size`, the byte-size value type used by config. Import carefully.
 
 ---
 
-## Quick Start
+## Quick start
 
-### 1. Dependency + module
+### 1. Dependency and module
 
-Two setups exist — pick by whether you need HTTP integration. All Kora artifacts inherit their version from the `kora-parent` BOM; never pin individual `ru.tinkoff.kora:*` versions.
+Pick by whether the application serves HTTP.
 
-**Plain validation (no HTTP)** — artifact `validation-common`, module `ValidatorModule`:
+**No HTTP** — artifact `validation-common`, module `ValidatorModule`:
 
 ```groovy
 dependencies {
-    annotationProcessor "ru.tinkoff.kora:annotation-processors" // mandatory: generates validators + aspects
-    implementation "ru.tinkoff.kora:validation-common"
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")   // koraVersion=2.0.0.RC1
+    annotationProcessor "io.koraframework:annotation-processors" // mandatory: generates validators + aspects
+    implementation "io.koraframework:validation-common"
 }
 ```
 
 ```java
-import ru.tinkoff.kora.validation.common.constraint.ValidatorModule;
+import io.koraframework.validation.common.constraint.ValidatorModule;
 
 @KoraApp
 public interface Application extends ValidatorModule { }
 ```
 
-**With HTTP-server integration** (maps `ViolationException` → 400) — artifact `validation-module`, module `ValidationModule`:
+**With HTTP-server error mapping** — artifact `validation-module`, module `ValidationModule`:
 
 ```groovy
 dependencies {
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
-    implementation "ru.tinkoff.kora:validation-module"
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+    annotationProcessor "io.koraframework:annotation-processors"
+    implementation "io.koraframework:validation-module"
+    implementation "io.koraframework:http-server-undertow"
 }
 ```
 
 ```java
-import ru.tinkoff.kora.validation.module.ValidationModule;
+import io.koraframework.validation.module.ValidationModule;
+import io.koraframework.http.server.undertow.UndertowPublicHttpServerModule;
 
 @KoraApp
-public interface Application extends ValidationModule, UndertowHttpServerModule, JsonModule { }
+public interface Application extends ValidationModule, UndertowPublicHttpServerModule, JsonModule { }
 ```
 
-Kotlin: replace `annotationProcessor`/`testAnnotationProcessor` with `ksp "ru.tinkoff.kora:symbol-processors"`.
+`ValidationModule` extends `ValidatorModule`, so it also supplies every built-in constraint factory.
+
+Kotlin (`build.gradle.kts`):
+
+```kotlin
+dependencies {
+    implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+    ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
+    implementation("io.koraframework:validation-module")   // or validation-common
+}
+```
+
+The `koraBom` configuration wiring for Groovy builds lives in
+[`kora-project-setup-java`](../kora-project-setup-java/SKILL.md) / [`kora-project-setup-kotlin`](../kora-project-setup-kotlin/SKILL.md).
+
+> **`validation-module` does not drag an HTTP server in.** Its dependency on `http-server-common` is
+> `compileOnly` (`requires static` in `module-info`), and the published `2.0.0.RC1` POM and Gradle
+> module metadata list only `validation-common` and `jspecify`. You must add an HTTP server module
+> yourself. Conversely, extending `ValidationModule` in a non-HTTP application compiles fine — the
+> interceptor is simply an unused component and gets pruned — but prefer `ValidatorModule` there so
+> the intent is explicit.
 
 ### 2. Validated record — generates `Validator<CreateUserRequest>`
 
 ```java
-import jakarta.annotation.Nullable;
-import ru.tinkoff.kora.validation.common.annotation.*;
+import org.jspecify.annotations.Nullable;
+import io.koraframework.validation.common.annotation.*;
 
 @Valid
 public record CreateUserRequest(
@@ -68,70 +124,93 @@ public record CreateUserRequest(
 ) {}
 ```
 
+The generated class is `$CreateUserRequest_Validator`; for a nested type it carries the outer names
+(`$Outer_Inner_Validator`). Never reference the generated name in hand-written code — inject
+`Validator<CreateUserRequest>` instead.
+
 ### 3. Validate a method with `@Validate`
 
 ```java
 @Component
-public class UserController {
+@HttpController
+public class UserController {                             // NOT final
 
     @HttpRoute(method = HttpMethod.POST, path = "/users")
     @Json
     @Validate
     public UserResponse createUser(@Valid @Json CreateUserRequest request) {
-        return userService.create(request); // ViolationException thrown before the body runs if invalid
+        return userService.create(request);   // ViolationException is thrown before the body runs
     }
 }
 ```
 
-### 4. Inject the generated validator directly (manual validation)
+### 4. Inject the generated validator (imperative validation)
 
 ```java
 @Component
-public final class Example {
+public final class Example {                                   // final is fine — no @Validate here
 
     private final Validator<CreateUserRequest> validator;
 
-    public Example(Validator<CreateUserRequest> validator) {
+    public Example(Validator<CreateUserRequest> validator) {   // supplied by the DI extension
         this.validator = validator;
     }
 
     public void check(CreateUserRequest req) {
-        validator.validateAndThrow(req); // collects all violations, then throws ViolationException
+        validator.validateAndThrow(req);                       // collects all, then throws
     }
 }
 ```
 
 ---
 
-## How it works
+## How the annotations compose
 
-| Annotation | Where | Effect |
-|------------|-------|--------|
-| `@Valid` on a type/record | type | Generates a `Validator<T>` component in the graph |
-| `@Valid` on a field/parameter | field/param | Recurses into a nested validated type's `Validator` |
-| `@Validate` on a method | method | Weaves an aspect: validates `@`-annotated args (and the result if the method itself is annotated) before/after the body |
-| `@NotBlank/@NotEmpty/@Pattern/@Range/@Size` | field/param/method | The actual constraint checks |
-| `@Nullable` (any flavor) | field/param | Suppresses the implicit null check |
+| Annotation | Target | Effect |
+|---|---|---|
+| `@Valid` on a type | `TYPE` | Generates `$Name_Validator implements Validator<T>` and registers it in the graph |
+| `@Valid` on a field / parameter | `FIELD`, `PARAMETER` | Recurses into the nested type's `Validator<T>` |
+| `@Valid` on a method | `METHOD` | With `@Validate`, validates the returned object graph |
+| `@Validate` on a method | `METHOD` only | Weaves the AOP proxy; attribute `failFast` (default `false`) |
+| any constraint | `METHOD`, `FIELD`, `PARAMETER` | The actual check |
+| `@Nullable` | field / parameter / return | Suppresses the implicit null check for that element |
 
-A `Validator<T>` returns `List<Violation>`. Use `validate(value)` to inspect, or `validateAndThrow(value)` to throw `ViolationException` on the first non-empty result. The `@Validate` aspect throws `ViolationException` automatically.
+`Validator<T>` (package `io.koraframework.validation.common`):
+
+```java
+List<Violation> validate(@Nullable T value, ValidationContext context);
+default List<Violation> validate(@Nullable T value);
+default void validateAndThrow(@Nullable T value, ValidationContext context) throws ViolationException;
+default void validateAndThrow(@Nullable T value) throws ViolationException;
+```
+
+`ValidationContext` here is validation-scoped path/fail-fast state. It is unrelated to the Kora 1.x
+`Context` propagation type, which no longer exists anywhere in Kora 2.0.
 
 ---
 
-## Class / record validation
+## What `@Valid` accepts
 
-Every field is implicitly required. Mark optional fields with any `@Nullable` annotation (`jakarta.annotation.Nullable`, `javax.annotation.Nullable`, `org.jetbrains.annotations.Nullable`).
+| Shape | Where constraints go | Accessor used by the generated validator |
+|---|---|---|
+| `record` | record components (propagated to the backing field) | `name()` |
+| plain class | **the fields** | `getName()` — a JavaBean getter is required |
+| `sealed interface` | on each permitted subtype (each needs its own `@Valid`) | dispatches with `instanceof` to the subtype validator |
+| `@ConfigSource` / `@ConfigMapper` interface | the accessor methods | `name()` |
+| `enum` | — | compile error: `Validation can't be generated for enum` |
+| non-sealed, non-config `interface` | — | compile error: `Validation can't be generated for non sealed interface` |
 
-```java
-@Valid
-public record OrderRequest(
-    @NotBlank String id,
-    @Valid Customer customer,            // nested → uses generated Validator<Customer>
-    @Valid List<OrderItem> items,        // elements validated via Validator<OrderItem>
-    @Nullable String comment
-) {}
-```
+**Plain classes: constraints belong on fields, not getters.** A constraint on a getter of a
+non-record class is silently ignored and the generated validator contains only the root null check.
 
-For a regular (non-record) class, getters must be at least package-private (`getId()`); records use the component accessor (`id()`).
+**Collections.** `ValidatorModule` supplies `Validator<List<T>>`, `Validator<Set<T>>` and
+`Validator<Collection<T>>` derived from `Validator<T>`, so `@Valid List<OrderItem> items` validates
+every element once `OrderItem` itself is `@Valid`. Element violation paths render as `items.[0].sku`.
+
+**Config.** `@Valid` on a `@ConfigSource` / `@ConfigMapper` interface makes the generated config
+mapper call `validateAndThrow` on the parsed value, so invalid configuration fails during graph
+build with a `ViolationException` instead of at first use. See
+[`kora-config-hocon`](../kora-config-hocon/SKILL.md) for the config side.
 
 ### Kotlin
 
@@ -140,63 +219,90 @@ For a regular (non-record) class, getters must be at least package-private (`get
 data class CreateUserRequest(
     @field:NotBlank @field:Size(min = 2, max = 100) val name: String,
     @field:NotBlank val email: String,
-    val note: String?                    // Kotlin nullability marks it optional
+    @field:Range(from = 18.0, to = 120.0) val age: Int,
+    val note: String?                    // nullable type opts out of the null check
 )
 ```
 
-Use the `@field:` prefix on constraints. A `data class` is fine for **class** validation. A class only needs `open` when it hosts a `@Validate` **method** (aspects require subclassing).
+- Use the **`@field:`** use-site target. The constraint annotations declare no `PROPERTY` target, so
+  without the prefix Kotlin puts them on the constructor parameter and the data class goes unvalidated.
+- `@Range` takes `double` attributes — write `from = 18.0, to = 120.0`, not `18`/`120`.
+- A `data class` is fine for **class** validation. `open` is only needed on a class that hosts a
+  `@Validate` **method**.
 
 ---
 
 ## Method validation with `@Validate`
 
-`@Validate` on a method validates its annotated arguments before the body and, if the method itself carries constraint annotations, its result afterward. The enclosing class must be non-`final` (Java) / `open` (Kotlin) so the aspect can subclass it.
-
 ```java
 @Component
-public class UserService {
+public class UserService {                                  // NOT final
 
     @Validate
     public User create(@Valid CreateUserRequest request) { ... }
 
-    // single-argument constraint, stop on the first error
-    @Validate(failFast = true)
+    @Validate(failFast = true)                              // stop at the first violation
     public User getByEmail(@NotBlank @Pattern("^[^@\\s]+@[^@\\s]+$") String email) { ... }
 
-    // result validation: @Validate enables it, @Valid validates the returned objects,
-    // @Size constrains the list itself
-    @Size(min = 1)
-    @Valid
-    @Validate
+    @Size(min = 1, max = 500)                               // constrains the returned list
+    @Valid                                                  // validates each element
+    @Validate                                               // enables the aspect
     public List<User> getAllUsers() { ... }
 }
 ```
 
-`failFast = true` throws on the first violation; the default collects all violations into one `ViolationException`.
+Result validation runs after the body. `@Validate` alone validates only arguments; the constraints
+for the result go on the **method**.
 
-Supported method signatures: `T`, `Optional<T>`, `Mono<T>`/`Flux<T>` (with `reactor-core`) in Java; `T`, `suspend fun`, `Flow<T>` in Kotlin.
+**The target must be proxyable.** The generated proxy is `$Name__AopProxy extends Name`, so the class
+must not be `final` (Java) / must be `open` (Kotlin), the method must not be `final` or `private`
+(Java) / must be `open` (Kotlin), and a non-private constructor must exist.
+
+> **Both languages fail loudly on `final` / non-`open`.** A `final` class, a `final` method or a
+> `private` method carrying `@Validate` is a **compile error**, not a silent skip — the Java
+> processor reports `AOP aspect cannot be applied to class '…' because the class is final.`
+> (respectively `… method '…#…()' because the method is final.` / `… because the method is private.`),
+> and KSP reports `AOP aspect cannot be applied to class '…' because the class is not open.`
+>
+> The genuinely silent case is Java-only: an **abstract class or an interface** carrying an aspect
+> annotation is skipped without a proxy, a warning or an error. Kotlin rejects an abstract class with
+> `AOP aspect cannot be applied to abstract class '…'.`
+
+**Return types.** Kora 2.0 contracts are synchronous and that is the shape to write.
+
+- Java: `Publisher` (`Mono`/`Flux`) and bare `Future` are rejected outright with a processing error.
+  `CompletionStage` / `CompletableFuture` are still accepted by `@Validate`.
+- Kotlin: plain values, `suspend` functions and `Flow<T>` are supported. `Future`, `CompletionStage`,
+  `Mono` and `Flux` are rejected — but only when the method also validates its **result**;
+  argument-only validation on such a method is not checked.
+
+Kora's own contracts — repositories, controllers, HTTP clients — are synchronous. Do not reintroduce
+async signatures just to reach these paths.
 
 ---
 
 ## Mapping `ViolationException` to HTTP 400
 
-Requires the `validation-module` artifact (`ValidationModule`). Register an interceptor tagged for the HTTP server plus a response mapper. Adapted from `.kora-agent/kora-examples/guides/java/kora-java-guide-validation-app`:
+`ValidationModule` declares the interceptor as a `@DefaultComponent` **without a tag**, so nothing
+picks it up on its own — the HTTP router collects only `@Tag(HttpServer.class) All<HttpServerInterceptor>`.
+Wiring it is an explicit step: override the module method with the tag, and supply the response
+mapper that builds the body.
 
 ```java
 @KoraApp
 public interface Application extends
-        ValidationModule, UndertowHttpServerModule, JsonModule, LogbackModule {
+        ValidationModule, UndertowPublicHttpServerModule, JsonModule, HoconConfigModule, LogbackModule {
 
-    default ViolationExceptionHttpServerResponseMapper violationMapper(
+    default ViolationExceptionHttpServerResponseMapper violationExceptionHttpServerResponseMapper(
             JsonWriter<ValidationErrorResponse> writer) {
         return (request, exception) -> HttpServerResponse.of(
             400,
-            HttpBody.json(writer.toByteArrayUnchecked(
+            HttpBody.json(writer.toByteArray(
                 ValidationErrorResponse.of(toErrors(exception.getViolations())))));
     }
 
-    @Tag(HttpServerModule.class)
-    default ValidationHttpServerInterceptor validationInterceptor(
+    @Tag(HttpServer.class)                                  // io.koraframework.http.server.common.HttpServer
+    default ValidationHttpServerInterceptor validationHttpServerInterceptor(
             ViolationExceptionHttpServerResponseMapper mapper) {
         return new ValidationHttpServerInterceptor(mapper);
     }
@@ -204,41 +310,54 @@ public interface Application extends
     private static List<ValidationErrorDetails> toErrors(List<Violation> violations) {
         return violations.stream()
             .map(v -> new ValidationErrorDetails(v.path().full(), v.message()))
-            .collect(java.util.stream.Collectors.toList());
+            .toList();
     }
 }
 ```
 
-`Violation` is an interface: `message()` and `path()` (a `ValidationContext.Path` whose `full()` returns the dotted path, e.g. `customer.address.city`). See [violation-exception-reference.md](references/violation-exception-reference.md).
+- `ValidationHttpServerInterceptor` (an `HttpServerInterceptor`) is what turns the exception into a
+  response; `ViolationExceptionHttpServerResponseMapper` is an optional collaborator that shapes the
+  body. Without a mapper the interceptor still answers `400` with `HttpServerResponseException.of(400, message)`.
+- `@Tag(HttpServerModule.class)` is the Kora 1.x tag. It still compiles in 2.0 and the interceptor
+  silently never runs.
+- OpenAPI-generated servers do this differently: with `enableServerValidation=true` the generator
+  puts `@InterceptWith(ValidationHttpServerInterceptor.class)` on each controller. Turn that off with
+  `enableServerValidationInterceptor=false` when mapping errors by hand — see
+  [`kora-openapi-generator-server`](../kora-openapi-generator-server/SKILL.md).
+
+Full walkthrough, DTOs and Kotlin variant: [references/violation-exception-reference.md](references/violation-exception-reference.md).
 
 ---
 
-## References & assets
+## References and assets
 
 | File | Purpose |
-|------|---------|
-| [references/validation-annotations-reference.md](references/validation-annotations-reference.md) | The five constraints, `@Range` boundary enum, `@Pattern` int flags, `@Nullable` opt-out |
-| [references/custom-validators-reference.md](references/custom-validators-reference.md) | Custom constraints via `Validator<T>` + `ValidatorFactory<T>` + `@ValidatedBy` |
-| [references/violation-exception-reference.md](references/violation-exception-reference.md) | `ViolationException`, `Violation`, `ValidationContext`, HTTP 400 mapping, testing |
-| `assets/` | DTO / service / custom-validator / error-response templates (Java + Kotlin) |
-
-Working example apps: `.kora-agent/kora-examples/examples/java/kora-java-validation` (plain validation) and `.kora-agent/kora-examples/guides/java/kora-java-guide-validation-app` (HTTP 400 mapping).
+|---|---|
+| [references/validation-annotations-reference.md](references/validation-annotations-reference.md) | All 22 constraints — attributes, supported types, violation messages, `@Valid`/`@Validate` |
+| [references/custom-validators-reference.md](references/custom-validators-reference.md) | Custom constraints: `Validator<T>`, parameterised `ValidatorFactory<T>`, `@ValidatedBy` |
+| [references/violation-exception-reference.md](references/violation-exception-reference.md) | `ViolationException`, `Violation`, `ValidationContext`, HTTP 400 wiring, testing |
+| `assets/` | DTO, service and error-response templates (Java + Kotlin); custom-constraint templates (annotation / validator / factory) are Java — for the Kotlin specifics see the custom-validators reference |
 
 ---
 
 ## Common pitfalls
 
-| Symptom | Fix |
-|---------|-----|
-| Validation never runs on a method | Add `@Validate` to the method; ensure the class is non-`final` (Java) / `open` (Kotlin) |
-| Nested object not validated | Add `@Valid` to the field/parameter holding it |
-| Field unexpectedly required | All fields are implicit-not-null; add `@Nullable` to make optional |
-| Looking for `@NotNull` | It does not exist in Kora — nullability is the default; opt out with `@Nullable` |
-| Reached for `jakarta.validation.*` | Use `ru.tinkoff.kora.validation.common.annotation.*` instead |
-| Caught the wrong exception | Catch `ru.tinkoff.kora.validation.common.ViolationException` |
-| HTTP 500 instead of 400 on bad input | Use `validation-module`; register `ValidationHttpServerInterceptor` + `ViolationExceptionHttpServerResponseMapper` |
-| Kotlin constraints ignored | Use the `@field:` prefix |
-| `@Pattern(regexp = ...)` won't compile | The attribute is the unnamed `value`: `@Pattern("...")` |
+| Symptom | Cause | Fix |
+|---|---|---|
+| DTO is never validated, no error | `jakarta.validation.*` / `javax.validation.*` annotations | Use `io.koraframework.validation.common.annotation.*` |
+| `AOP aspect cannot be applied … because the class is final` | Java `final` class, `final` method or `private` method | Make the class and method non-`final` and at least package-private |
+| `@Validate` method runs unvalidated, `javac` exits 0 | Java **abstract** class or interface — the only silent AOP case | Move `@Validate` onto the concrete implementation |
+| Kotlin `AOP aspect cannot be applied … not open` | class or function is not `open` | `open class` + `open fun` |
+| Kotlin data class silently unvalidated | constraint written without `@field:` | `@field:NotBlank`, `@field:Size(...)` |
+| Plain class validator is empty | constraints on getters instead of fields | Move constraints onto the fields |
+| `Validation can't be generated for non sealed interface` | `@Valid` on a plain interface | Make it `sealed`, or use `@ConfigSource`/`@ConfigMapper` for config |
+| Field unexpectedly required | every element is implicitly non-null | Add `@Nullable` (JSpecify) / use `T?` in Kotlin |
+| Looking for `@NotNull` | it does not exist in Kora | Nullability is the default; opt out with `@Nullable` |
+| 500 instead of 400 on bad input | interceptor not tagged, or tagged `@Tag(HttpServerModule.class)` | Override the module method with `@Tag(HttpServer.class)` |
+| `Expected X#create() method with N parameters` | custom constraint has attributes, factory has no matching `create(...)` | Add `create(...)` with one parameter per annotation attribute, in declaration order |
+| `toByteArrayUnchecked` does not compile | Kora 1.x JSON API | `JsonWriter.toByteArray(...)` — the `*Unchecked` methods are gone in 2.0 |
+| Kotlin `'validationHttpServerInterceptor' overrides nothing` | the module parameter is `@Nullable` | Declare it as `ViolationExceptionHttpServerResponseMapper?` |
+| `@Range(from = 1, to = 5)` does not compile in Kotlin | attributes are `double` | `from = 1.0, to = 5.0` |
 
 ---
 
@@ -246,22 +365,24 @@ Working example apps: `.kora-agent/kora-examples/examples/java/kora-java-validat
 
 ```java
 @KoraAppTest(Application.class)
-class CreateUserValidationTest {
+class UserServiceValidationTest {
 
     @TestComponent
-    private Validator<CreateUserRequest> validator;
+    private UserService service;          // the AOP proxy, so @Validate is active
 
     @Test
-    void failsForBlankName() {
+    void rejectsBlankName() {
         var request = new CreateUserRequest("   ", "test@example.com", 25, null);
 
-        ViolationException ex = assertThrows(ViolationException.class,
-            () -> validator.validateAndThrow(request));
+        var ex = assertThrows(ViolationException.class, () -> service.create(request));
 
-        assertTrue(ex.getViolations().stream()
-            .anyMatch(v -> v.path().full().contains("name")));
+        assertTrue(ex.getViolations().stream().anyMatch(v -> v.path().full().contains("name")));
     }
 }
 ```
 
-See `.kora-agent/kora-examples/examples/java/kora-java-validation/src/test/java/...` for the `@KoraAppTest` + `@TestComponent` pattern over `ArgumentValidator` / `ResultValidator`.
+`@KoraAppTest` / `@TestComponent` come from `io.koraframework.test.extension.junit5`
+(artifact `io.koraframework:test-junit5`). `@TestComponent` resolves nodes from the already-built
+graph, so `@TestComponent Validator<CreateUserRequest>` only injects when something in the
+application already depends on that validator. Testing through the `@Validate` component, as above,
+always works.

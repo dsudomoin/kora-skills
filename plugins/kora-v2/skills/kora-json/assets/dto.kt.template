@@ -1,13 +1,36 @@
 package ${package}
 
-import ru.tinkoff.kora.json.common.annotation.Json
+import io.koraframework.json.common.annotation.Json
+import io.koraframework.json.common.annotation.JsonField
+import io.koraframework.json.common.annotation.JsonSkip
+${imports}
 
 /**
  * DTO for ${entity_name}.
  *
- * <p>Used for JSON serialization/deserialization via the Kora JSON module.</p>
+ * `@Json` generates `JsonReader<${dto_name}>` and `JsonWriter<${dto_name}>` at compile time
+ * (KSP) and registers both in the DI graph. Use `@JsonReader` or `@JsonWriter` instead when
+ * only one direction is needed.
+ *
+ * Nullability is the Kotlin type — a property is required on read unless it is declared `T?`.
+ * Do not port Java/JSpecify `@Nullable` annotations into Kotlin.
  *
  * @param ${fields_description}
  */
 @Json
 data class ${dto_name}(${fields})
+
+/*
+ * Field-level options (io.koraframework.json.common.annotation):
+ *
+ *   @JsonField("wire_name")            rename a single field
+ *   @field:JsonSkip                    drop the field from read AND write
+ *   @field:JsonInclude(JsonInclude.IncludeType.ALWAYS)  write it even when null
+ *   val x: T?                          optional on read
+ *   JsonNullable<T>                    distinguish "omitted" from "explicitly null"
+ *   @Mapping(XReader::class)           per-field custom codec
+ *
+ * @JsonField resolves with or without a use-site target (@field:, @property:, @param:).
+ * To rename every field at once, annotate the class with
+ * @NamingStrategy(SnakeCaseNameConverter::class).
+ */

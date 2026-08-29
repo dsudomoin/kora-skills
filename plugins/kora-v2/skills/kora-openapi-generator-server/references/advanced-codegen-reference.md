@@ -1,297 +1,254 @@
-# Advanced OpenAPI Codegen Options
+# Advanced Codegen — Kora 2.x OpenAPI Server
 
-**Kora Version:** 1.2.x  
-**OpenAPI Generator:** 7.14.0
+Options beyond `mode` and `enableServerValidation`, verified against `CodegenParams` and the
+generator's own test fixtures at `2.0.0.RC1`.
 
-This reference covers advanced `kora` generator options for HTTP server codegen, including `requestInDelegateParams` and handling `oneOf`/`allOf` schemas.
+## Contents
 
----
-
-## requestInDelegateParams
-
-### Purpose
-
-By default, generated delegate methods have parameters corresponding only to the OpenAPI spec (path/query/header params, request body). To access the raw `HttpServerRequest` (e.g., for computing fingerprints from multiple headers, reading untyped query params, or accessing low-level request metadata), enable `requestInDelegateParams`.
-
-### Configuration
-
-```groovy
-def openApiGenerateHttpServer = tasks.register("openApiGenerateHttpServer", GenerateTask) {
-    generatorName = "kora"
-    inputSpec = "$projectDir/src/main/resources/openapi/api.yaml"
-    outputDir = "$buildDir/generated/api-server"
-    
-    configOptions = [
-        mode: "java-server",
-        requestInDelegateParams: "true",  // Adds HttpServerRequest as FIRST parameter
-    ]
-}
-```
-
-### Generated Signature
-
-**Without `requestInDelegateParams`:**
-```java
-public GetUserApiResponse getUser(String userId, @Nullable String fields)
-```
-
-**With `requestInDelegateParams`:**
-```java
-public GetUserApiResponse getUser(
-    HttpServerRequest _serverRequest,  // FIRST parameter
-    String userId,
-    @Nullable String fields
-)
-```
-
-### Use Cases
-
-**1. Compute fingerprint from multiple headers:**
-```java
-@Override
-public GetUserApiResponse getUser(HttpServerRequest _serverRequest, String userId) {
-    String userAgent = _serverRequest.header("User-Agent");
-    String accept = _serverRequest.header("Accept");
-    String fingerprint = computeFingerprint(userAgent, accept);
-    return userService.findById(userId, fingerprint)
-        .map(GetUserApiResponse::new)
-        .orElseGet(() -> new GetUser404ApiResponse());
-}
-```
-
-**2. Read untyped query params:**
-```java
-@Override
-public SearchApiResponse search(HttpServerRequest _serverRequest) {
-    // Access query params not defined in spec
-    String extraParam = _serverRequest.queryParam("extra");
-    // ...
-}
-```
-
-**3. Access raw request metadata:**
-```java
-@Override
-public CreateApiResponse create(HttpServerRequest _serverRequest, CreateRequest request) {
-    Instant receivedAt = Instant.now();
-    String remoteAddr = _serverRequest.remoteAddress();
-    // Audit logging
-    auditLog.log(remoteAddr, receivedAt, request);
-    // ...
-}
-```
-
-### Verification
-
-After enabling the option, inspect generated delegates:
-
-```bash
-cat build/generated/openapi/api/src/main/java/com/example/api/*Delegate.java
-```
-
-Look for `HttpServerRequest _serverRequest` as the first parameter.
+- [1. `extensions` — the one hook for extra annotations and interceptors](#1-extensions--the-one-hook-for-extra-annotations-and-interceptors)
+- [2. `serverConfigPrefix` and `%{configPath}`](#2-serverconfigprefix-and-configpath)
+- [3. Implicit headers](#3-implicit-headers)
+- [4. `rawBodyMode`](#4-rawbodymode)
+- [5. `filterWithModels` and `openapiNormalizer FILTER`](#5-filterwithmodels-and-openapinormalizer-filter)
+- [6. `requestInDelegateParams` and `delegateMethodBodyMode`](#6-requestindelegateparams-and-delegatemethodbodymode)
+- [7. `prefixPath`](#7-prefixpath)
+- [8. Multi-spec projects](#8-multi-spec-projects)
+- [9. Templates are not customisable any more](#9-templates-are-not-customisable-any-more)
+- [10. Options that no longer exist](#10-options-that-no-longer-exist)
 
 ---
 
-## oneOf / allOf Without Discriminator
+## 1. `extensions` — the one hook for extra annotations and interceptors
 
-### Problem
+`configOptions.extensions` takes a JSON document with three optional sections:
 
-Kora generator 7.14.0 **collapses `oneOf` without discriminator into an empty record** — this breaks wire compatibility.
-
-**Example spec (broken):**
-```yaml
-components:
-  schemas:
-    PaymentResult:
-      oneOf:
-        - $ref: '#/components/schemas/PendingResult'
-        - $ref: '#/components/schemas/CompletedResult'
+```json
+{
+  "*":          { … },
+  "tags":       { "<openapi tag baseName>": { … } },
+  "operations": { "<operationId>": { … } }
+}
 ```
 
-**Generated (broken):**
-```java
-// Empty record!
-public record PaymentResult() {}
-```
+Every matching section applies, in the order global → tag → operation. Each section object
+accepts:
 
-### Workaround: Flatten to Single Schema
+| Key | Type | Applies to | Effect |
+|---|---|---|---|
+| `additionalMethodAnnotations` | string or array | controller + delegate methods | Annotations added verbatim. `%{configPath}` is substituted (section 2). |
+| `additionalTypeAnnotations` | string or array | models **and** enums | Global (`"*"`) section only. |
+| `additionalModelTypeAnnotations` | string or array | models | Global section only. |
+| `additionalEnumTypeAnnotations` | string or array | enums | Global section only. |
+| `interceptorType` | string | controller methods | `@InterceptWith(TheType.class)` |
+| `interceptorTag` | string or array | controller methods | `@InterceptWith(value = HttpServerInterceptor.class, tag = TheTag.class)`; combined with `interceptorType` it resolves that type by tag. |
+| `clientMapping` | object | client mode only | see the client skill |
 
-Convert `oneOf` to a single object schema with all fields `nullable` (boxed types, not primitives):
-
-```yaml
-components:
-  schemas:
-    PaymentResult:
-      type: object
-      properties:
-        status:
-          type: string
-          enum: [pending, completed]
-        # Pending-specific fields
-        estimatedCompletionTime:
-          type: string
-          format: date-time
-          nullable: true
-        # Completed-specific fields
-        transactionId:
-          type: string
-          nullable: true
-        completedAt:
-          type: string
-          format: date-time
-          nullable: true
-```
-
-**Generated:**
-```java
-public record PaymentResult(
-    String status,
-    @Nullable Instant estimatedCompletionTime,
-    @Nullable String transactionId,
-    @Nullable Instant completedAt
-) {}
-```
-
-**Why this works:** Kora's `JsonWriter` uses `IncludeType.NON_NULL` by default — `null` fields are omitted during serialization. Each branch sends only its fields, producing byte-identical JSON to the `oneOf` version.
-
-### Proper Solution: Add Discriminator
-
-For true polymorphism, add a `discriminator` with `propertyName`:
-
-```yaml
-components:
-  schemas:
-    PaymentResult:
-      oneOf:
-        - $ref: '#/components/schemas/PendingResult'
-        - $ref: '#/components/schemas/CompletedResult'
-      discriminator:
-        propertyName: resultType
-        mapping:
-          pending: '#/components/schemas/PendingResult'
-          completed: '#/components/schemas/CompletedResult'
-
-    PendingResult:
-      type: object
-      required: [resultType, estimatedCompletionTime]
-      properties:
-        resultType:
-          type: string
-          enum: [pending]
-        estimatedCompletionTime:
-          type: string
-          format: date-time
-
-    CompletedResult:
-      type: object
-      required: [resultType, transactionId, completedAt]
-      properties:
-        resultType:
-          type: string
-          enum: [completed]
-        transactionId:
-          type: string
-        completedAt:
-          type: string
-          format: date-time
-```
-
-**Generated:**
-```java
-// Sealed interface with discriminator-based deserialization
-public sealed interface PaymentResult permits PendingResult, CompletedResult {}
-
-public record PendingResult(String resultType, Instant estimatedCompletionTime) implements PaymentResult {}
-public record CompletedResult(String resultType, String transactionId, Instant completedAt) implements PaymentResult {}
-```
-
-### openapiNormalizer Setting
-
-Since OpenAPI Generator plugin 7.0.0, the `SIMPLIFY_ONEOF_ANYOF` rule is **ON by default** and rewrites polymorphic schemas.
-
-**Disable it:**
-```groovy
-openapiNormalizer = [DISABLE_ALL: "true"]
-```
-
-This preserves `oneOf`/`allOf` structures for the Kora generator to handle.
-
----
-
-## enableServerValidation
-
-### Purpose
-
-Generates `@Valid` annotations on delegate method parameters and model fields based on OpenAPI constraints (`minLength`, `pattern`, `nullable: false`, etc.).
-
-### Configuration
+Annotation strings are parsed with a small parser: a leading `@` is optional, `Name(arg, k = v)`
+is supported, and the type is resolved with `ClassName.bestGuess`, so **write fully-qualified
+type names**.
 
 ```groovy
 configOptions = [
-    mode: "java-server",
-    enableServerValidation: "true",
+    mode      : "java-server",
+    extensions: """
+        {
+          "*": {
+            "additionalModelTypeAnnotations": [
+              "@io.koraframework.json.common.annotation.JsonInclude(io.koraframework.json.common.annotation.JsonInclude.IncludeType.ALWAYS)"
+            ],
+            "interceptorType": "com.example.api.AuditHttpServerInterceptor"
+          },
+          "tags": {
+            "pet": { "additionalMethodAnnotations": ["@io.koraframework.logging.common.annotation.Log"] }
+          },
+          "operations": {
+            "deletePet": { "interceptorTag": ["com.example.api.Tags.Admin"] }
+          }
+        }
+        """,
 ]
 ```
 
-### Required Dependency
+Malformed JSON aborts generation with a message naming the option and the expected shape.
 
-Add `validation-module` or generated models won't compile:
+**Adding a method annotation opens the class.** The generator drops `final` (Java) / adds `open`
+(Kotlin) on the controller as soon as `additionalMethodAnnotations` is non-empty anywhere, so
+aspect-bearing annotations such as `@Log`, `@CircuitBreakable` or `@Cacheable` work.
+
+## 2. `serverConfigPrefix` and `%{configPath}`
+
+Some Kora annotations take a config path. `serverConfigPrefix` defines what `%{configPath}`
+expands to inside `additionalMethodAnnotations`:
+
+```
+default: httpServer.controller.%{ControllerTypeNameInCamelCase}
+```
+
+`%{ControllerTypeNameInCamelCase}` is replaced with the controller type name, first letter
+lower-cased — `PetApiController` → `petApiController`. So by default `%{configPath}` becomes
+`httpServer.controller.petApiController`.
 
 ```groovy
-dependencies {
-    implementation "ru.tinkoff.kora:validation-module"
-}
+configOptions = [
+    mode              : "java-server",
+    serverConfigPrefix: "myapp.api.%{ControllerTypeNameInCamelCase}",
+    extensions        : """
+        { "*": { "additionalMethodAnnotations": ["@com.example.RateLimited(\\"%{configPath}\\")"] } }
+        """,
+]
 ```
+
+`%{configPath}` is substituted only in `additionalMethodAnnotations`, not in type annotations.
+
+## 3. Implicit headers
+
+`implicitHeaders: "true"` removes **every** header parameter from the generated controller and
+delegate signatures, replacing it with a documentation annotation:
 
 ```java
-@KoraApp
-public interface Application extends
-    ValidationModule,  // Required for @Valid annotations
-    UndertowHttpServerModule,
-    OpenApiManagementModule {
+@io.swagger.v3.oas.annotations.Parameter(name = "X-Request-Id", description = "", required = true,
+    in = ParameterIn.HEADER)
+```
+
+`implicitHeadersRegex` does the same for header names matching a regex only:
+
+```groovy
+configOptions = [mode: "java-server", implicitHeadersRegex: "^X-Internal-.*"]
+```
+
+Use it when a gateway injects headers that every operation formally declares but no handler
+reads. If a handler does need one of them, combine with `requestInDelegateParams: "true"` and
+read it from `HttpServerRequest`. Note that the `@Parameter` annotation is Swagger's — it needs
+`io.swagger.core.v3:swagger-annotations` on the compile classpath.
+
+## 4. `rawBodyMode`
+
+Controls the type used for a request/response body that is a bare `type: object` with no schema.
+
+| Value | Server request body | Server response body |
+|---|---|---|
+| `BYTES` (default) | `byte[]` | `byte[]` |
+| `BODY` | `HttpBodyInput` | `HttpBodyOutput` |
+| `OBJECT` | `Object`, routed through the JSON mapper | `Object` |
+
+`HttpBodyInput`/`HttpBodyOutput` are `io.koraframework.http.common.body.*` and let you stream
+instead of materialising the payload. `OBJECT` is the right choice when the body really is
+free-form JSON you intend to hand to a generic mapper. An invalid value fails generation with the
+supported list.
+
+Whenever a body is not JSON — including the `BYTES`/`BODY` bare-object cases — the delegate also
+receives a leading `HttpHeaders _headers` parameter so it can read the real `Content-Type`.
+
+## 5. `filterWithModels` and `openapiNormalizer FILTER`
+
+Generating only part of a large shared contract:
+
+```groovy
+openapiNormalizer = [FILTER: "operationId:getPetById|addPet"]
+configOptions = [mode: "java-server", filterWithModels: "true"]
+```
+
+`FILTER` (a plugin feature) drops the operations; `filterWithModels` (a Kora option) additionally
+drops the models that only the removed operations referenced, so the output does not carry dead
+DTOs. Without it you get the filtered API plus the full model set.
+
+## 6. `requestInDelegateParams` and `delegateMethodBodyMode`
+
+Both are covered in [Delegates Reference](openapi-delegates-reference.md). Summary:
+
+- `requestInDelegateParams: "true"` prepends `HttpServerRequest _serverRequest` to every
+  controller and delegate method — all-or-nothing.
+- `delegateMethodBodyMode: "throwException"` makes delegate methods `default` bodies that throw
+  and adds a `*ApiModule` supplying an anonymous delegate. The value `throw-exception` from 1.x
+  is rejected. Because that module method is not `@DefaultComponent`, it collides with a
+  hand-written `@Component` delegate.
+
+## 7. `prefixPath`
+
+Prefixes every route in the generated controller by filling `@HttpController`'s value.
+
+The two languages emit it differently — Kotlin writes it as a quoted string (`%S`), Java writes it
+verbatim into a JavaPoet format slot. In `java-server` mode pass the value already quoted:
+
+```groovy
+configOptions = [mode: "java-server",   prefixPath: '"/api/v1"']
+```
+```kotlin
+configOptions.set(mapOf("mode" to "kotlin-server", "prefixPath" to "/api/v1"))
+```
+
+The safest option is to leave it unset and put the prefix in the contract's `paths`, so the served
+URLs and the published spec cannot drift.
+
+## 8. Multi-spec projects
+
+One `GenerateTask` per spec, each with its own `outputDir`, `apiPackage` and `modelPackage`:
+
+```groovy
+def genPets = tasks.register("openApiGeneratePets", GenerateTask) {
+    generatorName = "kora"
+    inputSpec = layout.projectDirectory.file("src/main/resources/openapi/pets.yaml")
+    outputDir = layout.buildDirectory.dir("generated/pets")
+    apiPackage = "com.example.pets.api"
+    modelPackage = "com.example.pets.model"
+    configOptions = [mode: "java-server", enableServerValidation: "true"]
 }
+
+def genUsers = tasks.register("openApiGenerateUsers", GenerateTask) {
+    generatorName = "kora"
+    inputSpec = layout.projectDirectory.file("src/main/resources/openapi/users.yaml")
+    outputDir = layout.buildDirectory.dir("generated/users")
+    apiPackage = "com.example.users.api"
+    modelPackage = "com.example.users.model"
+    configOptions = [mode: "java-server", enableServerValidation: "true"]
+}
+
+sourceSets.main {
+    java.srcDirs += genPets.get().outputDir
+    java.srcDirs += genUsers.get().outputDir
+}
+compileJava.dependsOn genPets, genUsers
 ```
 
-### Generated Annotations
+Each spec then produces its own `ApiSecurity`, so a marker is always
+`com.example.pets.api.ApiSecurity.BearerAuth` — fully qualify it when two specs both declare
+security, or the extractors will be tagged against the wrong package.
 
-**Spec:**
-```yaml
-CreateUserRequest:
-  type: object
-  required: [email, name]
-  properties:
-    email:
-      type: string
-      format: email
-      minLength: 5
-      maxLength: 255
-    name:
-      type: string
-      minLength: 1
-      maxLength: 100
-```
+A server and a client generated from the same file must use different `apiPackage`s: both modes
+emit an `ApiSecurity` and same-named model types.
 
-**Generated:**
-```java
-@Generated(value = "org.openapitools.codegen.DefaultCodegen", date = "...")
-public record CreateUserRequest(
-    @NotNull @Email @Size(min = 5, max = 255) String email,
-    @NotNull @Size(min = 1, max = 100) String name
-) {}
-```
+## 9. Templates are not customisable any more
 
-### Validation Interceptor
+In Kora 2.0 the Mustache files under `openapi/templates/kora/` are one-line stubs that delegate
+to JavaPoet/KotlinPoet generators (`javagen/*`, `kotlingen/*`). Overriding them with the plugin's
+`templateDir` therefore cannot change the generated code. Shape output with `configOptions`, or
+post-process by adding your own components — never by editing `build/generated`.
 
-Kora automatically validates `@Valid`-annotated parameters via the validation interceptor. Invalid requests return 400 with constraint violation details.
+## 10. Options that no longer exist
 
-See [Validation Reference](references/openapi-validation-reference.md) for constraint mappings.
+`CodegenParams.parse` reads a fixed set of keys; anything else in `configOptions` is ignored
+silently by the Kora generator. These 1.x-era keys are the ones most often left behind in a
+migrated build file:
 
----
+| Stale key | Replacement |
+|---|---|
+| `interceptors` | `extensions` with `interceptorType` / `interceptorTag` |
+| `additionalContractAnnotations` | `extensions.*.additionalMethodAnnotations` |
+| `enableJsonNullable` | none — `JsonNullable` is applied automatically to `nullable` + optional fields |
+| `forceIncludeNonRequired` | none |
+| `discriminatorCaseSensitive` | none — the constant exists in the source but is never parsed |
+| `delegateMethodBodyMode: "throw-exception"` | `"throwException"` |
+| `mode: "java-reactive-server"` etc. | `java-server` / `kotlin-server` |
 
-## See Also
+`forceIncludeOptional` is a special case: it is parsed, but no generator consumes it at
+`2.0.0.RC1`, so setting it changes nothing.
 
-- [Codegen Reference](references/openapi-codegen-reference.md) — Full `configOptions` table
-- [Delegates Reference](references/openapi-delegates-reference.md) — Delegate method signatures
-- [Models Reference](references/openapi-models-reference.md) — Generated records, enums, discriminators
-- [Validation Reference](references/openapi-validation-reference.md) — `@Valid` annotations and constraints
+Because unknown keys are ignored rather than rejected, a stale option produces **no error and no
+effect** — check the generated output, not the build log, when an option seems to do nothing.
+
+## Related
+
+- [Codegen Reference](openapi-codegen-reference.md)
+- [Controllers Reference](openapi-controllers-reference.md)
+- [Delegates Reference](openapi-delegates-reference.md)
+- [Authorization Reference](authorization-reference.md)

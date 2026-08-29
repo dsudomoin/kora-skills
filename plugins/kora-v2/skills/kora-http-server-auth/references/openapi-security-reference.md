@@ -1,285 +1,474 @@
-# OpenAPI Security Reference
+# OpenAPI Security Reference (Kora 2.0)
 
-`HttpServerPrincipalExtractor<P>` bound to OpenAPI-generated `ApiSecurity` markers.
-Source of truth: `.kora-agent/kora-docs/mkdocs/docs/en/documentation/openapi-codegen.md`
-(Authorization section) and `.kora-agent/kora-examples/examples/java/kora-java-openapi-generator-http-server`.
+Everything the `kora` OpenAPI generator emits for `components.securitySchemes`, and the exact
+contract your `HttpServerPrincipalExtractor` must satisfy.
 
 ## Contents
 
-- [How it fits together](#how-it-fits-together)
-- [Generated ApiSecurity markers](#generated-apisecurity-markers)
-- [Principal and PrincipalWithScopes](#principal-and-principalwithscopes)
-- [Bearer / JWT extractor](#bearer--jwt-extractor)
-- [API-key extractor](#api-key-extractor)
-- [Basic extractor](#basic-extractor)
-- [OAuth extractor with scopes](#oauth-extractor-with-scopes)
-- [Multiple schemes at once](#multiple-schemes-at-once)
-- [Error mapping (401 / 403)](#error-mapping-401--403)
-- [Testing an extractor](#testing-an-extractor)
+- [The contract](#the-contract)
+- [What the generator emits](#what-the-generator-emits)
+- [Tag naming rules](#tag-naming-rules)
+- [The credential your extractor receives](#the-credential-your-extractor-receives)
+- [Choosing the extractor's type arguments](#choosing-the-extractors-type-arguments)
+- [Per-scheme extractors](#per-scheme-extractors)
+- [OAuth2 and PrincipalWithScopes](#oauth2-and-principalwithscopes)
+- [AND requirements and AuthData](#and-requirements-and-authdata)
+- [OR alternatives and anonymous access](#or-alternatives-and-anonymous-access)
+- [Reaching the principal from a delegate](#reaching-the-principal-from-a-delegate)
+- [Shaping the 401 response](#shaping-the-401-response)
+- [Registering the extractor](#registering-the-extractor)
+- [Testing](#testing)
 
 ---
 
-## How it fits together
+## The contract
 
-1. The OpenAPI contract declares `securitySchemes` and per-operation (or global) `security`.
-2. The Kora `kora` generator emits an `ApiSecurity` class in the api package, with one
-   nested marker type per scheme (`BearerAuth`, `BasicAuth`, `ApiKeyAuth`, `OAuth`).
-3. You provide an `HttpServerPrincipalExtractor<P>` component tagged with
-   `@Tag(ApiSecurity.<Scheme>.class)`.
-4. The generated controller calls the matching extractor before invoking your delegate,
-   passing the raw credential `value` parsed from the scheme's header.
-5. The extractor returns a `CompletionStage<P>` (typically
-   `CompletableFuture.completedFuture(principal)`), or throws `SecurityException` to reject.
+```java
+package io.koraframework.http.server.common.auth;
 
-The principal is **not** stored in a thread-local; there is no `Principal.current()` and
-no request-attribute bag. If a delegate needs the principal, it is delivered through the
-generated transport.
+public interface HttpServerPrincipalExtractor<T, P extends Principal> {
+    @Nullable
+    P extract(HttpServerRequest request, @Nullable T token);
+}
+```
+
+- **Two** type parameters: `T` = the credential the scheme yields, `P` = your principal type.
+- Synchronous. No `CompletionStage`, no `Mono`, no `suspend`.
+- Both the `token` argument and the result are `@Nullable`; the module is `@NullMarked`, so a Kotlin
+  override must be `fun extract(request: HttpServerRequest, token: String?): Principal?`.
+- **Returning `null` means "not authenticated"** — that is the whole rejection protocol.
+
+`Principal` is `io.koraframework.common.Principal`; `PrincipalWithScopes` is
+`io.koraframework.http.common.auth.PrincipalWithScopes` and adds `Collection<String> scopes()`.
+
+```java
+public interface Principal {
+    ScopedValue<Principal> VALUE = ScopedValue.newInstance();
+
+    @Nullable static Principal current() { … }
+
+    static <T, X extends Throwable> T with(Principal principal, ScopedValue.CallableOp<T, X> op) throws X { … }
+}
+```
 
 ---
 
-## Generated ApiSecurity markers
+## What the generator emits
 
-For a contract such as:
+For
 
 ```yaml
 components:
-    securitySchemes:
-        bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
-        apiKeyAuth: { type: apiKey, in: header, name: Authorization }
-        basicAuth:  { type: http, scheme: basic }
+  securitySchemes:
+    apiKeyAuth: { type: apiKey, in: header, name: X-API-KEY }
+security:
+  - apiKeyAuth: []
 ```
 
-the generator produces `ApiSecurity.BearerAuth`, `ApiSecurity.ApiKeyAuth`,
-`ApiSecurity.BasicAuth`. An `oauth2` scheme produces `ApiSecurity.OAuth`. Reference these
-markers from `@Tag` to bind the right extractor.
-
----
-
-## Principal and PrincipalWithScopes
-
-- `ru.tinkoff.kora.common.Principal` — base marker interface. Your principal record
-  implements it.
-- `ru.tinkoff.kora.http.common.auth.PrincipalWithScopes` — extends `Principal` with
-  `Collection<String> scopes()`; required for OAuth scope enforcement.
+the generator writes `ApiSecurity.java` into the api package (abridged, but verbatim in shape):
 
 ```java
-import ru.tinkoff.kora.common.Principal;
+@Generated("io.koraframework.openapi.generator.javagen.ServerSecuritySchemaGenerator")
+@Module
+public interface ApiSecurity {
 
-public record DataApiPrincipal(String name) implements Principal {}
-```
+  @Tag(ApiKeyAuth.class)
+  @DefaultComponent
+  default ApiKeyAuthHttpServerInterceptor ApiKeyAuthHttpServerInterceptor(
+      @Tag(ApiKeyAuth.class) HttpServerPrincipalExtractor<String, Principal> ApiKeyAuth_) {
+    return new ApiKeyAuthHttpServerInterceptor(ApiKeyAuth_);
+  }
 
-```java
-import java.util.Collection;
-import java.util.List;
-import ru.tinkoff.kora.http.common.auth.PrincipalWithScopes;
+  final class ApiKeyAuth {}                       // the tag — a bare marker class
 
-public record UserPrincipal(String name) implements PrincipalWithScopes {
-    @Override public Collection<String> scopes() { return List.of("read", "write"); }
-}
-```
-
----
-
-## Bearer / JWT extractor
-
-`value` is the token after the `Bearer ` prefix. Validate it with your own JWT library
-(Kora core does not ship a JWT verifier) and build the principal from the claims.
-
-```java
-import java.util.concurrent.CompletableFuture;
-import ru.tinkoff.kora.common.Principal;
-import ru.tinkoff.kora.common.Tag;
-import ru.tinkoff.kora.http.server.common.auth.HttpServerPrincipalExtractor;
-
-@Tag(ApiSecurity.BearerAuth.class)
-default HttpServerPrincipalExtractor<Principal> bearerHttpServerPrincipalExtractor(JwtVerifier jwt) {
-    return (request, value) -> {
-        if (value == null) {
-            throw new SecurityException("Missing bearer token");
-        }
-        var claims = jwt.verify(value); // your component; throws on invalid signature/expiry
-        return CompletableFuture.completedFuture(new DataApiPrincipal(claims.subject()));
-    };
-}
-```
-
-`JwtVerifier` is your own `@Component`; nothing about it is Kora-specific.
-
----
-
-## API-key extractor
-
-`value` is the value of the header named in the `apiKey` scheme.
-
-```java
-import java.util.concurrent.CompletableFuture;
-import ru.tinkoff.kora.common.Principal;
-import ru.tinkoff.kora.common.Tag;
-import ru.tinkoff.kora.http.server.common.auth.HttpServerPrincipalExtractor;
-
-@Tag(ApiSecurity.ApiKeyAuth.class)
-default HttpServerPrincipalExtractor<Principal> apiKeyHttpServerPrincipalExtractor(DataApiAuthConfig config) {
-    return (request, value) -> {
-        if (value == null || !config.value().equals(value)) {
-            throw new SecurityException("Invalid API key");
-        }
-        return CompletableFuture.completedFuture(new DataApiPrincipal("data-api-client"));
-    };
-}
-```
-
-```java
-import ru.tinkoff.kora.config.common.annotation.ConfigSource;
-
-@ConfigSource("auth.apiKey")
-public interface DataApiAuthConfig {
-    String value();
-}
-```
-
-For multiple rotating keys, inject your own lookup component instead of a single config
-value.
-
----
-
-## Basic extractor
-
-`value` is the credential after the `Basic ` prefix — base64 of `username:password`.
-
-```java
-import java.nio.charset.StandardCharsets;
-import java.util.Base64;
-import java.util.concurrent.CompletableFuture;
-import ru.tinkoff.kora.common.Principal;
-import ru.tinkoff.kora.common.Tag;
-import ru.tinkoff.kora.http.server.common.auth.HttpServerPrincipalExtractor;
-
-@Tag(ApiSecurity.BasicAuth.class)
-default HttpServerPrincipalExtractor<Principal> basicHttpServerPrincipalExtractor(CredentialService creds) {
-    return (request, value) -> {
-        if (value == null) {
-            throw new SecurityException("Missing credentials");
-        }
-        var decoded = new String(Base64.getDecoder().decode(value), StandardCharsets.UTF_8);
-        var parts = decoded.split(":", 2);
-        if (parts.length != 2 || !creds.validate(parts[0], parts[1])) {
-            throw new SecurityException("Invalid credentials");
-        }
-        return CompletableFuture.completedFuture(new DataApiPrincipal(parts[0]));
-    };
-}
-```
-
-Always serve Basic auth over HTTPS — credentials are only base64-encoded, not encrypted.
-
----
-
-## OAuth extractor with scopes
-
-Return a `PrincipalWithScopes` so the generated transport can compare the token's scopes
-against the scopes the operation requires.
-
-```java
-import java.util.concurrent.CompletableFuture;
-import ru.tinkoff.kora.common.Tag;
-import ru.tinkoff.kora.http.common.auth.PrincipalWithScopes;
-import ru.tinkoff.kora.http.server.common.auth.HttpServerPrincipalExtractor;
-
-@Tag(ApiSecurity.OAuth.class)
-default HttpServerPrincipalExtractor<PrincipalWithScopes> oauthHttpServerPrincipalExtractor(JwtVerifier jwt) {
-    return (request, value) -> {
-        var claims = jwt.verify(value);
-        return CompletableFuture.completedFuture(new UserPrincipal(claims.subject()));
-    };
-}
-```
-
----
-
-## Multiple schemes at once
-
-Declare one extractor per scheme on `@KoraApp` or a `@Module`. Each is selected by its
-`@Tag`.
-
-```java
-@Tag(ApiSecurity.BearerAuth.class)
-default HttpServerPrincipalExtractor<Principal> bearer() { ... }
-
-@Tag(ApiSecurity.BasicAuth.class)
-default HttpServerPrincipalExtractor<Principal> basic() { ... }
-
-@Tag(ApiSecurity.ApiKeyAuth.class)
-default HttpServerPrincipalExtractor<Principal> apiKey() { ... }
-
-@Tag(ApiSecurity.OAuth.class)
-default HttpServerPrincipalExtractor<PrincipalWithScopes> oauth() { ... }
-```
-
----
-
-## Error mapping (401 / 403)
-
-`SecurityException` thrown by an extractor is not mapped to an HTTP status automatically.
-Add a global `HttpServerInterceptor` (`@Tag(HttpServerModule.class)`) that translates it.
-Use 401 for authentication failures and 403 for authorization (role/scope) failures.
-
-```java
-import java.util.concurrent.CompletionException;
-import java.util.concurrent.CompletionStage;
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.common.Context;
-import ru.tinkoff.kora.common.Tag;
-import ru.tinkoff.kora.http.common.body.HttpBody;
-import ru.tinkoff.kora.http.server.common.HttpServerInterceptor;
-import ru.tinkoff.kora.http.server.common.HttpServerModule;
-import ru.tinkoff.kora.http.server.common.HttpServerRequest;
-import ru.tinkoff.kora.http.server.common.HttpServerResponse;
-import ru.tinkoff.kora.http.server.common.HttpServerResponseException;
-
-@Tag(HttpServerModule.class)
-@Component
-public final class AuthErrorInterceptor implements HttpServerInterceptor {
+  final class ApiKeyAuthHttpServerInterceptor implements HttpServerInterceptor {
+    HttpServerPrincipalExtractor<String, Principal> ApiKeyAuth_;
+    …
     @Override
-    public CompletionStage<HttpServerResponse> intercept(Context context, HttpServerRequest request, InterceptChain chain)
-            throws Exception {
-        return chain.process(context, request).exceptionally(t -> {
-            var cause = (t instanceof CompletionException && t.getCause() != null) ? t.getCause() : t;
-            if (cause instanceof HttpServerResponseException ex) {
-                return ex;
-            }
-            if (cause instanceof SecurityException) {
-                return HttpServerResponse.of(401, HttpBody.plaintext(
-                        cause.getMessage() != null ? cause.getMessage() : "Unauthorized"));
-            }
-            return HttpServerResponse.of(500, HttpBody.plaintext("Internal error"));
-        });
+    public HttpServerResponse intercept(HttpServerRequest request,
+        HttpServerInterceptor.InterceptChain chain) throws Exception {
+      var ApiKeyAuthHeader = request.headers().getFirst("X-API-KEY");
+      var ApiKeyAuth = this.ApiKeyAuth_.extract(request, ApiKeyAuthHeader);
+      if (ApiKeyAuth != null) {
+        return Principal.with(ApiKeyAuth, () -> chain.process(request));
+      }
+
+      throw HttpServerResponseException.of(401, "Unauthorized");
+    }
+  }
+}
+```
+
+and puts this on each secured controller method:
+
+```java
+@InterceptWith(value = HttpServerInterceptor.class, tag = ApiSecurity.ApiKeyAuth.class)
+```
+
+Four consequences worth internalizing:
+
+1. **`ApiSecurity` is a `@Module`.** The Kora processor discovers `@Module` interfaces compiled in
+   the same round, so your `@KoraApp` interface must **not** extend it.
+2. **You never write the interceptor.** You supply exactly one thing: the extractor, under the right
+   tag, with the right type arguments.
+3. **Rejection is `null`**, and the built-in failure response is always `401 Unauthorized` — the
+   generator emits no `403` anywhere.
+4. **The principal reaches the handler through `Principal.with(...)`**, a `ScopedValue` binding that
+   lives exactly as long as `chain.process(request)`.
+
+---
+
+## Tag naming rules
+
+The generator derives every tag from the **name in `components.securitySchemes`**, sanitized to a
+Java identifier and PascalCased (`upperCase(toVarName(name))`). Ordinal `SecurityRequirementTagN`
+names from Kora 1.x no longer exist.
+
+| Source | Tag |
+|---|---|
+| `apiKeyAuth` | `ApiSecurity.ApiKeyAuth` |
+| `bearerAuth` | `ApiSecurity.BearerAuth` |
+| `basicAuth` | `ApiSecurity.BasicAuth` |
+| `cookieAuth` | `ApiSecurity.CookieAuth` |
+| `oAuth` | `ApiSecurity.OAuth` |
+
+Two different tag families are generated, and they are named by different rules:
+
+| Family | Rule | Example |
+|---|---|---|
+| **Extractor tag** — what you put on your extractor | scheme names of one requirement joined with `With` | `HeaderAuth1WithQueryAuth` |
+| **Interceptor tag** — what the controller method references | schemes of one alternative joined with `And`; OR-alternatives joined with `_`; an empty requirement is `Anonymous` | `HeaderAuth1AndQueryAuth_HeaderAuth2_OAuth`, `Sec1_Anonymous` |
+
+When one base interceptor tag would cover several different scope sets, the scope names are appended:
+`OAuth2ClientCredentials_PetsRead`, `OAuth2ClientCredentials_PetsReadAndPetsWrite`,
+`OAuth2ClientCredentials_NoScopes`. Those extra tags are **interceptor** tags only — a scheme still
+needs just **one** extractor, tagged with the plain scheme name.
+
+> Do not guess a tag. Open the generated `ApiSecurity` in `build/generated/**/api/` and copy it.
+
+---
+
+## The credential your extractor receives
+
+This is the biggest behavioural trap when porting from Kora 1.x, which described the value as "the
+credential after the scheme prefix". It is not.
+
+| Scheme | What the interceptor reads | What `token` contains |
+|---|---|---|
+| `apiKey`, `in: header` | `request.headers().getFirst("<name>")` | the raw header value |
+| `apiKey`, `in: query` | first value of `request.queryParams().get("<name>")` | the raw query value |
+| `apiKey`, `in: cookie` | the matching cookie's `value()` | the raw cookie value |
+| `http` / `bearer` | `request.headers().getFirst("Authorization")` | **the whole header**, e.g. `Bearer eyJhbGci…` |
+| `http` / `basic` | `request.headers().getFirst("Authorization")` | **the whole header**, e.g. `Basic dXNlcjpwYXNz` |
+| `oauth2`, `openIdConnect` | `request.headers().getFirst("Authorization")` | **the whole header** |
+
+So a bearer extractor must strip the prefix itself:
+
+```java
+if (value == null || !value.startsWith("Bearer ")) {
+    return null;
+}
+var token = value.substring("Bearer ".length());
+```
+
+Any other scheme type fails the build with *"Unsupported OpenAPI server security scheme"*; an
+`apiKey` without a valid `in` fails with *"Invalid OpenAPI apiKey security scheme"*.
+
+---
+
+## Choosing the extractor's type arguments
+
+The generated `@DefaultComponent` factory parameter *is* the specification. Read it off the file, or
+apply the rule the generator uses:
+
+| Requirement | `T` | `P` |
+|---|---|---|
+| one scheme | `String` | `Principal` |
+| one scheme, `oauth2` or `openIdConnect` | `String` | `PrincipalWithScopes` |
+| several schemes ANDed | `ApiSecurity.<A>With<B>AuthData` | `Principal` |
+| several ANDed, any of them `oauth2`/`openIdConnect` | `ApiSecurity.<A>With<B>AuthData` | `PrincipalWithScopes` |
+
+Note `P` is the **framework interface**, not your concrete record — the generated parameter is
+`HttpServerPrincipalExtractor<String, Principal>`. Your extractor returns your own type; the
+declared type argument stays `Principal` (or `PrincipalWithScopes`).
+
+---
+
+## Per-scheme extractors
+
+All of these are `default` methods on `@KoraApp` or on a `@Module` interface.
+
+### API key
+
+```java
+@Tag(ApiSecurity.ApiKeyAuth.class)
+default HttpServerPrincipalExtractor<String, Principal> apiKeyExtractor(ApiKeyConfig config) {
+    return (request, value) -> config.value().equals(value)
+        ? new ApiKeyPrincipal("api-client")
+        : null;
+}
+```
+
+For rotating keys inject your own lookup component instead of a single config value.
+
+### Bearer / JWT
+
+Kora ships no JWT verifier — `JwtVerifier` below is your own `@Component`.
+
+```java
+@Tag(ApiSecurity.BearerAuth.class)
+default HttpServerPrincipalExtractor<String, Principal> bearerExtractor(JwtVerifier jwt) {
+    return (request, value) -> {
+        if (value == null || !value.startsWith("Bearer ")) {
+            return null;
+        }
+        var claims = jwt.verifyOrNull(value.substring("Bearer ".length()));
+        return claims == null ? null : new UserPrincipal(claims.subject());
+    };
+}
+```
+
+Prefer a verifier that *returns* `null` on an invalid token. If yours throws, catch it and return
+`null`, or let a `HttpServerResponseException` out — never a bare `SecurityException`.
+
+### Basic
+
+```java
+@Tag(ApiSecurity.BasicAuth.class)
+default HttpServerPrincipalExtractor<String, Principal> basicExtractor(CredentialService creds) {
+    return (request, value) -> {
+        if (value == null || !value.startsWith("Basic ")) {
+            return null;
+        }
+        final String decoded;
+        try {
+            decoded = new String(Base64.getDecoder().decode(value.substring("Basic ".length())), UTF_8);
+        } catch (IllegalArgumentException e) {
+            return null;                       // malformed base64 is a failed login, not a 500
+        }
+        var parts = decoded.split(":", 2);
+        return parts.length == 2 && creds.validate(parts[0], parts[1])
+            ? new UserPrincipal(parts[0])
+            : null;
+    };
+}
+```
+
+Serve Basic auth over HTTPS only — the credential is encoded, not encrypted.
+
+### Cookie
+
+Same shape as the header API key; the interceptor hands you the cookie's value.
+
+```java
+@Tag(ApiSecurity.CookieAuth.class)
+default HttpServerPrincipalExtractor<String, Principal> cookieExtractor(SessionStore sessions) {
+    return (request, value) -> value == null ? null : sessions.lookup(value);
+}
+```
+
+---
+
+## OAuth2 and PrincipalWithScopes
+
+For `oauth2` / `openIdConnect` the generated parameter is
+`HttpServerPrincipalExtractor<String, PrincipalWithScopes>`, and the interceptor checks the
+operation's scopes itself:
+
+```java
+var OAuth = this.OAuth_.extract(request, oAuthHeader);
+if (OAuth != null) {
+  if (OAuth.scopes().contains("pets:read")) {
+    if (OAuth.scopes().contains("pets:write")) {
+      return Principal.with(OAuth, () -> chain.process(request));
+    }
+  }
+}
+
+throw HttpServerResponseException.of(401, "Unauthorized");
+```
+
+- Required scopes are ANDed, and the check is a plain `scopes().contains(...)` on the exact strings
+  from the contract.
+- **A missing scope produces `401`, not `403`.** If your API must answer `403` there, do the check
+  yourself against `Principal.current()` in the delegate and throw
+  `HttpServerResponseException.of(403, …)`.
+- One extractor per scheme, no matter how many scope combinations the contract uses.
+
+```java
+public record UserPrincipal(String name, Collection<String> scopes) implements PrincipalWithScopes {}
+
+@Tag(ApiSecurity.OAuth.class)
+default HttpServerPrincipalExtractor<String, PrincipalWithScopes> oauthExtractor(JwtVerifier jwt) {
+    return (request, value) -> {
+        if (value == null || !value.startsWith("Bearer ")) {
+            return null;
+        }
+        var claims = jwt.verifyOrNull(value.substring("Bearer ".length()));
+        return claims == null ? null : new UserPrincipal(claims.subject(), claims.scopes());
+    };
+}
+```
+
+---
+
+## AND requirements and AuthData
+
+A single requirement listing several schemes means *all of them at once*. The generator then emits a
+record carrying every credential and switches `T` to it:
+
+```yaml
+security:
+  - headerAuth1: []
+    queryAuth: []
+```
+
+```java
+/**
+ * @param headerAuth1 'X-API-KEY-1' header of request
+ * @param queryAuth 'X-QUERY-KEY' query parameter value
+ */
+record HeaderAuth1WithQueryAuthAuthData(String headerAuth1, String queryAuth) {}
+```
+
+```java
+@Tag(ApiSecurity.HeaderAuth1WithQueryAuth.class)
+default HttpServerPrincipalExtractor<ApiSecurity.HeaderAuth1WithQueryAuthAuthData, Principal> pairExtractor() {
+    return (request, value) -> {
+        if (value == null || !valid(value.headerAuth1(), value.queryAuth())) {
+            return null;
+        }
+        return new ApiKeyPrincipal(value.headerAuth1());
+    };
+}
+```
+
+The record's components are plain `String` but the underlying lookups can miss, so treat each one as
+possibly `null`.
+
+---
+
+## OR alternatives and anonymous access
+
+Several top-level entries under `security:` are alternatives, tried in order; the first extractor
+returning non-`null` wins.
+
+```yaml
+security:
+  - sec1: []
+  - {}          # anonymous also allowed
+```
+
+With an empty requirement present the generated interceptor ends in `return chain.process(request)`
+instead of throwing — the route stays reachable and `Principal.current()` is simply `null` inside
+the handler. The interceptor tag becomes `ApiSecurity.Sec1_Anonymous`, distinct from
+`ApiSecurity.Sec1` used by fully-protected operations; both are fed by the **same** `Sec1` extractor.
+
+---
+
+## Reaching the principal from a delegate
+
+```java
+@Component
+public final class PetApiDelegateImpl implements PetApiDelegate {
+
+    @Override
+    public PetApiResponses.GetPetApiResponse getPet(long id) {
+        var principal = (UserPrincipal) Principal.current();
+        if (principal == null) {
+            throw HttpServerResponseException.of(401, "Unauthorized");
+        }
+        if (!principal.scopes().contains("pets:admin")) {
+            throw HttpServerResponseException.of(403, "Forbidden");
+        }
+        …
     }
 }
 ```
 
-Inside a delegate or interceptor you can also short-circuit explicitly:
-`throw HttpServerResponseException.of(403, "Required role: admin");`
-(`HttpServerResponseException` exposes the status via `.code()`).
+`Principal.current()` is backed by `ScopedValue`, so it is visible on the request thread and on
+threads forked from it inside a `StructuredTaskScope` — not on an arbitrary executor you submit to.
+Capture the principal into a local before handing work to another thread.
 
 ---
 
-## Testing an extractor
+## Shaping the 401 response
 
-The extractor is a plain functional interface — its SAM method is `extract`. Build it
-directly and call `extract(request, value)`.
+The generated interceptor throws `HttpServerResponseException.of(401, "Unauthorized")`, which is a
+plaintext body. Two ways to change it:
+
+- **Per scheme** — throw your own `HttpServerResponseException` from the extractor instead of
+  returning `null`. It implements `HttpServerResponse`, so Undertow sends it verbatim. This
+  short-circuits the remaining OR alternatives, so use it only when there is a single scheme.
+- **Globally** — a `@Tag(HttpServer.class)` interceptor that catches `HttpServerResponseException`
+  and re-renders it as JSON. This is the only layer outside the generated security interceptor; the
+  OpenAPI `interceptors` generator option nests *inside* it and cannot see the `401`.
+
+---
+
+## Registering the extractor
+
+Either form works; pick one, never both for the same tag.
 
 ```java
-@Test
-void rejectsInvalidApiKey() {
-    var config = mock(DataApiAuthConfig.class);
-    when(config.value()).thenReturn("expected");
-    var extractor = new Application(){}.apiKeyHttpServerPrincipalExtractor(config);
+// A. default method on @KoraApp or a @Module interface — what the examples use
+@Tag(ApiSecurity.ApiKeyAuth.class)
+default HttpServerPrincipalExtractor<String, Principal> apiKeyExtractor(ApiKeyConfig config) { … }
+```
 
-    assertThrows(SecurityException.class, () -> extractor.extract(mock(HttpServerRequest.class), "wrong"));
+```java
+// B. a tagged @Component class
+@Component
+@Tag(ApiSecurity.ApiKeyAuth.class)
+public final class ApiKeyExtractor implements HttpServerPrincipalExtractor<String, Principal> {
+    private final ApiKeyConfig config;
+    public ApiKeyExtractor(ApiKeyConfig config) { this.config = config; }
+
+    @Override
+    public @Nullable Principal extract(HttpServerRequest request, @Nullable String token) { … }
 }
 ```
 
-For full request lifecycle coverage (real status codes), prefer an integration test with
-`@KoraAppTest` or a black-box test — see
-[kora-testing-junit-java](../../kora-testing-junit-java/SKILL.md) and
+Declaring both yields `Multiple components match dependency`; declaring neither yields
+`No component found for dependency`.
+
+---
+
+## Testing
+
+The extractor is a plain function — call `extract` directly.
+
+```java
+@Test
+void rejectsWrongApiKey() {
+    var config = mock(ApiKeyConfig.class);
+    when(config.value()).thenReturn("expected");
+
+    var extractor = new Application() {}.apiKeyExtractor(config);
+
+    assertNull(extractor.extract(mock(HttpServerRequest.class), "wrong"));
+    assertNotNull(extractor.extract(mock(HttpServerRequest.class), "expected"));
+}
+```
+
+A unit test cannot catch the two failure modes that matter most — a global interceptor bound to the
+wrong tag, and a missing `security:` block. Both need a request through the real server:
+
+```java
+@KoraAppTest(Application.class)
+class AuthIT {
+    @Test
+    void unauthenticatedRequestIsRejected() {
+        assertEquals(401, http.send(get("/pets")).statusCode());
+    }
+
+    @Test
+    void authenticatedRequestPasses() {
+        assertEquals(200, http.send(get("/pets").header("X-API-KEY", "expected")).statusCode());
+    }
+}
+```
+
+See [kora-testing-junit-java](../../kora-testing-junit-java/SKILL.md),
+[kora-testing-junit-kotlin](../../kora-testing-junit-kotlin/SKILL.md) and
 [kora-testing-blackbox](../../kora-testing-blackbox/SKILL.md).

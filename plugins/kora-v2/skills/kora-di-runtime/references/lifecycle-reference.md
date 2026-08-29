@@ -1,543 +1,250 @@
-# Kora Lifecycle Reference
+# `Lifecycle` Reference — init and release in Kora 2.0
 
-**Source:** [Kora Container Documentation](../../../.kora-agent/kora-docs/mkdocs/docs/en/documentation/container.md)
-
-Complete reference for component lifecycle management in Kora applications.
+**Kora 2.0** · `io.koraframework.application.graph.{Lifecycle, LifecycleWrapper, Wrapped}`
 
 ---
 
-## Table of Contents
-
-1. [Lifecycle Interface](#lifecycle-interface)
-2. [LifecycleWrapper for Factories](#lifecyclewrapper-for-factories)
-3. [@Root Components](#root-components)
-4. [Graceful Shutdown](#graceful-shutdown)
-5. [Post-Commit/Rollback Actions](#post-commitrollback-actions)
-6. [Common Patterns](#common-patterns)
-7. [Troubleshooting](#troubleshooting)
-
----
-
-## Lifecycle Interface
-
-### Contract
+## 1. The contract
 
 ```java
+package io.koraframework.application.graph;
+
 public interface Lifecycle {
     void init() throws Exception;
     void release() throws Exception;
 }
 ```
 
-### Method Timing
+That is the whole interface. Both methods return **`void`** and run **synchronously**. Kora 2.0 has
+no reactive, `CompletionStage` or `suspend` container contracts, so any 1.x-era signature returning a
+publisher or a future is a compile error against this interface — as is a Kotlin `suspend fun init()`.
 
-| Method | When Called | Purpose |
-|--------|-------------|---------|
-| `init()` | After component creation, before use | Initialize resources, warm caches, start background tasks |
-| `release()` | During shutdown (SIGTERM) | Cleanup resources, stop tasks, close connections |
+Kotlin implementations are plain functions; `throws Exception` has no Kotlin counterpart and is
+simply omitted:
 
-### Order Guarantees
-
-- **Init order**: Topological (dependencies initialized first)
-- **Release order**: Reverse of creation order
-
-### Example: HTTP Server
-
-```java
-@Root
-@Component
-public final class HttpServer implements Lifecycle {
-    private final Server server;
-    private final int port;
-
-    public HttpServer(
-        HttpServerConfig config, // a @ConfigSource("http") interface, injected as a component
-        Handler handler
-    ) {
-        this.port = config.port();
-        this.server = new Server(port, handler);
-    }
-
-    @Override
-    public void init() throws Exception {
-        System.out.println("Starting HTTP server on port " + port);
-        server.start();
-        System.out.println("HTTP server started");
-    }
-
-    @Override
-    public void release() throws Exception {
-        System.out.println("Stopping HTTP server");
-        server.stop();
-        System.out.println("HTTP server stopped");
-    }
-}
-```
-
-### Example: Kafka Consumer
-
-```java
-@Root
-@Component
-public final class KafkaConsumer implements Lifecycle {
-    private final KafkaListener listener;
-    private final ExecutorService executor;
-
-    public KafkaConsumer(KafkaListener listener) {
-        this.listener = listener;
-        this.executor = Executors.newSingleThreadExecutor();
-    }
-
-    @Override
-    public void init() {
-        System.out.println("Starting Kafka consumer");
-        executor.submit(() -> {
-            while (!executor.isShutdown()) {
-                var records = listener.poll(Duration.ofMillis(100));
-                records.forEach(this::process);
-            }
-        });
-    }
-
-    @Override
-    public void release() {
-        System.out.println("Stopping Kafka consumer");
-        executor.shutdown();
-        try {
-            if (!executor.awaitTermination(30, TimeUnit.SECONDS)) {
-                executor.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            executor.shutdownNow();
-            Thread.currentThread().interrupt();
-        }
-    }
-
-    private void process(ConsumerRecord<String, String> record) {
-        // Process message
-    }
-}
+```kotlin
+override fun init() { … }
+override fun release() { … }
 ```
 
 ---
 
-## LifecycleWrapper for Factories
+## 2. When each method runs
 
-When factory methods need to provide lifecycle for components that don't implement `Lifecycle`:
+Verified against `GraphImpl` (`core/application-graph`, `TmpGraph.createNode` / `GraphImpl.release`):
 
-### Basic Usage
+**Creation**
 
-```java
-@Module
-public interface CacheModule {
+1. every node is created on its own virtual thread (`init-node-<index>`), first awaiting the futures
+   of its own dependencies and interceptors — so initialisation is as parallel as the graph allows
+   while still honouring dependency order;
+2. the factory produces the instance;
+3. if it implements `Lifecycle`, `init()` is called immediately;
+4. each registered `GraphInterceptor.afterInit(value)` is applied, in declaration order;
+5. only then is the (possibly replaced) value visible to dependents.
 
-    default Wrapped<Cache> cache(Config config) {
-        var cacheConfig = config.getConfig("cache");
-        var cache = new CaffeineCache(cacheConfig);
+**Release**
 
-        return new LifecycleWrapper<>(
-            cache,
-            c -> c.warmup(),           // Init hook
-            c -> c.invalidateAll()     // Release hook
-        );
-    }
-}
-```
+1. nodes are released on virtual threads (`release-<index>`) in reverse index order, each holding
+   read locks on its dependencies — a component is released only after everything depending on it;
+2. each `GraphInterceptor.beforeRelease(value)` is applied in **reverse** interceptor order;
+3. `release()` is called if the component implements `Lifecycle`;
+4. `close()` is called if the component implements `AutoCloseable` — this happens **in addition to**
+   `release()`, and also for components that implement only `AutoCloseable`.
 
-### Async Lifecycle
-
-```java
-@Module
-public interface SchedulerModule {
-
-    default Wrapped<ScheduledExecutorService> scheduler() {
-        return new LifecycleWrapper<>(
-            Executors.newSingleThreadScheduledExecutor(),
-            scheduler -> {
-                // Schedule periodic task
-                scheduler.scheduleAtFixedRate(
-                    this::cleanupTask,
-                    0, 1, TimeUnit.HOURS
-                );
-            },
-            scheduler -> {
-                // Graceful shutdown
-                scheduler.shutdown();
-                if (!scheduler.awaitTermination(30, TimeUnit.SECONDS)) {
-                    scheduler.shutdownNow();
-                }
-            }
-        );
-    }
-
-    private void cleanupTask() {
-        // Cleanup logic
-    }
-}
-```
-
-### DataSource with Connection Test
-
-```java
-@Module
-public interface DatabaseModule {
-
-    default Wrapped<DataSource> dataSource(DatabaseConfig config) {
-        var ds = new DriverManagerDataSource(
-            config.url(),
-            config.username(),
-            config.password()
-        );
-
-        return new LifecycleWrapper<>(
-            ds,
-            dataSource -> {
-                // Init: test connection
-                try (Connection conn = dataSource.getConnection()) {
-                    System.out.println("Database connection OK");
-                }
-            },
-            dataSource -> {
-                // Release: close connections
-                if (dataSource instanceof AutoCloseable) {
-                    ((AutoCloseable) dataSource).close();
-                }
-            }
-        );
-    }
-}
-```
+`KoraApplication.run` registers a JVM shutdown hook named `kora-shutdown` that performs the release
+and only then lets the JVM exit, so `release()` is what runs on `SIGTERM`.
 
 ---
 
-## @Root Components
+## 3. Error handling
 
-### When to Use @Root
+| Situation | Result |
+|---|---|
+| `init()` throws a runtime exception | that exception aborts graph initialisation |
+| `init()` throws a checked exception | wrapped: `IllegalStateException: Lifecycle init failed with checked exception for node <type> at index <n>` |
+| any node fails during init | everything already created is released, then the error is rethrown |
+| several nodes fail | `IllegalStateException: Application graph failed to initialize with N errors; see suppressed exceptions` |
+| `release()` throws | collected and rethrown (further failures attached as suppressed); other nodes still get released |
+| `KoraApplication.run` catches an init failure | logs `Application initializing failed with error` and calls `System.exit(-1)` |
 
-Mark a component with `@Root` when it must be instantiated at runtime even if nothing depends on it:
-
-| Component Type | Needs @Root? | Why |
-|----------------|--------------|-----|
-| HTTP/GRPC Server | Yes | Must start listening |
-| Kafka Consumer | Yes | Must begin polling |
-| Cache Warmer | Yes | Must pre-load data |
-| Health Checker | Yes | Must register checks |
-| Background Scheduler | Yes | Must start scheduling |
-| Service/Repository | No | Only needed if depended upon |
-
-### How @Root Works
-
-```
-Application Start
-    ↓
-Build Dependency Graph
-    ↓
-Instantiate Components
-    ├── Dependencies of @Root components
-    └── @Root components themselves
-    ↓
-Call init() on all Lifecycle components
-    ↓
-Application Running
-    ↓
-[SIGTERM received]
-    ↓
-Call release() in reverse order
-    ↓
-Application Exit
-```
-
-### Common Mistake
-
-```java
-// WRONG: Server won't start without @Root
-@Component
-public final class HttpServer implements Lifecycle {
-    // ... never instantiated, app exits immediately
-}
-
-// CORRECT
-@Root
-@Component
-public final class HttpServer implements Lifecycle {
-    // ... instantiated and started
-}
-```
+`init()` is the right place to fail fast. A component that cannot reach its backing service should
+throw rather than start half-configured.
 
 ---
 
-## Graceful Shutdown
-
-Kora supports graceful shutdown via SIGTERM:
-
-### Shutdown Sequence
-
-1. SIGTERM signal received
-2. `release()` called on all `Lifecycle` components
-3. Release order: reverse of creation order
-4. Exceptions in `release()` are logged but don't stop shutdown
-5. After all `release()` complete, JVM exits
-
-### Best Practices
+## 4. A component with its own lifecycle
 
 ```java
+package com.example.jobs;
+
+import io.koraframework.application.graph.Lifecycle;
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Root;
+
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
 @Root
 @Component
-public final class MessageProcessor implements Lifecycle {
-    private final ExecutorService executor;
-    private final MessageQueue queue;
+public final class SessionCleaner implements Lifecycle {
 
-    public MessageProcessor(MessageQueue queue) {
-        this.queue = queue;
-        this.executor = Executors.newFixedThreadPool(10);
-    }
-
-    @Override
-    public void init() {
-        // Start processing
-        executor.submit(this::processMessages);
-    }
-
-    @Override
-    public void release() {
-        // 1. Stop accepting new messages
-        queue.close();
-
-        // 2. Shutdown executor gracefully
-        executor.shutdown();
-        try {
-            // Wait for in-flight messages
-            if (!executor.awaitTermination(30, TimeUnit.SECONDS)) {
-                executor.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            executor.shutdownNow();
-            Thread.currentThread().interrupt();
-        }
-    }
-
-    private void processMessages() {
-        while (!executor.isShutdown()) {
-            var msg = queue.poll();
-            if (msg != null) {
-                process(msg);
-            }
-        }
-    }
-}
-```
-
----
-
-## Post-Commit/Rollback Actions
-
-For JDBC transactions, register actions to run after commit or rollback:
-
-### Basic Usage
-
-```java
-@Inject
-private JdbcConnectionFactory connectionFactory;
-@Inject
-private EmailService emailService;
-
-public void createUser(User user) {
-    connectionFactory.inTx(() -> {
-        // Insert user
-        userRepository.insert(user);
-
-        // Register post-commit action
-        var context = connectionFactory.currentConnectionContext();
-        context.addPostCommitAction(() ->
-            emailService.sendWelcomeEmail(user)
-        );
-
-        // Register post-rollback action
-        context.addPostRollbackAction(() ->
-            log.error("Failed to create user: {}", user.getId())
-        );
-    });
-}
-```
-
-### Use Cases
-
-| Scenario | Post-Commit | Post-Rollback |
-|----------|-------------|---------------|
-| User registration | Send welcome email | Log failure |
-| Order placement | Send confirmation | Notify customer service |
-| Payment processing | Send receipt | Alert fraud team |
-| Cache invalidation | Invalidate related caches | Log for debugging |
-
----
-
-## Common Patterns
-
-### Pattern 1: Server with Dependencies
-
-```java
-@Root
-@Component
-public final class GrpcServer implements Lifecycle {
-    private final Server server;
-
-    public GrpcServer(
-        GrpcServerConfig config, // a @ConfigSource("grpc") interface, injected as a component
-        All<BindableService> services
-    ) {
-        var builder = ServerBuilder.forPort(config.port());
-        services.forEach(builder::addService);
-        this.server = builder.build();
-    }
-
-    @Override
-    public void init() throws Exception {
-        server.start();
-        System.out.println("gRPC server started");
-    }
-
-    @Override
-    public void release() throws Exception {
-        server.shutdown();
-        server.awaitTermination();
-    }
-}
-```
-
-### Pattern 2: Periodic Task
-
-```java
-@Root
-@Component
-public final class DataSyncer implements Lifecycle {
+    private final SessionRepository repository;
     private final ScheduledExecutorService scheduler;
-    private final DataSyncService syncService;
 
-    public DataSyncer(DataSyncService syncService) {
-        this.syncService = syncService;
+    public SessionCleaner(SessionRepository repository) {
+        this.repository = repository;
         this.scheduler = Executors.newSingleThreadScheduledExecutor();
     }
 
     @Override
     public void init() {
-        // Sync immediately
-        syncService.sync();
-
-        // Then every hour
-        scheduler.scheduleAtFixedRate(
-            syncService::sync,
-            1, 1, TimeUnit.HOURS
-        );
-    }
-
-    @Override
-    public void release() {
-        scheduler.shutdown();
-        try {
-            if (!scheduler.awaitTermination(30, TimeUnit.SECONDS)) {
-                scheduler.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            scheduler.shutdownNow();
-            Thread.currentThread().interrupt();
-        }
-    }
-}
-```
-
-### Pattern 3: Resource Pool
-
-```java
-@Root
-@Component
-public final class ConnectionPool implements Lifecycle {
-    private final Pool<Connection> pool;
-
-    public ConnectionPool(PoolConfig config) {
-        this.pool = createPool(config);
-    }
-
-    @Override
-    public void init() throws Exception {
-        // Warm up pool
-        for (int i = 0; i < pool.getMinSize(); i++) {
-            pool.add(createConnection());
-        }
-        System.out.println("Connection pool warmed up");
+        scheduler.scheduleWithFixedDelay(this::purge, 1, 5, TimeUnit.MINUTES);
     }
 
     @Override
     public void release() throws Exception {
-        // Close all connections
-        pool.clear();
-        System.out.println("Connection pool closed");
+        scheduler.shutdown();
+        if (!scheduler.awaitTermination(30, TimeUnit.SECONDS)) {
+            scheduler.shutdownNow();
+        }
     }
 
-    public Connection acquire() {
-        return pool.acquire();
-    }
-
-    public void release(Connection conn) {
-        pool.release(conn);
+    private void purge() {
+        repository.deleteExpired();
     }
 }
 ```
 
+Construct in the constructor, **start** in `init()`, **stop** in `release()`. Doing the work in the
+constructor defeats the ordering guarantees: at construction time, dependents do not exist yet but
+neither do the interceptors that may replace this instance.
+
+> For recurring jobs prefer the scheduling modules
+> ([`kora-aop-scheduling-jdk`](../../kora-aop-scheduling-jdk/SKILL.md)) over a hand-rolled executor;
+> the example above is about the lifecycle mechanics.
+
 ---
 
-## Troubleshooting
+## 5. `Wrapped<T>` and `LifecycleWrapper<T>`
 
-### Component Not Starting
-
-**Problem:** HTTP server/Kafka consumer not starting
-
-**Check:**
-1. Is it marked with `@Root`?
-2. Does it implement `Lifecycle`?
-3. Is `init()` being called (add logging)?
-
-### Resource Leak
-
-**Problem:** Connections/threads not closed on shutdown
-
-**Check:**
-1. Is `release()` implemented?
-2. Are all resources closed in `release()`?
-3. Is shutdown graceful (awaitTermination)?
-
-### Wrong Init Order
-
-**Problem:** Component tries to use dependency before it's ready
-
-**Solution:** Add explicit dependency in constructor:
 ```java
-public MyComponent(Dependency dep) {  // Dep will be init'd first
-    // ...
+public interface Wrapped<T> {
+    T value();
+    static <T> ValueOf<T> unwrap(ValueOf<Wrapped<T>> valueOf);
+}
+
+public class LifecycleWrapper<T> implements Lifecycle, Wrapped<T> {
+
+    @FunctionalInterface
+    public interface ThrowingConsumer<T> {
+        void accept(T t) throws Exception;
+    }
+
+    public LifecycleWrapper(T value, ThrowingConsumer<T> init, ThrowingConsumer<T> release) { … }
 }
 ```
 
-### Release Order Issue
+A factory method that returns `Wrapped<T>` registers a component of type **`T`**: the container
+unwraps it, so consumers inject `T` and never see the wrapper. This is how you attach a lifecycle to
+a type you do not own.
 
-**Problem:** Component tries to use dependency that's already released
+The constructor takes exactly three arguments — value, init consumer, release consumer. There is no
+static `wrap(...)` factory, and the consumers are `ThrowingConsumer`, so they may throw checked
+exceptions.
 
-**Solution:** Remember: release order is reverse of creation. If A depends on B:
-- Init: B first, then A
-- Release: A first, then B
+**Java**
 
-### Transaction Hook Not Called
+```java
+package com.example.activity;
 
-**Problem:** Post-commit action not executing
+import io.koraframework.application.graph.LifecycleWrapper;
+import io.koraframework.application.graph.Wrapped;
+import io.koraframework.common.annotation.Module;
 
-**Check:**
-1. Is transaction committed (not rolled back)?
-2. Is hook registered inside `inTx()`?
-3. Is exception in hook handled?
+@Module
+public interface ActivityModule {
+
+    default Wrapped<ActivityRecorder> activityRecorder(ActivityConfig config) {
+        var recorder = new ActivityRecorder(config.endpoint());
+        return new LifecycleWrapper<>(recorder, ActivityRecorder::connect, ActivityRecorder::disconnect);
+    }
+}
+```
+
+**Kotlin** — pass the three arguments **positionally**. Kotlin named arguments are not available for
+a Java constructor, so `LifecycleWrapper(value, init = …, release = …)` does not compile:
+
+```kotlin
+package com.example.activity
+
+import io.koraframework.application.graph.LifecycleWrapper
+import io.koraframework.application.graph.Wrapped
+import io.koraframework.common.annotation.Module
+
+@Module
+interface ActivityModule {
+
+    fun activityRecorder(config: ActivityConfig): Wrapped<ActivityRecorder> {
+        val recorder = ActivityRecorder(config.endpoint())
+        return LifecycleWrapper(recorder, ActivityRecorder::connect, ActivityRecorder::disconnect)
+    }
+}
+```
+
+Use `r -> {}` (Java) / `{}` (Kotlin) for a hook you do not need — both arguments are mandatory.
+
+### Choosing between the two
+
+| | `implements Lifecycle` | `Wrapped<T>` + `LifecycleWrapper` |
+|---|---|---|
+| the class is yours | preferred | unnecessary indirection |
+| third-party / final / generated type | impossible | the only option |
+| several instances with different config | one class, several module methods | natural fit |
+| consumers inject | the class itself | the unwrapped `T` |
 
 ---
 
-## See Also
+## 6. `AutoCloseable` without `Lifecycle`
 
-- [SKILL.md](../SKILL.md) — Runtime DI overview
-- [Tag Injection Reference](tag-injection-reference.md) — @Tag disambiguation patterns
-- [Collection Injection Reference](collection-injection-reference.md) — All<T> and @Tag(Tag.Any.class)
-- [Container Documentation](../../../.kora-agent/kora-docs/mkdocs/docs/en/documentation/container.md) — Official docs
+A component that implements only `AutoCloseable` still gets `close()` on release. That is enough for
+resources with no startup step; reach for `Lifecycle` when there is real init work or when
+`release()` must run before `close()`.
+
+---
+
+## 7. Refresh interaction
+
+When the graph is refreshed (`RefreshableGraph.refresh(node)`), affected nodes are rebuilt: the new
+instance is created and initialised, and the old one is released afterwards. If the factory returns
+an instance `equals` to the previous one, the newly created value is released immediately and the old
+node value is kept — so a refresh that changes nothing costs nothing.
+
+A component implementing `RefreshListener` additionally gets `graphRefreshed()` after a refresh
+completes; exceptions from it are logged (`Exception caught when calling listener.graphRefreshed()`)
+and do not fail the refresh. See
+[`runtime-graph-api-reference.md`](runtime-graph-api-reference.md).
+
+---
+
+## 8. Pitfalls
+
+| Symptom | Cause |
+|---|---|
+| `init()` never runs | component pruned — see [`root-component-reference.md`](root-component-reference.md) |
+| `init() … cannot implement init() in Lifecycle` (Java) / `'init' overrides nothing` (Kotlin) | 1.x reactive or `suspend` signature; must be `void init()` |
+| Kotlin `suspend fun init()` rejected | no suspend contracts in Kora 2.0 |
+| resources leak on shutdown | work done in the constructor, undone nowhere |
+| `release()` blocks shutdown | unbounded `awaitTermination`; always bound it |
+| `LifecycleWrapper` named arguments do not compile (Kotlin) | Java constructor — pass positionally |
+| `incompatible types: LifecycleWrapper<Impl> cannot be converted to Wrapped<Iface>` | `Wrapped<T>` is invariant. Returning `new LifecycleWrapper<>(…)` directly is fine — the diamond infers from the return type — but assigning it to a `var` local first, or writing an explicit `<Impl>` argument, locks in the implementation type |
+| factory returns `T` but hooks never fire | the return type must be `Wrapped<T>` |
+
+---
+
+## See also
+
+- [`root-component-reference.md`](root-component-reference.md) — making a component reachable
+- [`graph-interceptor-reference.md`](graph-interceptor-reference.md) — `afterInit` / `beforeRelease` around these callbacks
+- [`runtime-graph-api-reference.md`](runtime-graph-api-reference.md) — `KoraApplication`, refresh, `RefreshListener`

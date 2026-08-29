@@ -1,46 +1,59 @@
 package ${packagePath};
 
-import ru.tinkoff.kora.common.Module;
-import ru.tinkoff.kora.common.DefaultComponent;
+import io.koraframework.common.annotation.DefaultComponent;
+import io.koraframework.common.annotation.Module;
+import io.koraframework.common.annotation.Tag;
 
 /**
- * Example Module interface with factory methods.
+ * Example module of factory methods.
  *
- * Modules in the same src/main/java as @KoraApp are auto-discovered -
- * no extends needed in Application interface.
+ * <p>@Module is valid on <b>interfaces only</b> — "@Module can only be applied to interfaces."
+ * Providers are {@code default} methods; {@code private} and {@code static} members are ignored.
  *
- * Use @DefaultComponent to mark factory methods that can be overridden
- * by the application.
+ * <p>A @Module compiled in the same Gradle module as the @KoraApp is discovered automatically —
+ * do NOT list it in the @KoraApp {@code extends} clause. Only artifacts and @KoraSubmodule
+ * interfaces from other Gradle subprojects need to be named there.
  *
- * See: references/component-registration-reference.md
- * See: references/module-auto-discovery-reference.md
+ * <p>Provider rules:
+ * <ul>
+ *   <li>the return type must be a reference type — a primitive gives
+ *       "Module method returns a non-reference type, so it cannot be used as a graph component."
+ *   <li>the return type must not be raw — "Component provider returns a raw type:"
+ *   <li>a provider must not return null unless every consumer declares the parameter @Nullable;
+ *       the processor reads @Nullable from the CONSUMER's parameter, never from the return type
+ * </ul>
+ *
+ * <p>See: references/component-registration-reference.md
+ * <p>See: references/module-auto-discovery-reference.md
  */
 @Module
 public interface ${Module}Module {
 
     /**
-     * Factory method for creating a component.
-     *
-     * @DefaultComponent marks this as overridable by the application.
-     * Application can provide its own implementation by defining a factory
-     * method with the same signature (without @DefaultComponent).
-     *
-     * @return Component instance
+     * A default the application may replace. Any non-@DefaultComponent provider of the same
+     * type and tag wins; see references/default-component-reference.md.
      */
     @DefaultComponent
     default ${Module}Service ${module}Service() {
         return new ${Module}ServiceImpl();
     }
 
-    /**
-     * Example factory method with dependencies.
-     *
-     * Dependencies are automatically injected from the container.
-     *
-     * @param dependency Injected dependency
-     * @return Component with dependency
-     */
+    /** A provider whose parameters are resolved from the graph. */
     default ${Module}Component ${module}Component(SomeDependency dependency) {
         return new ${Module}Component(dependency);
+    }
+
+    /**
+     * Tag marker for disambiguating several components of one type. A private-constructor final
+     * class nested in the owning module is the idiomatic form; the class is never instantiated.
+     */
+    final class ${Module}Tag {
+        private ${Module}Tag() {}
+    }
+
+    /** Inject this one with {@code @Tag(${Module}Module.${Module}Tag.class) ${Module}Client}. */
+    @Tag(${Module}Tag.class)
+    default ${Module}Client ${module}Client(${Module}Config config) {
+        return new ${Module}Client(config);
     }
 }

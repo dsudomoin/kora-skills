@@ -1,43 +1,28 @@
 package ${packagePath}.publisher;
 
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Future;
 import org.apache.kafka.clients.producer.Callback;
 import org.apache.kafka.clients.producer.RecordMetadata;
-import ru.tinkoff.kora.kafka.common.annotation.KafkaPublisher;
-import ru.tinkoff.kora.kafka.common.annotation.KafkaPublisher.Topic;
+import io.koraframework.kafka.common.annotation.KafkaPublisher;
+import io.koraframework.kafka.common.annotation.KafkaPublisher.Topic;
 
-/**
- * Async Kafka publisher with CompletionStage return types.
- *
- * Use for non-blocking message publishing with reactive patterns.
- */
+// Non-blocking publisher. The generated code creates a CompletableFuture and completes
+// it from the Kafka producer callback, so the call returns before the broker acks.
+//
+// Nothing on this path throws KafkaPublishException: a send failure completes the
+// returned handle exceptionally with the raw Kafka exception. Ignore the handle and the
+// failure is invisible. A serialization failure still throws SerializationException
+// synchronously, because serialization happens before the record reaches the producer.
 @KafkaPublisher("kafka.producer.asyncPublisher")
 public interface AsyncMessagePublisher {
 
-    /**
-     * Asynchronous send with CompletionStage
-     * @param value message value
-     * @return CompletionStage with metadata result
-     */
-    @Topic("kafka.producer.events")
-    CompletionStage<RecordMetadata> sendAsync(String value);
+    @Topic(".topic")
+    Future<RecordMetadata> sendAsync(String value);
 
-    /**
-     * Asynchronous send with key
-     * @param key message key for partitioning
-     * @param value message value
-     * @return CompletionStage with metadata result
-     */
-    @Topic("kafka.producer.events")
-    CompletionStage<RecordMetadata> sendAsync(String key, String value);
+    @Topic(".topic")
+    CompletionStage<RecordMetadata> sendStage(String key, String value);
 
-    /**
-     * Asynchronous send with callback
-     * @param key message key
-     * @param value message value
-     * @param callback callback for result handling
-     * @return CompletionStage with metadata result
-     */
-    @Topic("kafka.producer.events")
-    CompletionStage<RecordMetadata> sendAsync(String key, String value, Callback callback);
+    @Topic(".topic")
+    CompletionStage<RecordMetadata> sendStage(String key, String value, Callback callback);
 }

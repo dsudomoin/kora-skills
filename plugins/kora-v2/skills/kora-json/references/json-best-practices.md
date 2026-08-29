@@ -1,193 +1,188 @@
-# JSON Best Practices and Patterns
+# JSON Best Practices and Patterns (Kora 2.x)
 
-Source of truth: `.kora-agent/kora-docs/mkdocs/docs/en/documentation/json.md`,
-`.kora-agent/kora-examples/guides/java/kora-java-guide-json-app`.
+Verified against the Kora 2.0 sources and the migrated `kora-java-json`,
+`kora-kotlin-json`, `kora-java-guide-json-app` and `kora-kotlin-guide-json-app`
+examples.
 
 ## Contents
 
 1. [DTO design patterns](#1-dto-design-patterns)
-2. [API versioning patterns](#2-api-versioning-patterns)
+2. [Migrating a 1.x codebase](#2-migrating-a-1x-codebase)
 3. [Error response patterns](#3-error-response-patterns)
 4. [PATCH endpoint patterns](#4-patch-endpoint-patterns)
 5. [Collection handling](#5-collection-handling)
 6. [Security considerations](#6-security-considerations)
-7. [Performance](#7-performance-optimization)
+7. [Performance](#7-performance)
 8. [Testing patterns](#8-testing-patterns)
 9. [Documentation patterns](#9-documentation-patterns)
 10. [Quick reference](#10-quick-reference)
 
 ---
+
 ## 1. DTO Design Patterns
-### 1.1 Separate Request/Response DTOs
+
+### 1.1 Separate request/response DTOs
 
 ```java
 // GOOD — separate DTOs
 @Json
-public record CreateUserRequest(
-    String name, 
-    String email,
-    String password
-) {}
+public record CreateUserRequest(String name, String email, String password) {}
 
 @Json
-public record UserResponse(
-    String id, 
-    String name,
-    String email, 
-    LocalDateTime createdAt
-) {}
+public record UserResponse(String id, String name, String email, LocalDateTime createdAt) {}
 
 // BAD — exposing the persistence row record directly as the HTTP body.
-// Map the @Table/@Column DAO record (database layer) to a dedicated @Json DTO instead.
+// Map the @EntityJdbc/@Table row (database layer) to a dedicated @Json DTO instead.
 @Table("users")
 public record UserRow(@Column("id") String id, @Column("name") String name) {}
 ```
 
-**Why:**
-- API evolution independence
-- Hide internal fields
-- Different validation rules
-### 1.2 Request DTOs with @JsonReader
+**Why:** independent API evolution, hidden internal fields, different validation rules.
+
+### 1.2 Request DTOs with `@JsonReader`
 
 ```java
 @JsonReader
-public record LoginRequest(
-    String email,
-    String password
-) {}
+public record LoginRequest(String email, String password) {}
 
-// Only deserialization needed
 @HttpRoute(method = HttpMethod.POST, path = "/login")
-public LoginResponse login(@Json LoginRequest request) {
-    // ...
-}
+@Json
+public LoginResponse login(@Json LoginRequest request) { … }
 ```
-### 1.3 Response DTOs with @JsonWriter
+
+Generating only the direction you need keeps the build output smaller and makes an
+accidental "we serialized the login request into a log" impossible.
+
+### 1.3 Response DTOs with `@JsonWriter`
 
 ```java
 @JsonWriter
-public record HealthResponse(
-    String status, 
-    long uptime,
-    Map<String, String> checks
-) {}
+public record HealthResponse(String status, long uptime, Map<String, String> checks) {}
 
-// Only serialization needed
 @HttpRoute(method = HttpMethod.GET, path = "/health")
 @Json
-public HealthResponse health() {
-    // ...
-}
+public HealthResponse health() { … }
+```
+
+### 1.4 Annotate the type, not just the parameter
+
+`@Json` on a controller parameter marks the body as JSON, but the `JsonReader<T>` still has
+to exist. Put `@Json` (or `@JsonReader`/`@JsonWriter`) on the DTO type itself so the mapper
+is generated during ordinary annotation processing and reused by HTTP, Kafka and cache code
+alike.
+
+### 1.5 Version DTOs, not mappers
+
+```java
+@Json public record UserResponseV1(String id, String name) {}
+@Json public record UserResponseV2(String id, String name, String avatar, String bio) {}
+```
+
+```java
+@HttpRoute(method = HttpMethod.GET, path = "/v1/users/{id}")
+@Json
+public UserResponseV1 getUserV1(@Path String id) { … }
+
+@HttpRoute(method = HttpMethod.GET, path = "/v2/users/{id}")
+@Json
+public UserResponseV2 getUserV2(@Path String id) { … }
 ```
 
 ---
-## 2. API Versioning Patterns
-### 2.1 DTO Versioning
 
-```java
-// V1 DTO
-@Json
-public record UserResponseV1(
-    String id,
-    String name
-) {}
+## 2. Migrating a 1.x Codebase
 
-// V2 DTO with additional fields
-@Json
-public record UserResponseV2(
-    String id,
-    String name,
-    String avatar,
-    String bio
-) {}
-```
-### 2.2 Controller Versioning
+Work in this order — a blind package rename leaves the last three items broken:
 
-```java
-@HttpController
-public final class UserController {
-     
-    @HttpRoute(method = HttpMethod.GET, path = "/v1/users/{id}")
-    @Json 
-    public UserResponseV1 getUserV1(@Path String id) {
-        User user = userService.findById(id); 
-        return new UserResponseV1(user.getId(), user.getName());
-    } 
-    
-    @HttpRoute(method = HttpMethod.GET, path = "/v2/users/{id}") 
-    @Json
-    public UserResponseV2 getUserV2(@Path String id) { 
-        User user = userService.findById(id);
-        return new UserResponseV2( 
-            user.getId(),
-            user.getName(), 
-            user.getAvatar(),
-            user.getBio() 
-        );
-    }
-}
-```
+1. **Coordinates.** `ru.tinkoff.kora:kora-parent` → `io.koraframework:kora-bom`;
+   `ru.tinkoff.kora:json-module` → `io.koraframework:json-common`.
+2. **Packages.** `ru.tinkoff.kora.json.*` → `io.koraframework.json.common.*`;
+   the module interface is `io.koraframework.json.common.JsonModule` and `JsonCommonModule`
+   no longer exists.
+3. **Jackson.** `com.fasterxml.jackson.core.*` → `tools.jackson.core.*`;
+   `JsonParseException` → `tools.jackson.core.exc.StreamReadException`;
+   `parser.getText()` → `getString()` / `getValueAsString()`;
+   `gen.writeFieldName(...)` → `gen.writeName(...)`.
+4. **`*Unchecked` methods.** `toStringUnchecked` → `toString`,
+   `toByteArrayUnchecked` → `toByteArray`, `readUnchecked` → `read`.
+5. **`IOException` handling.** The surviving methods declare no checked exception — in
+   `2.0.0.RC1` no `throws` clause at all, and on the snapshot line only the unchecked
+   `JacksonException`. In Java a leftover `try/catch (IOException)` is now a **compile
+   error**:
+
+   ```java
+   // 1.x
+   try {
+       return HttpServerResponse.of(code, HttpBody.json(errorJsonWriter.toByteArray(error)));
+   } catch (IOException ex) {
+       return HttpServerResponse.of(500, HttpBody.plaintext(ex.getMessage()));
+   }
+
+   // 2.x — drop the try/catch and the `import java.io.IOException;`
+   return HttpServerResponse.of(code, HttpBody.json(errorJsonWriter.toByteArray(error)));
+   ```
+
+   In Kotlin the `catch (e: IOException)` compiles but is dead code — remove it too.
+6. **Nullable reads.** `JsonReader<T>.read(...)` is annotated `@Nullable`. Kotlin cannot
+   assign the result to a non-null type:
+
+   ```kotlin
+   val event = requireNotNull(reader.read(data))
+   ```
+
+   This bites hardest in Kafka listeners that decode a payload by hand.
+7. **Async contracts.** Kora 2.0 JSON is synchronous — there is no `Mono`/`Flux`/
+   `CompletionStage`/`suspend` reader or writer to port. Convert the call sites first, then
+   the DTOs.
+
+If phantom `ru.tinkoff.kora` errors survive the rename, they come from stale generated
+sources: `./gradlew clean` with `--no-build-cache`. Never edit anything under
+`build/generated`.
 
 ---
+
 ## 3. Error Response Patterns
-### 3.1 Sealed Interface for API Responses
+
+### 3.1 A sealed interface for API responses
 
 ```java
 @Json
 @JsonDiscriminatorField("status")
-public sealed interface ApiResponse<T> 
-    permits SuccessResponse, ErrorResponse {}
+public sealed interface ApiResponse<T> permits ApiResponse.Success, ApiResponse.Failure {
 
-@JsonDiscriminatorValue("SUCCESS")
-public record SuccessResponse<T>(
-    String status,
-    T data,
-    @Nullable String message
-) implements ApiResponse<T> {}
+    @Json
+    @JsonDiscriminatorValue("SUCCESS")
+    record Success<T>(T data, @Nullable String message) implements ApiResponse<T> {}
 
-@JsonDiscriminatorValue("ERROR")
-public record ErrorResponse(
-    String status,
-    String code,
-    String message,
-    @Nullable List<FieldError> errors
-) implements ApiResponse<Object> {
+    @Json
+    @JsonDiscriminatorValue("ERROR")
+    record Failure<T>(String code, String message, @Nullable List<FieldError> errors)
+        implements ApiResponse<T> {}
 
-    public record FieldError(String field, String message) {}
+    @Json
+    record FieldError(String field, String message) {}
 }
 ```
-
-**JSON examples:**
 
 ```json
-// Success
-{
-    "status": "SUCCESS", 
-    "data": {
-        "id": "123", 
-        "name": "John"
-    }, 
-    "message": null
-}
+{ "status": "SUCCESS", "data": { "id": "123", "name": "John" } }
 
-// Error
 {
-    "status": "ERROR", 
-    "code": "VALIDATION_ERROR",
-    "message": "Invalid input data", 
-    "errors": [
-        {"field": "email", "message": "Invalid email format"}, 
-        {"field": "password", "message": "Too short"}
-    ]
+  "status": "ERROR",
+  "code": "VALIDATION_ERROR",
+  "message": "Invalid input data",
+  "errors": [ { "field": "email", "message": "Invalid email format" } ]
 }
 ```
+
+The discriminator is written by the generated sealed writer — no `String status` component
+is needed on the subtypes.
+
 ### 3.2 Returning a typed JSON error from a route
 
-Kora's HTTP server has no global `@ExceptionHandler`. To emit a typed JSON error body,
-either return a JSON-mapped error type from the route, or throw
-`HttpServerResponseException` and centralize error mapping in an
-`HttpServerInterceptor` registered with `@InterceptWith`. The route-level form keeps the
-error in the JSON contract:
+Kora's HTTP server has no global `@ExceptionHandler`. Either return a JSON-mapped error type
+from the route, or throw `HttpServerResponseException` and centralise error mapping in an
+`HttpServerInterceptor`. The route-level form keeps the error inside the JSON contract:
 
 ```java
 @HttpRoute(method = HttpMethod.POST, path = "/users")
@@ -195,126 +190,104 @@ error in the JSON contract:
 public ApiResponse<UserResponse> createUser(@Json CreateUserRequest request) {
     var errors = validate(request);
     if (!errors.isEmpty()) {
-        return new ErrorResponse("ERROR", "VALIDATION_ERROR", "Invalid input data", errors);
+        return new ApiResponse.Failure<>("VALIDATION_ERROR", "Invalid input data", errors);
     }
-    return new SuccessResponse<>("SUCCESS", userService.create(request), null);
+    return new ApiResponse.Success<>(userService.create(request), null);
 }
 ```
 
 For a non-200 status, throw `HttpServerResponseException.of(status, message)` and let an
-interceptor serialize the error body; see the `kora-http-server` skill for interceptors.
+interceptor serialise the body. In 2.0 a **global** interceptor is registered with
+`@Tag(HttpServer.class)` — the 1.x `@Tag(HttpServerModule.class)` still compiles but is never
+looked up, so the interceptor silently stops running. See the `kora-http-server` skill.
+
+An interceptor that serialises an error body needs a `JsonWriter<ErrorTO>` injected, and its
+`toByteArray` call must **not** be wrapped in `try/catch (IOException)`.
 
 ---
+
 ## 4. PATCH Endpoint Patterns
-### 4.1 JsonNullable for Partial Updates
+
+### 4.1 `JsonNullable` for partial updates
 
 ```java
 @Json
 public record UpdateUserRequest(
-    String id, 
     JsonNullable<String> name,
-    JsonNullable<String> email, 
+    JsonNullable<String> email,
     JsonNullable<String> avatar
 ) {}
 
 @HttpRoute(method = HttpMethod.PATCH, path = "/users/{id}")
 @Json
-public UserResponse updateUser(
-    @Path String id, 
-    @Json UpdateUserRequest request
-) {
-    User user = userService.findById(id);
+public UserResponse updateUser(@Path String id, @Json UpdateUserRequest request) {
+    var user = userService.findById(id);
 
-    // Only update fields that were present in the JSON (value() may be null when isNull())
-    if (request.name().isDefined()) {
-        user.setName(request.name().value());
-    }
-    if (request.email().isDefined()) {
-        user.setEmail(request.email().value());
-    }
-    if (request.avatar().isDefined()) {
-        user.setAvatar(request.avatar().value());
-    }
+    // Only touch fields that were present in the JSON; value() may be null when isNull()
+    if (request.name().isDefined())   { user.setName(request.name().value()); }
+    if (request.email().isDefined())  { user.setEmail(request.email().value()); }
+    if (request.avatar().isDefined()) { user.setAvatar(request.avatar().value()); }
 
     return userService.update(user);
 }
 ```
-
-**JSON examples:**
 
 ```json
-// Update only name
-{
-    "id": "123",
-    "name": "New Name"
-}
-
-// Update only email
-{
-    "id": "123",
-    "email": "new@example.com"
-}
-
-// Explicitly set field to null
-{
-    "id": "123",
-    "avatar": null
-}
+{ "name": "New Name" }            // update only name
+{ "avatar": null }                // explicitly clear avatar
+{ }                               // touch nothing
 ```
-### 4.2 Map-based Approach
 
-```java
+### 4.2 Kotlin
+
+```kotlin
 @Json
-public record PatchRequest(
-    Map<String, JsonNullable<Object>> fields
-) {}
+data class UpdateUserRequest(
+    val name: JsonNullable<String>,
+    val email: JsonNullable<String>
+)
 
-@HttpRoute(method = HttpMethod.PATCH, path = "/users/{id}")
-public UserResponse patchUser(
-    @Path String id, 
-    @Json PatchRequest request
-) {
-    User user = userService.findById(id); 
-    
-    if (request.fields().containsKey("name")) {
-        var value = request.fields().get("name");
-        user.setName(value.isNull() ? null : (String) value.value());
-    }
-    // ... handle other fields 
-    
-    return userService.update(user);
+if (request.name.isDefined) {
+    user.name = request.name.value()
 }
 ```
+
+### 4.3 What not to do
+
+- Do not model "missing" as `@Nullable T` — that collapses omitted and `null` into one state.
+- Do not use `Optional<T>` — Kora has no built-in mapper for it, and it cannot express the
+  third state anyway.
+- Do not call `Optional`-style `isPresent()`/`get()` on `JsonNullable`; the API is
+  `isDefined()` / `isNull()` / `value()`.
 
 ---
+
 ## 5. Collection Handling
-### 5.1 Empty Collections vs Null
+
+### 5.1 Empty collections vs null
 
 ```java
 @Json
 @JsonInclude(IncludeType.NON_EMPTY)
 public record SearchResponse(
-    List<Result> results,  // Won't serialize if empty
+    List<Result> results,             // omitted when empty
     int total,
-    @Nullable String nextCursor  // Won't serialize if null
+    @Nullable String nextCursor       // omitted when null
 ) {}
 ```
 
-**JSON:**
-
 ```json
-// With results
-{
-    "results": [...], 
-    "total": 100
-}
-
-// Empty results (results field omitted)
-{
-    "total": 0
-}
+{ "results": [ … ], "total": 100 }
+{ "total": 0 }
 ```
-### 5.2 Paginated Response
+
+`NON_EMPTY` needs a `Collection`/`Map` type visible at compile time — on a bare type
+parameter the emptiness check cannot be applied and the field behaves as `NON_NULL`.
+
+If a client parses the response with a strict schema, prefer emitting an empty array over
+omitting the key: keep the default `NON_NULL` and return `List.of()`.
+
+### 5.2 Paginated response
 
 ```java
 @Json
@@ -324,167 +297,116 @@ public record PaginatedResponse<T>(
     int pageSize,
     long totalItems,
     int totalPages,
-    @Nullable String nextCursor,
-    @Nullable String prevCursor
-) {
-    public static <T> PaginatedResponse<T> of(
-        List<T> items,
-        int page,
-        int pageSize,
-        long totalItems
-    ) {
-        int totalPages = (int) Math.ceil((double) totalItems / pageSize); 
-        String nextCursor = page < totalPages ? String.valueOf(page + 1) : null;
-        String prevCursor = page > 1 ? String.valueOf(page - 1) : null;
-
-        return new PaginatedResponse<>(
-            items, page, pageSize, totalItems, totalPages,
-            nextCursor, prevCursor
-        );
-    }
-}
+    @Nullable String nextCursor
+) {}
 ```
 
+A generic DTO needs a `JsonReader`/`JsonWriter` for each concrete `T` used — i.e. every `T`
+must itself be `@Json`.
+
 ---
+
 ## 6. Security Considerations
-### 6.1 Sensitive Field Exclusion
+
+### 6.1 Never let a secret reach the writer
 
 ```java
+// GOOD — the response type simply has no secret fields
 @Json
-public record UserResponse(
-    String id, 
-    String name,
-    String email 
-    // No password, token, or security fields!
-) {}
+public record UserResponse(String id, String name, String email) {}
 
-// If a type carrying sensitive data must itself be @Json, skip those fields explicitly.
+// Acceptable — the type must carry them, so exclude them explicitly
 @Json
 public record UserView(
     String id,
     String name,
-    String email,
-    @JsonSkip String passwordHash, // never serialized or read
+    @JsonSkip String passwordHash,   // never written and never read
     @JsonSkip String apiToken
 ) {}
 ```
-### 6.2 Different DTOs for Different Contexts
+
+`@JsonSkip` removes the field from **both** directions. If a field must be accepted on read
+but never echoed back, use two DTOs rather than one.
+
+### 6.2 Different DTOs for different audiences
 
 ```java
-// Public response (minimal info)
-@Json
-public record PublicUserResponse(
-    String id,
-    String displayName
-) {}
-
-// Internal response (full info)
-@Json
-public record InternalUserResponse(
-    String id,
-    String name,
-    String email,
-    String role,
-    LocalDateTime createdAt,
-    LocalDateTime lastLogin
-) {}
-
-// Admin response (includes sensitive info)
-@Json
-public record AdminUserResponse(
-    String id,
-    String name,
-    String email,
-    String role,
-    boolean active,
-    int loginAttempts,
-    LocalDateTime lastLogin,
-    String passwordHash  // Only for admin
-) {}
+@Json public record PublicUserResponse(String id, String displayName) {}
+@Json public record InternalUserResponse(String id, String name, String email, String role) {}
 ```
+
+Choosing the DTO by audience is enforced by the compiler; filtering fields at runtime is not.
+
+### 6.3 `RawJson` is a trust boundary
+
+`RawJson` content is emitted into the output document **verbatim**, without escaping or
+validation. Only ever construct one from JSON your own code produced.
+
+### 6.4 Unknown input fields are skipped
+
+The generated reader skips properties it does not know (`nextToken(); skipChildren();`).
+That makes forward-compatible clients easy, but it also means a typo in a request field name
+is not reported — required fields are still enforced, optional ones silently stay `null`.
 
 ---
-## 7. Performance Optimization
-### 7.1 Avoid Nested Serialization
+
+## 7. Performance
+
+Kora's JSON is already reflection-free and generated; most wins are about payload shape.
+
+### 7.1 Do not serialise more than the endpoint promises
 
 ```java
-// BAD — deep nesting
+// BAD — deep object graph on every call
 @Json
-public record OrderResponse(
-    String id, 
-    CustomerResponse customer,  // Full customer object
-    List<OrderItemResponse> items, 
-    PaymentResponse payment,    // Full payment object
-    ShippingResponse shipping   // Full shipping object
-) {}
+public record OrderResponse(String id, CustomerResponse customer,
+                            List<OrderItemResponse> items, PaymentResponse payment) {}
 
-// GOOD — references only
+// GOOD — summary plus a follow-up endpoint for the detail
 @Json
-public record OrderSummaryResponse(
-    String id, 
-    String customerId,
-    int itemCount, 
-    BigDecimal total,
-    String status
-) {}
-
-// Fetch details separately if needed
-@HttpRoute(method = HttpMethod.GET, path = "/orders/{id}/full")
-@Json
-public OrderResponse getOrderFull(@Path String id) {
-    // Fetch complete order with all relations
-}
+public record OrderSummaryResponse(String id, String customerId, int itemCount,
+                                   BigDecimal total, String status) {}
 ```
-### 7.2 Lazy Loading for Large Responses
+
+### 7.2 Keep large binaries out of JSON
 
 ```java
-@Json
-public record ReportResponse(
-    String reportId,
-    String name,
-    LocalDateTime generatedAt,
-    // Don't include large data inline
-    String downloadUrl  // Pre-signed URL instead
-) {}
+// GOOD — a link
+@Json public record ReportResponse(String reportId, String name, String downloadUrl) {}
 
-// BAD — large inline data
-@Json
-public record BadReportResponse(
-    String reportId,
-    byte[] data,  // Large binary in JSON!
-    String name
-) {}
+// BAD — a megabyte of base64 in the body
+@Json public record BadReportResponse(String reportId, byte[] data) {}
 ```
+
+### 7.3 Prefer `toByteArray` over `toString` for wire output
+
+`toByteArray` writes UTF-8 directly through a recycled `ByteArrayBuilder`; `toString` goes
+through a `SegmentedStringWriter` and then has to be encoded again. Reserve
+`toPrettyString` for diagnostics.
+
+### 7.4 Reuse the injected mappers
+
+`JsonReader<T>`/`JsonWriter<T>` are singletons in the graph and safe to hold in a field.
+Never construct a generated `*JsonReader` by hand.
 
 ---
+
 ## 8. Testing Patterns
-### 8.1 JSON Assertion Helpers
+
+### 8.1 Assert on the wire format, not just the object
 
 ```java
-class JsonAssertions {
-     
-    static void assertUserResponse(String json, User expected) {
-        assertThatJson(json) 
-            .inPath("id").isEqualTo(expected.getId())
-            .inPath("name").isEqualTo(expected.getName()) 
-            .inPath("email").isEqualTo(expected.getEmail())
-            .inPath("createdAt").isNotNull() 
-            .inPath("password").doesNotExist();  // Verify not exposed
-    } 
-    
-    static void assertErrorResponse(String json, String code, String message) { 
-        assertThatJson(json)
-            .inPath("status").isEqualTo("ERROR") 
-            .inPath("code").isEqualTo(code)
-            .inPath("message").isEqualTo(message); 
-    }
-}
+var json = writer.toString(value);
+assertTrue(json.contains("\"identifier\""));      // @JsonField rename applied
+assertTrue(json.contains("\"explicitNull\":null")); // @JsonInclude(ALWAYS) honoured
+assertFalse(json.contains("internalOnly"));       // @JsonSkip honoured
 ```
-### 8.2 Round-trip Test
 
-Inject the generated `JsonWriter<T>` / `JsonReader<T>` (available as components once the
-DTO is `@Json` and `JsonModule` is wired) and round-trip through them. In a `@KoraAppTest`
-they are pulled in with `@TestComponent`:
+A round-trip test alone passes even when both directions are wrong in the same way.
+
+### 8.2 Round-trip test
+
+Pull the generated mappers out of the graph with `@KoraAppTest` + `@TestComponent`:
 
 ```java
 @KoraAppTest(Application.class)
@@ -497,136 +419,112 @@ class UserResponseJsonTest {
 
     @Test
     void roundTrip() {
-        var original = new UserResponse("usr_123", "John Doe", "john@example.com", null);
+        var original = new UserResponse("usr_123", "John Doe", "john@example.com",
+            LocalDateTime.of(2026, 8, 14, 10, 30));
 
-        byte[] json = writer.toByteArray(original); // JsonWriter#toByteArray
-        UserResponse decoded = reader.read(json);   // JsonReader#read(byte[])
+        byte[] json = writer.toByteArray(original);   // no checked exception
+        UserResponse decoded = reader.read(json);     // @Nullable
 
         assertThat(decoded).isEqualTo(original);
     }
 }
 ```
 
----
-## 9. Documentation Patterns
-### 9.1 DTO Documentation
+```kotlin
+@KoraAppTest(Application::class)
+class UserResponseJsonTest {
 
-```java
-/**
- * User creation request. (Field-level constraints belong to the validation skill,
- * via @Validate / Kora validation annotations — kept out of the JSON contract here.)
- *
- * @param name User's full name (required)
- * @param email User's email address (required)
- * @param password User's password (required)
- */
-@Json
-public record CreateUserRequest(
-    String name,
-    String email,
-    String password
-) {}
+    @TestComponent lateinit var writer: JsonWriter<UserResponse>
+    @TestComponent lateinit var reader: JsonReader<UserResponse>
 
-/**
- * User response.
- * 
- * @param id Unique user identifier
- * @param name User's full name
- * @param email User's email address
- * @param createdAt Account creation timestamp (ISO-8601)
- */
-@Json
-public record UserResponse(
-    String id, 
-    String name,
-    String email, 
-    LocalDateTime createdAt
-) {}
-```
-### 9.2 API Response Examples
+    @Test
+    fun roundTrip() {
+        val original = UserResponse("usr_123", "John Doe", "john@example.com",
+            LocalDateTime.of(2026, 8, 14, 10, 30))
 
-```java
-/**
- * Create a new user.
- * 
- * @param request User creation data
- * @return Created user with generated ID
- * 
- * **Request example:**
- * ```json
- * {
- *     "name": "John Doe",
- *     "email": "john@example.com",
- *     "password": "securepassword123"
- * }
- * ```
- * 
- * **Response example:**
- * ```json
- * {
- *     "id": "usr_abc123",
- *     "name": "John Doe",
- *     "email": "john@example.com",
- *     "createdAt": "2024-01-15T10:30:00Z"
- * }
- * ```
- */
-@HttpRoute(method = HttpMethod.POST, path = "/users")
-@Json
-public UserResponse createUser(@Json CreateUserRequest request) {
-    // ...
+        val decoded = requireNotNull(reader.read(writer.toByteArray(original)))
+
+        assertEquals(original, decoded)
+    }
 }
 ```
 
+A `@Root @Component` holder that constructor-injects every mapper under test is a compact
+way to prove the whole set is wirable — that is what the migrated `kora-java-json` example
+does with `JsonRoot`.
+
+### 8.3 Cover the JSON-specific edge cases
+
+| Case | Assertion |
+|---|---|
+| `null` document | `reader.read("null")` returns `null` |
+| omitted optional field | decodes, field is `null` |
+| omitted required field | read fails |
+| unknown extra field | ignored |
+| `JsonNullable` | all three states: defined non-null, defined null, undefined |
+| sealed subtype | each discriminator value, including every alias |
+| enum | every constant, plus an unknown value |
+
 ---
-## 10. Quick Reference
-### DTO Patterns
+
+## 9. Documentation Patterns
 
 ```java
-// Request DTO
-@JsonReader
-public record CreateRequest(String name, String email) {}
-
-// Response DTO
-@JsonWriter
-public record ResponseDto(String id, String name) {}
-
-// Full DTO
+/**
+ * User creation request. Field-level constraints belong to Kora validation
+ * (@Valid / @Validate) rather than to the JSON contract.
+ *
+ * @param name     user's full name (required)
+ * @param email    user's email address (required)
+ * @param password user's password (required)
+ */
 @Json
-public record UserDto(String id, String name, String email) {}
+public record CreateUserRequest(String name, String email, String password) {}
+```
 
-// Patch DTO
+Where the JSON name differs from the Java name, say so — a reader of the record sees
+`userId`, the client sees `user_id`:
+
+```java
 @Json
-public record UpdateRequest(
-    String id, 
-    JsonNullable<String> name,
-    JsonNullable<String> email
+public record ApiRequest(
+    /** JSON key: {@code user_id}. */
+    @JsonField("user_id") String userId
 ) {}
 ```
-### Response Patterns
+
+---
+
+## 10. Quick Reference
+
+### DTO patterns
 
 ```java
-// Success/Error with sealed interface
+@JsonReader public record CreateRequest(String name, String email) {}          // inbound only
+@JsonWriter public record ResponseDto(String id, String name) {}               // outbound only
+@Json       public record UserDto(String id, String name, String email) {}     // both
+@Json       public record UpdateRequest(JsonNullable<String> name) {}          // PATCH
+```
+
+### Response patterns
+
+```java
 @Json
 @JsonDiscriminatorField("status")
-public sealed interface ApiResponse<T> 
-    permits SuccessResponse, ErrorResponse {}
+public sealed interface ApiResponse<T> permits ApiResponse.Success, ApiResponse.Failure { … }
 
-// Paginated response
 @Json
-public record PaginatedResponse<T>(
-    List<T> items,
-    long total,
-    @Nullable String nextCursor
-) {}
+public record PaginatedResponse<T>(List<T> items, long total, @Nullable String nextCursor) {}
 ```
-### Best Practices Checklist
 
-- [ ] Separate request/response DTOs
-- [ ] Use records instead of classes
-- [ ] Document all fields
-- [ ] Validate input fields
-- [ ] Exclude sensitive data
-- [ ] Use JsonNullable for PATCH
-- [ ] Document API with examples
-- [ ] Test round-trip serialization
+### Checklist
+
+- [ ] Separate request/response DTOs; never expose a persistence row
+- [ ] Records / data classes, `@Json` on the **type**
+- [ ] JSpecify `@Nullable` (Kotlin `T?`) on every optional field
+- [ ] `JsonNullable<T>` wherever "omitted" and "null" differ
+- [ ] Sealed hierarchies for polymorphism — `@Json` on every subtype
+- [ ] No secrets in a writable DTO; `@JsonSkip` if the type must carry them
+- [ ] No `try/catch (IOException)` around `toByteArray`/`toString`
+- [ ] Kotlin: `requireNotNull(reader.read(...))`
+- [ ] Round-trip **and** wire-format assertions

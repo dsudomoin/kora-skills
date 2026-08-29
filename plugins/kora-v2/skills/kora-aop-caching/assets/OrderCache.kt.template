@@ -1,289 +1,242 @@
-// Typed cache interface + service demonstrating all four cache annotation patterns.
-// Replace `com.example.app.cache` / `com.example.app.dto` with your packages.
-// Classes must be `open` for AOP aspects to work.
+// Kora 2.0 — typed caches, key mapping and the four cache annotations (Kotlin).
+//
+// This template holds SEVERAL source files, each introduced by a "==== file:" banner.
+// Copy each block into its own .kt file and replace `com.example.app.*` with your packages.
+//
+// Requires: io.koraframework:cache-caffeine (and cache-redis-lettuce + json-common for the Redis
+// variant) plus ksp("io.koraframework:symbol-processors").
+//
+// KOTLIN RULE: a class carrying cache annotations must be `open`, and every annotated function must
+// be `open` too. Otherwise KSP fails with
+//   AOP aspect cannot be applied to class '...' because the class is not open.
+//   AOP aspect cannot be applied to function '...' because the function is not open.
+
+// ============================================================================
+// ==== file: OrderCache.kt — typed Caffeine cache with a simple key
+// ============================================================================
 
 package com.example.app.cache
 
 import com.example.app.dto.OrderDto
-import ru.tinkoff.kora.cache.CacheKeyMapper
-import ru.tinkoff.kora.cache.annotation.Cache
-import ru.tinkoff.kora.cache.annotation.CacheInvalidate
-import ru.tinkoff.kora.cache.annotation.CachePut
-import ru.tinkoff.kora.cache.annotation.Cacheable
-import ru.tinkoff.kora.cache.caffeine.CaffeineCache
-import ru.tinkoff.kora.common.Component
-import ru.tinkoff.kora.common.Mapping
+import io.koraframework.cache.annotation.Cache
+import io.koraframework.cache.caffeine.CaffeineCache
 import java.util.UUID
 
-// =============================================================================
-// 1. TYPED CACHE INTERFACE — Kora generates implementation and registers as component
-// =============================================================================
+// @Cache("<config path>") must sit on an INTERFACE extending exactly one of
+// CaffeineCache<K, V> or RedisCache<K, V>. KSP generates $OrderCache_Impl and $OrderCache_Module;
+// the module is discovered automatically — do not list it on @KoraApp.
+@Cache("orders.cache")
+interface OrderCache : CaffeineCache<UUID, OrderDto>
 
-// Simple key type (UUID, String, Long, etc.)
-@Cache("orders.cache.config")
-interface OrderCache : CaffeineCache<UUID, OrderDto> {
-    // No additional methods needed — Kora generates get/put/invalidate/etc.
-}
 
-// Alternative: Composite key with inner data class
-@Cache("orders.composite.cache.config")
+// ============================================================================
+// ==== file: OrderCompositeCache.kt — composite key from a data class
+// ============================================================================
+
+package com.example.app.cache
+
+import com.example.app.dto.OrderDto
+import io.koraframework.cache.annotation.Cache
+import io.koraframework.cache.caffeine.CaffeineCache
+import java.util.UUID
+
+@Cache("orders.composite.cache")
 interface OrderCompositeCache : CaffeineCache<OrderCompositeCache.Key, OrderDto> {
 
+    // A data class key needs no mapper: the processor emits `Key(tenantId, orderId)` because the
+    // primary constructor matches the selected method parameters, in order.
     data class Key(val tenantId: UUID, val orderId: UUID)
 }
 
-// Alternative: Redis cache with JSON serialization
-// import ru.tinkoff.kora.json.common.annotation.Json
-// @Cache("orders.redis.cache.config")
-// interface OrderRedisCache : RedisCache<UUID, @Json OrderDto>
 
-// =============================================================================
-// 2. CUSTOM KEY MAPPER — for domain object to cache key conversion
-// =============================================================================
+// ============================================================================
+// ==== file: OrderRedisCache.kt — distributed variant (optional)
+// ============================================================================
 
-// Domain object that needs custom key extraction
-data class OrderContext(
-    val tenantId: UUID,
-    val orderId: UUID,
-    val requestId: String,
-    val userId: String
-)
+package com.example.app.cache
 
-// Mapper: extract composite key from domain object
-class OrderContextMapper : CacheKeyMapper<OrderCompositeCache.Key, OrderContext> {
+import com.example.app.dto.OrderDto
+import io.koraframework.cache.annotation.Cache
+import io.koraframework.cache.redis.RedisCache
+import io.koraframework.json.common.annotation.Json
+import java.util.UUID
 
-    override fun map(ctx: OrderContext): OrderCompositeCache.Key {
-        return OrderCompositeCache.Key(ctx.tenantId, ctx.orderId)
-    }
-}
+// The @Json on the VALUE TYPE ARGUMENT selects the JSON RedisCacheValueMapper.
+// OrderDto itself must also be annotated @Json so its reader/writer are generated.
+// Requires LettuceRedisCacheModule on @KoraApp and a `keyPrefix` in the config section.
+@Cache("orders.redis.cache")
+interface OrderRedisCache : RedisCache<UUID, @Json OrderDto>
 
-// Simple mapper: extract single key from domain object
-class OrderIdMapper : CacheKeyMapper<UUID, OrderContext> {
 
-    override fun map(ctx: OrderContext): UUID {
-        return ctx.tenantId  // or combine: mergeHash(ctx.tenantId, ctx.orderId)
-    }
-}
+// ============================================================================
+// ==== file: OrderService.kt — all four cache annotations
+// ============================================================================
 
-// =============================================================================
-// 3. SERVICE WITH ALL CACHE ANNOTATIONS
-// =============================================================================
+package com.example.app.service
+
+import com.example.app.cache.OrderCache
+import com.example.app.cache.OrderCompositeCache
+import com.example.app.dto.OrderDto
+import com.example.app.dto.OrderRequest
+import io.koraframework.cache.CacheKeyMapper
+// import io.koraframework.cache.annotation.CacheMode   // only for the CacheMode.ASYNC example below
+import io.koraframework.cache.annotation.CacheInvalidate
+import io.koraframework.cache.annotation.CacheInvalidateAll
+import io.koraframework.cache.annotation.CachePut
+import io.koraframework.cache.annotation.Cacheable
+import io.koraframework.common.annotation.Component
+import io.koraframework.common.annotation.Mapping
+import java.util.UUID
 
 @Component
-open class OrdersService(  // open, not final for AOP
-
-    private val cache: OrderCache,
-    private val compositeCache: OrderCompositeCache,
-    private val repository: OrdersRepository
-
+open class OrderService(                                     // `open`: AOP subclasses it
+    private val repository: OrderRepository
 ) {
 
-    // -------------------------------------------------------------------------
-    // @Cacheable — Read-through cache: lookup first, call method on miss, cache result
-    // -------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    // @Cacheable — read-through. On a hit the body never runs.
+    // ------------------------------------------------------------------------
 
     @Cacheable(OrderCache::class)
-    open fun get(id: UUID): OrderDto {
-        // key = id (single argument)
-        return repository.find(id)
-    }
+    open fun get(id: UUID): OrderDto = repository.find(id)                     // key = id
 
     @Cacheable(OrderCompositeCache::class)
-    open fun getByCompositeKey(tenantId: UUID, orderId: UUID): OrderDto {
-        // key = Key(tenantId, orderId) — argument order matches data class
-        return repository.find(tenantId, orderId)
-    }
+    open fun getComposite(tenantId: UUID, orderId: UUID): OrderDto =
+        repository.find(tenantId, orderId)                                     // key = Key(tenantId, orderId)
 
+    // `args` selects and reorders the key parameters; `trace` is ignored.
+    @Cacheable(value = OrderCompositeCache::class, args = ["orderId", "tenantId"])
+    open fun find(tenantId: UUID, trace: String, orderId: UUID): OrderDto =
+        repository.find(tenantId, orderId)                                     // key = Key(orderId, tenantId)
+
+    // A domain argument needs a CacheKeyMapper, applied with @Mapping.
+    @Mapping(OrderContextMapping::class)
     @Cacheable(OrderCompositeCache::class)
-    @Mapping(OrderContextMapper::class)
-    open fun getByContext(context: OrderContext): OrderDto {
-        // key = mapper.map(context) = Key(context.tenantId, context.orderId)
-        return repository.find(context.tenantId, context.orderId)
-    }
+    open fun getByContext(context: OrderContext): OrderDto =
+        repository.find(context.tenantId, context.orderId)
 
-    // With parameters attribute: subset and reordering
-    @Cacheable(value = OrderCompositeCache::class, parameters = ["orderId", "tenantId"])
-    open fun getWithReordering(tenantId: UUID, unrelated: String, orderId: UUID): OrderDto {
-        // key = Key(orderId, tenantId) — order from `parameters`, skips `unrelated`
-        return repository.find(tenantId, orderId)
-    }
+    // ------------------------------------------------------------------------
+    // @CachePut — write-through. The body always runs; its result is stored.
+    // ------------------------------------------------------------------------
 
-    // -------------------------------------------------------------------------
-    // @CachePut — Write-through cache: call method, then update cache
-    // -------------------------------------------------------------------------
+    // Without `args` the key would be built from BOTH parameters, including `request`.
+    @CachePut(value = OrderCache::class, args = ["id"])
+    open fun update(id: UUID, request: OrderRequest): OrderDto = repository.save(id, request)
 
-    @CachePut(value = OrderCache::class, parameters = ["id"])
-    open fun update(id: UUID, dto: OrderDto): OrderDto {
-        // key = id (first arg, explicitly specified)
-        return repository.save(id, dto)
-    }
-
-    @CachePut(value = OrderCompositeCache::class, parameters = ["tenantId", "orderId"])
-    open fun updateComposite(tenantId: UUID, orderId: UUID, dto: OrderDto): OrderDto {
-        // key = Key(tenantId, orderId)
-        return repository.save(tenantId, orderId, dto)
-    }
-
-    // -------------------------------------------------------------------------
-    // @CacheInvalidate — Evict key: call method, then remove from cache
-    // -------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    // @CacheInvalidate — evict one key after the body runs. Unit is allowed here.
+    // ------------------------------------------------------------------------
 
     @CacheInvalidate(OrderCache::class)
-    open fun delete(id: UUID) {
-        // key = id, evicted after method returns
-        repository.delete(id)
-    }
+    open fun delete(id: UUID) = repository.delete(id)
 
     @CacheInvalidate(OrderCompositeCache::class)
-    open fun deleteComposite(tenantId: UUID, orderId: UUID) {
-        // key = Key(tenantId, orderId), evicted after method returns
-        repository.delete(tenantId, orderId)
-    }
+    open fun deleteComposite(tenantId: UUID, orderId: UUID) = repository.delete(tenantId, orderId)
 
-    // -------------------------------------------------------------------------
-    // @CacheInvalidate(invalidateAll = true) — Clear entire cache
-    // -------------------------------------------------------------------------
+    // ------------------------------------------------------------------------
+    // @CacheInvalidateAll — clear the cache. Replaces Kora 1.x invalidateAll = true.
+    // ------------------------------------------------------------------------
 
-    @CacheInvalidate(value = OrderCache::class, invalidateAll = true)
-    open fun clearAll() {
-        // administrative operation — clears entire cache
-        // use sparingly: expensive operation, causes cache stampede
+    @CacheInvalidateAll(OrderCache::class)
+    open fun deleteAll() = repository.deleteAll()
+
+    // CacheMode.ASYNC moves the WRITE off the calling thread onto the
+    // @Tag(CacheMode::class) Executor. It is ignored for Caffeine caches (compile warning),
+    // so declare it only on a Redis cache.
+    // @CachePut(value = OrderRedisCache::class, args = ["id"], mode = CacheMode.ASYNC)
+    // open fun updateAsync(id: UUID, request: OrderRequest): OrderDto = repository.save(id, request)
+
+    // Domain argument used as a cache key source.
+    data class OrderContext(val tenantId: UUID, val orderId: UUID, val traceId: String)
+
+    // Every class named in @Mapping MUST be a @Component — nested classes included.
+    // The cache processor always injects the mapper; it never constructs one itself.
+    @Component
+    class OrderContextMapping : CacheKeyMapper<OrderCompositeCache.Key, OrderContext> {
+
+        override fun map(arg: OrderContext): OrderCompositeCache.Key =
+            OrderCompositeCache.Key(arg.tenantId, arg.orderId)
     }
 }
 
-// =============================================================================
-// 4. MULTI-LEVEL CACHE SERVICE — Caffeine L1 + Redis L2
-// =============================================================================
 
-/*
-@KoraApp
-interface Application : CaffeineCacheModule, RedisCacheModule {
+// ============================================================================
+// ==== file: OrderQueryService.kt — the cache used imperatively
+// ============================================================================
 
-    @Cache("orders.caffeine.config")
-    interface OrderCaffeineCache : CaffeineCache<UUID, OrderDto>
+package com.example.app.service
 
-    @Cache("orders.redis.config")
-    interface OrderRedisCache : RedisCache<UUID, @Json OrderDto>
-}
+import com.example.app.cache.OrderCache
+import com.example.app.dto.OrderDto
+import com.example.app.dto.OrderRequest
+import io.koraframework.common.annotation.Component
+import java.util.UUID
 
+// No AOP here, so this class does not need to be `open`.
 @Component
-open class OrdersMultiLevelService(
-
-    private val repository: OrdersRepository
-
-) {
-
-    @Cacheable(OrderCaffeineCache::class)  // L1: checked first
-    @Cacheable(OrderRedisCache::class)     // L2: checked on L1 miss
-    open fun get(id: UUID): OrderDto {
-        // Order: Caffeine → Redis → repository
-        return repository.find(id)
-    }
-
-    @CachePut(OrderCaffeineCache::class)
-    @CachePut(OrderRedisCache::class)
-    open fun update(id: UUID, dto: OrderDto): OrderDto {
-        // Updates both L1 and L2
-        return repository.save(id, dto)
-    }
-
-    @CacheInvalidate(OrderCaffeineCache::class)
-    @CacheInvalidate(OrderRedisCache::class)
-    open fun delete(id: UUID) {
-        // Evicts from both L1 and L2
-        repository.delete(id)
-    }
-}
-*/
-
-// =============================================================================
-// 5. IMPERATIVE CACHE USAGE — manual control without aspects
-// =============================================================================
-
-/*
-@Component
-open class OrdersImperativeService(
-
+class OrderQueryService(
     private val cache: OrderCache,
-    private val repository: OrdersRepository
-
+    private val repository: OrderRepository
 ) {
 
-    fun getOrCreate(id: UUID): OrderDto {
-        val cached = cache.get(id)
-        if (cached != null) {
-            return cached
-        }
+    // Equivalent to @Cacheable on a single synchronous cache, and atomic per key on Caffeine.
+    fun getOrLoad(id: UUID): OrderDto? = cache.computeIfAbsent(id) { repository.find(it) }
 
-        val loaded = repository.find(id)
-        if (loaded != null) {
-            cache.put(id, loaded)
-        }
-        return loaded
+    // The key only exists after the body has run, so @CachePut cannot express this.
+    fun create(request: OrderRequest): OrderDto {
+        val created = repository.insert(request)
+        cache.put(created.id, created)
+        return created
     }
 
-    fun updateManually(id: UUID, dto: OrderDto) {
-        repository.save(id, dto)
-        cache.put(id, dto)  // explicit cache update
-    }
-
-    fun deleteManually(id: UUID) {
-        repository.delete(id)
-        cache.invalidate(id)  // explicit eviction
-    }
-
-    fun clearAllManually() {
-        cache.invalidateAll()  // clear entire cache
-    }
-}
-*/
-
-// =============================================================================
-// 6. LOADABLECACHE PATTERN — get-or-load without aspects
-// =============================================================================
-
-/*
-@KoraApp
-interface Application : CaffeineCacheModule {
-
-    @Cache("orders.cache.config")
-    interface OrderCache : CaffeineCache<UUID, OrderDto>
-
-    @Root
-    fun orderLoadableCache(
-        cache: OrderCache,
-        repository: OrdersRepository
-    ): LoadableCache<UUID, OrderDto> {
-        return cache.asLoadable(repository::find)
-    }
+    fun evict(id: UUID) = cache.invalidate(id)   // put/get/invalidate silently ignore nulls
 }
 
-@Component
-open class OrdersLoadableService(
 
-    private val cache: LoadableCache<UUID, OrderDto>
+// ============================================================================
+// ==== file: OrderLoadableCacheModule.kt — LoadableCache (optional)
+// ============================================================================
 
-) {
+package com.example.app.cache
 
-    fun get(id: UUID): OrderDto {
-        // loads via repository::find on cache miss
-        return cache.get(id)
-    }
+import com.example.app.dto.OrderDto
+import com.example.app.service.OrderRepository
+import io.koraframework.cache.LoadableCache
+import io.koraframework.common.annotation.Module
+import java.util.UUID
+
+@Module
+interface OrderLoadableCacheModule {
+
+    // asLoadableSimple takes (K) -> V; asLoadable takes (Collection<K>) -> Map<K, V>.
+    fun orderLoadableCache(cache: OrderCache, repository: OrderRepository): LoadableCache<UUID, OrderDto> =
+        cache.asLoadableSimple { id -> repository.find(id) }
 }
-*/
 
-// =============================================================================
-// 7. PLACEHOLDER REPOSITORY — replace with your actual @Repository
-// =============================================================================
 
-@Component
-open class OrdersRepository {
-    // Placeholder bodies (TODO("...")) keep the non-null return types compiling;
-    // replace with your real @Repository implementation.
-    open fun find(id: UUID): OrderDto = TODO("replace with repository lookup")
-    open fun find(tenantId: UUID, orderId: UUID): OrderDto = TODO("replace with repository lookup")
-    open fun save(id: UUID, dto: OrderDto): OrderDto = dto
-    open fun save(tenantId: UUID, orderId: UUID, dto: OrderDto): OrderDto = dto
-    open fun delete(id: UUID) { }
-    open fun delete(tenantId: UUID, orderId: UUID) { }
+// ============================================================================
+// ==== file: OrderRepository.kt — placeholder, replace with your own
+// ============================================================================
+
+package com.example.app.service
+
+import com.example.app.dto.OrderDto
+import com.example.app.dto.OrderRequest
+import java.util.UUID
+
+interface OrderRepository {
+
+    fun find(id: UUID): OrderDto
+
+    fun find(tenantId: UUID, orderId: UUID): OrderDto
+
+    fun insert(request: OrderRequest): OrderDto
+
+    fun save(id: UUID, request: OrderRequest): OrderDto
+
+    fun delete(id: UUID)
+
+    fun delete(tenantId: UUID, orderId: UUID)
+
+    fun deleteAll()
 }

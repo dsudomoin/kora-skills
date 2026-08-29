@@ -1,485 +1,266 @@
-# Kafka Error Handling Reference
+# Kafka Consumer Error Handling Reference (Kora 2.0)
 
-**Source:** [.kora-agent/kora-docs/mkdocs/docs/en/documentation/kafka.md](../../../.kora-agent/kora-docs/mkdocs/docs/en/documentation/kafka.md)  
-**Examples:** [.kora-agent/kora-examples/kora-java-kafka/](../../../.kora-agent/kora-examples/examples/java/kora-java-kafka/)
-
-Comprehensive error handling patterns for Kafka consumers in Kora.
+What the container does with a thrown exception, and the patterns that follow from it.
 
 ## Contents
 
-- [Consumer Errors](#consumer-errors)
-- [Producer Errors](#producer-errors)
-- [Rebalance Handling](#rebalance-handling)
-- [Retry Logic](#retry-logic)
-- [Graceful Shutdown](#graceful-shutdown)
-- [Best Practices](#best-practices)
+- [Exception types](#exception-types)
+- [What the container does](#what-the-container-does)
+- [Deserialization failures](#deserialization-failures)
+- [Skipping a record](#skipping-a-record)
+- [Dead letter queue](#dead-letter-queue)
+- [Retry](#retry)
+- [Backoff and restart](#backoff-and-restart)
+- [Pitfalls](#pitfalls)
 
 ---
 
-## Consumer Errors
+## Exception types
 
-### Deserialization Errors
+All in `io.koraframework.kafka.common.exceptions`:
 
-When deserialization fails, Kora can pass the error to your listener using the nullable signature pattern.
+| Type | Kind | Meaning |
+|---|---|---|
+| `RecordKeyDeserializationException` | `extends org.apache.kafka.common.errors.SerializationException` | key could not be decoded; `getRecord()` returns the raw `ConsumerRecord<byte[], byte[]>` |
+| `RecordValueDeserializationException` | same | value could not be decoded; same `getRecord()` |
+| `KafkaSkipRecordException` | `extends RuntimeException` | wrap a cause in it to report-and-skip the record |
+| `SkippableRecordException` | **interface**, no methods | implement it on your own exception to get the same treatment |
+| `KafkaPublishException` | `extends org.apache.kafka.common.KafkaException` | producer side; the real cause is in `getCause()` |
 
-#### Pattern 1: Nullable Event + Exception
+`KafkaSkipRecordException(Throwable cause)` — the cause is `@NonNull`; there is no message-only
+constructor.
+
+---
+
+## What the container does
+
+Single-record listeners run inside `RecordHandler`:
 
 ```java
-@KafkaListener("kafka.consumer.listener")
-void process(@Nullable String value, @Nullable Exception error) {
-    if (error != null) {
-        // Handle deserialization error
-        log.error("Deserialization error: {}", error.getMessage(), error);
-        return;
+try {
+    recordObservation.observeHandle();
+    handler.handle(consumer, recordObservation, record);
+} catch (Throwable e) {
+    recordObservation.observeError(e);
+    if (!(e instanceof KafkaSkipRecordException) && !(e instanceof SkippableRecordException)) {
+        throw e;
     }
-    // Normal processing
-    log.info("Received: {}", value);
 }
+if (shouldCommit && commitAllowed) { /* commit offset + 1 */ }
 ```
 
-#### Pattern 2: Nullable Json Event + Exception
+| Thrown | Telemetry | Offset | Loop |
+|---|---|---|---|
+| `KafkaSkipRecordException` | error recorded | **committed** | continues to the next record |
+| an exception implementing `SkippableRecordException` | error recorded | **committed** | continues |
+| anything else | error recorded | not committed | propagates to the poll loop |
+
+`RecordsHandler` (batch) has **no** skip branch — every `Throwable` is observed and rethrown, so
+`KafkaSkipRecordException` does nothing useful in a batch listener. Filter inside the loop instead.
+
+When an exception reaches the poll loop, the container ends the observation, logs, sleeps
+`backoffTimeout`, doubles it (capped at 60 s) and **breaks out of the loop**. The outer thread then
+builds a brand-new consumer and starts polling again from the last committed offset — so every
+uncommitted record in that poll is redelivered.
+
+---
+
+## Deserialization failures
+
+Deserialization is lazy, so where the failure surfaces depends on the signature.
+
+**Nullable payload + exception parameter** — the processor wraps the decode in a `try` and hands you
+the failure. This is the production shape, and the one the migrated guide app uses:
 
 ```java
-@KafkaListener("kafka.consumer.listener")
-void process(@Nullable @Json UserEvent event, @Nullable Exception error) {
-    if (error != null) {
-        // Handle JSON deserialization error
-        log.error("Failed to deserialize UserEvent", error);
-        // Option: Send to DLQ
-        dlqPublisher.send("user-events-dlq", 
-            "user-event", 
-            error.getMessage());
+@KafkaListener("kafka.consumer.user-created")
+public void process(@Json @Nullable UserCreatedEvent event, @Nullable Exception exception) {
+    if (exception != null) {
+        logger.warn("Failed to consume user creation event", exception);
         return;
     }
     if (event == null) {
-        log.warn("Received null event without error");
+        logger.warn("Received null event without exception");
         return;
     }
-    // Normal processing
-    log.info("Received event: userId={}, eventType={}", 
-        event.userId(), event.eventType());
+    userService.createUser(event);
 }
 ```
 
-#### Pattern 3: ConsumerRecord with Exception Handling
+`@Nullable` is `org.jspecify.annotations.Nullable` and is a **type-use** annotation. The processor
+inspects the type element, so the annotation does not hide the parameter's role.
 
-When using `ConsumerRecord`, deserialization exceptions are thrown when accessing `key()` or `value()`:
+Narrow the parameter to catch only one side:
 
 ```java
-@KafkaListener("kafka.consumer.listener")
-void process(ConsumerRecord<String, UserEvent> record) {
+void process(@Json @Nullable OrderEvent value, @Nullable RecordValueDeserializationException e)
+```
+
+With a key **and** a value parameter, either failure nulls both payload parameters. With only a value
+parameter, a key failure is not caught at all — the value is still delivered.
+
+**`ConsumerRecord` + try/catch** — decode yourself and reach the raw bytes:
+
+```java
+@KafkaListener("kafka.consumer.orders")
+void process(ConsumerRecord<String, OrderEvent> record) {
     try {
-        UserEvent event = record.value();  // Throws RecordValueDeserializationException
-        log.info("Received: {}", event);
+        orderService.handle(record.value());
     } catch (RecordValueDeserializationException e) {
-        log.error("Value deserialization failed", e);
-        // Access raw bytes for DLQ
         ConsumerRecord<byte[], byte[]> raw = e.getRecord();
-        log.error("Raw key: {}, raw value: {}", 
-            new String(raw.key()), 
-            new String(raw.value()));
+        dlq.send(raw.topic(), raw.key(), raw.value(), e.getMessage());
     }
 }
 ```
 
-**Exception types:**
-- `RecordKeyDeserializationException` - key deserialization failed
-- `RecordValueDeserializationException` - value deserialization failed
-
-Both exceptions provide `getRecord()` to access the original `ConsumerRecord<byte[], byte[]>`.
+**Neither** — a corrupt record throws out of the listener, is not committed, and is redelivered
+forever after each `backoffTimeout`. That is the poison-pill loop.
 
 ---
 
-### Skipping Messages (KafkaSkipRecordException)
-
-Throw `KafkaSkipRecordException` to skip the current message and continue to the next.
+## Skipping a record
 
 ```java
-@KafkaListener("kafka.consumer.listener")
-void process(String value) {
-    if ("skip".equals(value)) {
-        throw new KafkaSkipRecordException(
-            new IllegalArgumentException("Want to skip!")
-        );
+@KafkaListener("kafka.consumer.orders")
+public void process(String value) {
+    if (value.startsWith("skip:")) {
+        throw new KafkaSkipRecordException(new IllegalArgumentException("Unsupported record: " + value));
     }
-    // Normal processing
-    log.info("Processing: {}", value);
+    orderService.handle(value);
 }
 ```
 
-**What happens:**
-1. Container catches the exception
-2. Logs the skip event
-3. Commits offset for the skipped message
-4. Continues to the next message
-5. Records metrics (skipped count incremented)
+The record is reported to telemetry as an error, the offset is committed, and the loop continues.
+
+For a family of business exceptions, implement the marker instead:
+
+```java
+public class UnprocessableEventException extends RuntimeException implements SkippableRecordException {
+    public UnprocessableEventException(String message) { super(message); }
+}
+```
+
+Both only work in the single-record shape.
 
 ---
 
-### Custom Skippable Exceptions
+## Dead letter queue
 
-Implement `SkippableRecordException` to create custom skippable exceptions.
-
-```java
-public class MySkipException extends RuntimeException implements SkippableRecordException {
-    
-    public MySkipException(String message) {
-        super(message);
-    }
-    
-    public MySkipException(String message, Throwable cause) {
-        super(message, cause);
-    }
-}
-```
-
-**Usage:**
+Kora has no built-in DLQ. Declare a `@KafkaPublisher` and send from the error branch:
 
 ```java
-@KafkaListener("kafka.consumer.listener")
-void process(String value) {
-    if (shouldSkip(value)) {
-        throw new MySkipException("Business reason to skip");
-    }
-    // Normal processing
-}
-```
-
-**Common use cases:**
-- Duplicate event detection
-- Business rule violations
-- Non-critical validation failures
-- Intentional filtering
-
----
-
-### Dead Letter Queue (DLQ)
-
-Implement a DLQ publisher for messages that cannot be processed.
-
-#### DLQ Publisher Interface
-
-```java
-@KafkaPublisher("kafka.dlqPublisher")
+@KafkaPublisher("kafka.producer.dlq")
 public interface DlqPublisher {
-    
-    @KafkaPublisher.Topic("kafka.dlq.topic")
-    void send(String originalTopic, String originalMessage, String errorMessage);
-    
-    @KafkaPublisher.Topic("kafka.dlq.topic")
-    void send(String originalTopic, byte[] rawKey, byte[] rawValue, String errorMessage);
+    @KafkaPublisher.Topic("kafka.producer.dlq.topic")
+    void send(byte[] key, byte[] value);
 }
-```
 
-#### DLQ Handler Pattern
-
-```java
 @Component
-public final class DlqHandler {
-    
-    private final DlqPublisher dlqPublisher;
-    
-    public DlqHandler(DlqPublisher dlqPublisher) {
-        this.dlqPublisher = dlqPublisher;
-    }
-    
-    @KafkaListener("kafka.consumer.listener")
-    void process(@Nullable String value, @Nullable Exception error) {
-        if (error != null) {
-            log.error("Processing error, sending to DLQ", error);
-            dlqPublisher.send("my-topic", 
-                value != null ? value : "null",
-                error.getMessage());
-            return;
-        }
-        // Normal processing
-        processMessage(value);
-    }
-    
-    private void processMessage(String value) {
-        // Business logic
-    }
-}
-```
+public final class OrderListener {
 
-#### DLQ with Raw Bytes (Deserialization Errors)
+    private final DlqPublisher dlq;
 
-```java
-@Component
-public final class DeserializationErrorHandler {
-    
-    private final DlqPublisher dlqPublisher;
-    
-    @KafkaListener("kafka.consumer.listener")
-    void process(ConsumerRecord<String, String> record) {
+    public OrderListener(DlqPublisher dlq) { this.dlq = dlq; }
+
+    @KafkaListener("kafka.consumer.orders")
+    void process(ConsumerRecord<String, OrderEvent> record) {
         try {
-            String value = record.value();  // May throw
-            processValue(value);
+            orderService.handle(record.value());
         } catch (RecordValueDeserializationException e) {
-            log.error("Deserialization failed", e);
-            ConsumerRecord<byte[], byte[]> raw = e.getRecord();
-            dlqPublisher.send(
-                record.topic(),
-                raw.key(),
-                raw.value(),
-                "Deserialization error: " + e.getMessage()
-            );
+            var raw = e.getRecord();
+            dlq.send(raw.key(), raw.value());
         }
     }
 }
 ```
 
----
-
-## Producer Errors
-
-### KafkaPublishException
-
-Thrown when a message fails to publish.
-
-```java
-try {
-    publisher.send("key", "value");
-} catch (KafkaPublishException e) {
-    log.error("Publish failed", e.getCause());
-    // Handle error: retry, fallback, etc.
-}
-```
-
-The actual Kafka exception is in `e.getCause()`.
-
-### SerializationException
-
-Thrown when serialization fails.
-
-```java
-try {
-    publisher.send("key", invalidObject);
-} catch (SerializationException e) {
-    log.error("Serialization failed", e);
-    // Handle error: fix object, skip, alert
-}
-```
+Route the **raw bytes** from `getRecord()`, not a re-serialized object — the payload could not be
+parsed, so there is nothing to re-serialize. Details of the publisher side:
+[kora-kafka-producer](../../kora-kafka-producer/SKILL.md).
 
 ---
 
-## Rebalance Handling
+## Retry
 
-Implement `ConsumerAwareRebalanceListener` to react to partition rebalance events.
-
-### Interface
-
-```java
-public interface ConsumerAwareRebalanceListener {
-    
-    void onPartitionsRevoked(Consumer<?, ?> consumer, Collection<TopicPartition> partitions);
-    
-    void onPartitionsAssigned(Consumer<?, ?> consumer, Collection<TopicPartition> partitions);
-    
-    void onPartitionsLost(Consumer<?, ?> consumer, Collection<TopicPartition> partitions);
-}
-```
-
-### Implementation Example
+Kora's resilience aspects apply to a listener method like any other. Declare a typed spec interface
+and annotate the method — this is what the migrated example does:
 
 ```java
-@Tag(MyListenerProcessTag.class)  // Must match the listener's config path tag
+@RetrySpec("resilient.retry.kafka-listener")
+public interface KafkaListenerRetry extends Retry {}
+
 @Component
-public final class MyRebalanceListener implements ConsumerAwareRebalanceListener {
-    
-    private static final Logger log = LoggerFactory.getLogger(MyRebalanceListener.class);
-    
-    @Override
-    public void onPartitionsRevoked(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-        log.info("Partitions revoked: {}", partitions);
-        
-        // Commit current offsets before rebalance
-        consumer.commitSync();
-        
-        // Clear caches
-        // Save processing state
-        // Close resources for these partitions
-    }
-    
-    @Override
-    public void onPartitionsAssigned(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-        log.info("Partitions assigned: {}", partitions);
-        
-        // Log newly assigned partitions
-        // Initialize state for new partitions
-        // Load cached data if needed
-    }
-    
-    @Override
-    public void onPartitionsLost(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-        log.warn("Partitions lost (consumer evicted): {}", partitions);
-        
-        // Clean up resources without committing
-        // The consumer no longer owns these partitions
+public class RetryListener {
+
+    @Retryable(KafkaListenerRetry.class)
+    @KafkaListener("kafka.consumer.retry-listener")
+    public void process(String value) {
+        externalService.call(value);
     }
 }
 ```
 
-### When to Use
+```hocon
+resilient.retry.kafka-listener {
+  delay = 10ms
+  attempts = 3
+}
+```
 
-- **onPartitionsRevoked:** Save state, commit offsets, clear caches
-- **onPartitionsAssigned:** Initialize state, log assignment
-- **onPartitionsLost:** Clean up without committing (consumer was evicted)
+Retries happen **inside** the handler, before Kora's commit, so a successful retry commits normally
+and a final failure falls through to the backoff path. Keep the total retry time well under
+`max.poll.interval.ms` or the broker evicts the consumer. See
+[kora-aop-resilient](../../kora-aop-resilient/SKILL.md); note that 2.0 takes a spec **class**, not a
+config name string.
+
+Do not write a `while` loop with `Thread.sleep` in the listener — it blocks the poll thread with no
+visibility into `max.poll.interval.ms`.
 
 ---
 
-## Retry Logic
-
-### Backoff Configuration
-
-Configure automatic backoff between errors:
+## Backoff and restart
 
 ```hocon
-kafka {
-  consumer {
-    myListener {
-      backoffTimeout = "15s"  # Pause between unexpected exceptions
-      topics = ["my-topic"]
-      driverProperties {
-        "bootstrap.servers" = "localhost:9092"
-      }
-    }
-  }
+kafka.consumer.orders {
+  backoffTimeout = 15s      # first pause; doubles per consecutive failure up to 60s
+  shutdownWait  = 30s
 }
 ```
 
-### Manual Retry Pattern
+The backoff counter resets to `backoffTimeout` after any poll that completes without error. A
+restarting consumer rejoins the group, which triggers a rebalance for the whole group — a listener
+that fails constantly therefore destabilises its peers, which is another reason to skip or DLQ
+poison records rather than let them throw.
 
-```java
-@KafkaListener("kafka.consumer.listener")
-void process(String value) {
-    int maxRetries = 3;
-    int attempt = 0;
-    
-    while (attempt < maxRetries) {
-        try {
-            processMessage(value);
-            break;  // Success
-        } catch (Exception e) {
-            attempt++;
-            if (attempt >= maxRetries) {
-                log.error("Max retries exceeded", e);
-                throw e;  // Will trigger backoff or skip
-            }
-            log.warn("Retry {}/{}", attempt, maxRetries, e);
-        }
-    }
-}
-```
+Nothing is committed during shutdown. A handler interrupted at `shutdownWait` is redelivered.
 
 ---
 
-## Graceful Shutdown
+## Pitfalls
 
-Configure shutdown timeout for clean termination:
-
-```hocon
-kafka {
-  consumer {
-    myListener {
-      shutdownWait = "30s"  # Time to finish processing before shutdown
-      topics = ["my-topic"]
-      driverProperties {
-        "bootstrap.servers" = "localhost:9092"
-      }
-    }
-  }
-}
-```
-
-**Shutdown sequence:**
-1. Container stops polling for new messages
-2. Allows `shutdownWait` time to finish processing current messages
-3. Commits offsets for processed messages
-4. Closes the consumer
+| Symptom | Cause | Fix |
+|---|---|---|
+| Consumer restarts every `backoffTimeout` | a record throws on every attempt | skip it, DLQ it, or handle the exception |
+| `KafkaSkipRecordException` does not skip | thrown from a **batch** listener | filter inside the loop; the batch handler has no skip branch |
+| Deserialization error kills the listener | no exception parameter and no try/catch | add `@Nullable Exception`, or catch around `record.value()` |
+| Exception parameter is always `null` | key failed but only a value parameter is declared | declare key + value, or use `RecordKeyDeserializationException` |
+| `getRecord()` not found | called on the wrong exception | it exists on `RecordKeyDeserializationException` / `RecordValueDeserializationException` |
+| Rebalance storm | a slow or retrying handler exceeds `max.poll.interval.ms` | shrink `max.poll.records`, cap retry time, raise the interval |
+| Cannot see the error | `telemetry.logging.enabled` defaults to `false` | enable it on the listener |
+| `@Retry("name")` does not compile | 1.x string form | `@Retryable(MySpec.class)` with `@RetrySpec("resilient.retry.<n>")` |
 
 ---
 
-## Best Practices
+## Related references
 
-### 1. Always Handle Deserialization Errors
+- [Listener signatures](kafka-listener-reference.md)
+- [Serialization](kafka-serialization-reference.md)
+- [Offsets](kafka-offset-reference.md)
+- [Telemetry](kafka-telemetry-reference.md)
+- [Transactions](kafka-transactions-reference.md)
 
-Use the nullable signature pattern:
-
-```java
-@KafkaListener("kafka.consumer.listener")
-void process(@Nullable @Json MyEvent event, @Nullable Exception error) {
-    if (error != null) {
-        log.error("Deserialization failed", error);
-        // Handle or send to DLQ
-        return;
-    }
-    // Process event
-}
-```
-
-### 2. Use DLQ for Bad Messages
-
-Never silently drop messages that failed to process:
-
-```java
-if (error != null) {
-    log.error("Processing failed", error);
-    dlqPublisher.send("my-topic", rawMessage, error.getMessage());
-    return;
-}
-```
-
-### 3. Log Rebalance Events
-
-Rebalance logging helps debug consumption issues:
-
-```java
-@Override
-public void onPartitionsAssigned(Consumer<?, ?> consumer, Collection<TopicPartition> partitions) {
-    log.info("Partitions assigned: {}", partitions);
-}
-```
-
-### 4. Configure Graceful Shutdown
-
-Always set `shutdownWait` for clean termination:
-
-```hocon
-shutdownWait = "30s"
-```
-
-### 5. Monitor Consumer Lag
-
-Set up metrics to detect consumption problems:
-
-```hocon
-telemetry {
-  metrics {
-    enabled = true
-    slo = [1, 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
-  }
-}
-```
-
-### 6. Make Consumers Idempotent
-
-The same message may be delivered multiple times:
-
-```java
-void process(MyEvent event) {
-    if (isDuplicate(event)) {
-        log.debug("Duplicate event, skipping: {}", event.id());
-        return;
-    }
-    processEvent(event);
-}
-```
-
----
-
-## Related References
-
-- [Kafka Consumer Reference](kafka-consumer-reference.md)
-- [Kafka Serialization Reference](kafka-serialization-reference.md)
-- [Kafka Transactions Reference](kafka-transactions-reference.md)
+**Source:** framework tag `2.0.0.RC1` —
+[exceptions](https://github.com/kora-projects/kora/tree/2.0.0.RC1/kafka/kafka/src/main/java/io/koraframework/kafka/common/exceptions) ·
+[RecordHandler](https://github.com/kora-projects/kora/blob/2.0.0.RC1/kafka/kafka/src/main/java/io/koraframework/kafka/common/consumer/containers/handlers/impl/RecordHandler.java);
+migrated examples on `migration/2.0` —
+[kora-java-kafka](https://github.com/kora-projects/kora-examples/tree/migration/2.0/examples/java/kora-java-kafka)

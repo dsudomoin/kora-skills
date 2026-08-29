@@ -3,106 +3,249 @@
     {
       "id": "kora-http-client-basic-crud",
       "skills": ["kora-http-client"],
-      "query": "Create a declarative Kora HTTP client UserApiClient for a User API: GET /users/{id}, GET /users with page and size query params, POST /users, and DELETE /users/{id}. The base URL must come from configuration.",
+      "query": "Create a declarative Kora HTTP client UserApiClient for a User API: GET /users/{userId}, GET /users with page and size query params, POST /users returning the status code, and DELETE /users/{userId}. The base URL must come from configuration.",
       "expected_behavior": [
-        "Declares an interface annotated with @HttpClient and uses configPath, with the url supplied under httpClient.* in config",
-        "Annotates each method with @HttpRoute(method = HttpMethod.GET/POST/DELETE, path = ...)",
-        "Maps path variables with @Path and query parameters with @Query",
-        "Uses @Json on the method and on the body parameter for JSON request/response, and adds json-module",
-        "Does not put a baseUrl attribute on @HttpClient (that attribute does not exist; url is a config key)"
+        "Annotates the interface with io.koraframework.http.client.common.annotation.HttpClient and passes the config path as the annotation value, e.g. @HttpClient(\"httpClient.userApi\")",
+        "Annotates each method with @HttpRoute(method = HttpMethod.GET/POST/DELETE, path = ...) imported from io.koraframework.http.common.annotation",
+        "Maps path variables with @Path and query parameters with @Query, marking optional ones @Nullable (Kotlin: T?)",
+        "Uses @Json on the method and on the body parameter, and adds implementation \"io.koraframework:json-common\" plus JsonModule on @KoraApp",
+        "Supplies the url key under httpClient.<client> in config and adds a transport module (OkHttpClientModule with io.koraframework:http-client-ok)",
+        "Uses the platform \"io.koraframework:kora-bom\" at 2.0.0.RC1 from mavenCentral() rather than pinning per-artifact versions"
       ],
-      "tags": ["declarative", "basic"]
+      "anti_behavior": [
+        "Writes @HttpClient(configPath = \"httpClient.userApi\")",
+        "Writes @HttpClient(baseUrl = ...) or any baseUrl attribute",
+        "Imports ru.tinkoff.kora.http.client.common.annotation.HttpClient or any ru.tinkoff.kora package",
+        "Declares the BOM as ru.tinkoff.kora:kora-parent, or the artifact json-module",
+        "Returns CompletionStage, Mono or declares the Kotlin method suspend"
+      ],
+      "tags": ["declarative", "basic", "regression-configpath", "regression-coordinates"]
     },
     {
-      "id": "kora-http-client-okhttp-config",
+      "id": "kora-http-client-configpath-migration",
       "skills": ["kora-http-client"],
-      "query": "Set up the OkHttp transport for a Kora HTTP client: connectTimeout 5s, readTimeout 30s, HTTP/2, with logging, metrics and tracing telemetry, plus a per-client block for usersApi pointing at http://users-service:8080 with a 10s requestTimeout.",
+      "query": "Our Kora 1.x client is declared as @HttpClient(configPath = \"httpClient.userApi\") and imports ru.tinkoff.kora.http.client.common.HttpClientResponseException. What are the Kora 2.0 equivalents?",
       "expected_behavior": [
-        "Adds implementation ru.tinkoff.kora:http-client-ok and the annotation processor (annotation-processors for Java or symbol-processors for Kotlin)",
-        "Plugs OkHttpClientModule into the @KoraApp interface",
-        "Configures httpClient.ok.httpVersion = HTTP_2, connectTimeout and readTimeout, and telemetry.logging/metrics/tracing",
-        "Adds a per-client block httpClient.usersApi with url and requestTimeout",
-        "Does not version individual ru.tinkoff.kora artifacts and relies on the kora-parent BOM"
+        "States that in 2.0 the annotation declares String value() default \"\" plus telemetryTag() and httpClientTag(), and there is no configPath attribute — write @HttpClient(\"httpClient.userApi\")",
+        "States the annotation is io.koraframework.http.client.common.annotation.HttpClient",
+        "States the exceptions moved to io.koraframework.http.client.common.exception.{HttpClientResponseException, HttpClientDecoderException}",
+        "Mentions that HttpClientResponseException exposes getCode()/getHeaders()/getBytes() rather than code()",
+        "Notes the compile symptom of the stale attribute: cannot find symbol: method configPath()",
+        "Notes that omitting the value resolves httpClient.<lowerCamelInterfaceName> by default"
       ],
-      "tags": ["transport", "basic"]
+      "anti_behavior": [
+        "Claims configPath still works or is merely deprecated",
+        "Keeps e.code() as the accessor on HttpClientResponseException",
+        "Says the exceptions are still in ru.tinkoff.kora.http.client.common or io.koraframework.http.client.common (without .exception)"
+      ],
+      "tags": ["migration", "basic", "regression-configpath"]
     },
     {
-      "id": "kora-http-client-response-entity",
+      "id": "kora-http-client-async-transport-removed",
       "skills": ["kora-http-client"],
-      "query": "I need to read the HTTP status code and a response header on a Kora HTTP client call instead of just the body. How do I do that?",
+      "query": "Our Kora 1.x service depends on ru.tinkoff.kora:http-client-async and its @KoraApp extends AsyncHttpClientModule, with client methods returning CompletionStage. Migrate it to Kora 2.0.",
       "expected_behavior": [
-        "Returns HttpResponseEntity<T> from the @HttpRoute method",
-        "Reads the status with response.code() and the body with response.body()",
-        "Reads headers with response.headers()",
-        "Explains that without HttpResponseEntity a non-2xx status throws HttpClientResponseException",
-        "Does not use a status() method or invent a ResponseEntity from another framework"
+        "States that http-client-async and AsyncHttpClientModule do not exist in Kora 2.0 and there is no async transport replacement",
+        "Moves the dependency to io.koraframework:http-client-ok (or http-client-jdk / http-client-apache) and swaps the module interface accordingly",
+        "Rewrites every CompletionStage<T> client method to return T, because client contracts are synchronous and run on virtual threads",
+        "Explains that a leftover async return type produces the warning \"Method has async signature, this might not work correctly\" and then No component found for dependency: HttpClientResponseMapper<java.util.concurrent.CompletionStage<...>>",
+        "Moves httpClient.async config keys to the new transport section (httpClient.ok / .jdk / .apache)",
+        "Mentions removing io.projectreactor:reactor-core / kotlinx-coroutines once no usages remain"
       ],
-      "tags": ["response", "basic"]
+      "anti_behavior": [
+        "Suggests io.koraframework:http-client-async or any AsyncHttpClientModule",
+        "Keeps CompletionStage, Mono or Flux as the client return type",
+        "Claims one of the remaining transports still supports async client contracts",
+        "Presents http-client-apache as a drop-in equal of http-client-ok without noting it is new in 2.0 and had transport fixes after 2.0.0.RC1"
+      ],
+      "tags": ["transport", "migration", "intermediate", "regression-async-artifact"]
+    },
+    {
+      "id": "kora-http-client-kotlin-suspend-removed",
+      "skills": ["kora-http-client"],
+      "query": "Migrate this Kotlin Kora client to 2.0 without breaking callers:\n\n@HttpClient(configPath = \"httpClient.petApi\")\ninterface PetApiClient {\n    @HttpRoute(method = HttpMethod.GET, path = \"/pets/{id}\")\n    @Json\n    suspend fun get(@Path id: Long): Pet\n}",
+      "expected_behavior": [
+        "Removes suspend and declares fun get(@Path id: Long): Pet",
+        "Rewrites @HttpClient(configPath = ...) as @HttpClient(\"httpClient.petApi\")",
+        "States that KSP rejects a suspend client method outright with \"Suspend methods are not supported by the HTTP client generator\"",
+        "Explicitly refuses to keep a default coroutine wrapper such as suspend fun get(id) = withContext(Dispatchers.IO) { getBlocking(id) } inside the client interface, and explains that it is still a public coroutine API masking a synchronous contract",
+        "Notes that Dispatchers.IO is pointless overhead under virtual threads",
+        "Rewrites the calling chain synchronously and drops runBlocking / runTest and kotlinx-coroutines where no usages remain",
+        "If real parallelism is needed, points at Java StructuredTaskScope and warns it is a preview API whose shape must be re-derived from the JDK actually in use"
+      ],
+      "anti_behavior": [
+        "Keeps suspend on any @HttpRoute method",
+        "Adds a suspend default method delegating to a blocking one, with or without withContext(Dispatchers.IO)",
+        "Wraps the call in runBlocking inside the client interface",
+        "Suggests Dispatchers.IO to make the blocking call \"safe\"",
+        "Claims Kotlin coroutines are still a supported Kora HTTP client contract"
+      ],
+      "tags": ["kotlin", "execution-model", "intermediate", "regression-suspend"]
+    },
+    {
+      "id": "kora-http-client-response-entity-void",
+      "skills": ["kora-http-client"],
+      "query": "My Kora 2.0 client method HttpResponseEntity<Void> deleteUser(@Path String userId) fails the build with: No component found for dependency: HttpClientResponseMapper<java.lang.Void> (no tags). Fix it.",
+      "expected_behavior": [
+        "Explains that the framework ships concrete response mappers only for String, byte[], ByteBuffer and HttpBodyInput, and that HttpResponseEntity<T> is a template factory needing a mapper for the payload T",
+        "Declares a @Component HttpClientResponseMapper<Void> (for example inside the client interface) that drains the body and returns null",
+        "States explicitly that the mapper must NOT be referenced with @Mapping",
+        "Explains the @Mapping trap: with @Mapping the mapper would have to produce the whole HttpResponseEntity<Void>, giving \"incompatible types: Void cannot be converted to HttpResponseEntity<Void>\"",
+        "Mentions that a plain void (Kotlin Unit) return needs no mapper at all",
+        "In Kotlin, declares override fun apply(response: HttpClientResponse): Void? with the nullable return type"
+      ],
+      "anti_behavior": [
+        "Adds @Mapping(VoidResponseMapper.class) on the deleteUser method",
+        "Suggests annotating the method with @Json to make the Void mapper resolve",
+        "Declares the Kotlin mapper as returning non-nullable Void",
+        "Claims the framework already provides an HttpClientResponseMapper<Void>"
+      ],
+      "tags": ["mappers", "response", "intermediate", "regression-void-entity"]
+    },
+    {
+      "id": "kora-http-client-mapper-component-rule",
+      "skills": ["kora-http-client"],
+      "query": "In a Kora 2.0 HTTP client I have a @Mapping request-body mapper, a dependency-free response mapper referenced from @ResponseCodeMapper, and a response mapper that takes a JsonReader. Which of them need @Component, and why?",
+      "expected_behavior": [
+        "States the rule is decided by how the generated client obtains the mapper, not by the annotation kind",
+        "A @Mapping request-body mapper (HttpClientRequestMapper) is always a constructor parameter, so @Component is always required",
+        "A response mapper named by @Mapping on a method or by @ResponseCodeMapper(mapper = ...) is instantiated by the generated code when the class is final (Kotlin: not open) with a single public no-arg constructor — then @Component is not needed",
+        "A response mapper with constructor dependencies such as JsonReader<T> cannot be instantiated by the generator and must be a @Component",
+        "Names the two symptoms: No component found for dependency when it is missing, Multiple components match when a self-instantiated mapper is also registered in the graph",
+        "Notes that @InterceptWith interceptor classes are always injected and therefore always need @Component"
+      ],
+      "anti_behavior": [
+        "Says every mapper always needs @Component",
+        "Says no mapper ever needs @Component",
+        "Recommends @Component on a dependency-free final @ResponseCodeMapper mapper without noting the duplicate-binding risk",
+        "Suggests registering the mapper via reflection, a service loader, or a Spring-style component scan"
+      ],
+      "tags": ["mappers", "di", "intermediate", "regression-component-rule"]
+    },
+    {
+      "id": "kora-http-client-telemetry-metrics-default",
+      "skills": ["kora-http-client"],
+      "query": "Show me a Kora 2.0 HTTP client configuration that emits request metrics and logs for the usersApi client with a 10s request timeout, and explain how to verify the metric exists.",
+      "expected_behavior": [
+        "Sets httpClient.usersApi.telemetry.metrics.enabled = true explicitly and states that metrics default to false in Kora 2.0",
+        "Sets telemetry.logging.enabled = true explicitly and states that logging also defaults to false (only tracing defaults to true)",
+        "Puts url and requestTimeout in the same per-client block",
+        "Mentions that a MeterRegistry must be in the graph (micrometer-module) or the metric is silently absent even when enabled",
+        "Names the client timer http.client.request.duration",
+        "Optionally shows a per-method override keyed by the client method name"
+      ],
+      "anti_behavior": [
+        "Claims metrics or logging are enabled by default in Kora 2.0",
+        "Uses the 1.x telemetry key pathTemplate instead of pathFull",
+        "Puts the per-client telemetry block under httpClient rather than under httpClient.<client>",
+        "Presents the configuration as complete without any MeterRegistry / micrometer dependency"
+      ],
+      "tags": ["telemetry", "config", "intermediate", "regression-telemetry-defaults"]
+    },
+    {
+      "id": "kora-http-client-interceptor-signature",
+      "skills": ["kora-http-client"],
+      "query": "Migrate this Kora 1.x HTTP client interceptor to 2.0 and attach it to a client:\n\npublic final class ApiKeyAuthInterceptor implements HttpClientInterceptor {\n    @Override\n    public CompletionStage<HttpClientResponse> processRequest(Context ctx, InterceptChain chain, HttpClientRequest request) {\n        var authorized = request.toBuilder().header(\"Authorization\", config.value()).build();\n        return chain.process(ctx, authorized);\n    }\n}",
+      "expected_behavior": [
+        "Changes the signature to HttpClientResponse processRequest(InterceptChain chain, HttpClientRequest request) throws Exception, with the chain as the first parameter",
+        "Removes the Kora Context parameter and explains that Context was removed from the framework, with no replacement",
+        "Calls chain.process(authorized) with a single argument",
+        "Keeps request.toBuilder().header(...).build() because HttpClientRequest is immutable",
+        "Registers the interceptor as a @Component and attaches it with @InterceptWith from io.koraframework.http.common.annotation",
+        "Reads the key from a @ConfigSource interface rather than a non-existent @ConfigValue annotation"
+      ],
+      "anti_behavior": [
+        "Keeps the Context parameter or introduces a substitute context object",
+        "Returns CompletionStage<HttpClientResponse>",
+        "Puts the chain after the request in the parameter list",
+        "Mutates the request in place instead of rebuilding it",
+        "Omits @Component on the interceptor",
+        "Imports ru.tinkoff.kora.http.common.annotation.InterceptWith"
+      ],
+      "tags": ["interceptors", "auth", "migration", "intermediate"]
     },
     {
       "id": "kora-http-client-error-handling",
       "skills": ["kora-http-client"],
-      "query": "Implement error handling for a Kora HTTP client UserService.getUser(id): map 404 to a not-found error and 5xx to a service-unavailable error, and handle a response that fails to decode.",
+      "query": "Implement error handling in a Kora 2.0 UserService.getUser(id): map 404 to a not-found error and 5xx to service-unavailable, and handle a response body that cannot be decoded.",
       "expected_behavior": [
-        "Catches HttpClientResponseException and branches on e.code() for 404 and 5xx",
-        "Catches HttpClientDecoderException for undecodable bodies",
-        "Notes that non-2xx responses throw HttpClientResponseException by default",
-        "Optionally uses @ResponseCodeMapper or HttpResponseEntity to avoid exceptions",
-        "Does not invent per-status exception classes such as NotFoundException or HttpStatusCodeException"
+        "Catches io.koraframework.http.client.common.exception.HttpClientResponseException and branches on e.getCode()",
+        "States that non-2xx throws HttpClientResponseException by default when no mapper claims the status",
+        "Handles decode failures by catching HttpClientDecoderException or the common supertype HttpClientException",
+        "Notes that on 2.0.0.RC1 the generated client does not wrap mapper failures, so a decode failure can surface as HttpClientUnknownException — catching HttpClientException is the version-independent choice",
+        "Offers HttpResponseEntity<T>, Either<T, E> or @ResponseCodeMapper as ways to avoid exceptions, and notes that only Either disables the status check",
+        "Mentions that HttpClientTimeoutException and HttpClientConnectionException are separate branches with no status code"
+      ],
+      "anti_behavior": [
+        "Uses e.code() instead of e.getCode()",
+        "Invents per-status exception classes such as NotFoundException or HttpStatusCodeException in the Kora API",
+        "Imports the exceptions from ru.tinkoff.kora.http.client.common or from io.koraframework.http.client.common without the .exception package",
+        "Claims HttpResponseEntity<T> alone stops non-2xx from throwing"
       ],
       "tags": ["error-handling", "intermediate"]
     },
     {
-      "id": "kora-http-client-interceptor-auth",
+      "id": "kora-http-client-custom-mapper-kotlin",
       "skills": ["kora-http-client"],
-      "query": "Add an API key to every request of a Kora HTTP client by reading the key from configuration and setting an X-API-Key header.",
+      "query": "In Kotlin with Kora 2.0, send a plain-text request body instead of JSON, and decode a different response shape for 200 versus every other status code.",
       "expected_behavior": [
-        "Implements HttpClientInterceptor and overrides processRequest(Context, InterceptChain, HttpClientRequest)",
-        "Builds a new request with request.toBuilder().header(...).build() and calls chain.process",
-        "Registers the interceptor as a @Component and attaches it with @InterceptWith on the client",
-        "Reads the key from a @ConfigSource config interface, not a non-existent @ConfigValue",
-        "Uses constructor injection and does not use field injection or annotations from other frameworks"
-      ],
-      "tags": ["interceptors", "auth", "intermediate"]
-    },
-    {
-      "id": "kora-http-client-async",
-      "skills": ["kora-http-client"],
-      "query": "Build a non-blocking Kora HTTP client whose methods return CompletionStage and fan out several calls in parallel.",
-      "expected_behavior": [
-        "Declares @HttpRoute methods returning CompletionStage<T> with @Json where bodies are JSON",
-        "Composes results with thenApply/thenCompose and toCompletableFuture without blocking",
-        "Uses CompletableFuture.allOf to run calls in parallel and join the results",
-        "Mentions that Mono<T> (reactor-core) or Kotlin suspend are also supported signatures",
-        "Does not block inside the async chain with Thread.sleep or join in a callback"
-      ],
-      "tags": ["async", "intermediate"]
-    },
-    {
-      "id": "kora-http-client-resilient",
-      "skills": ["kora-http-client"],
-      "query": "Make a production Kora HTTP client resilient: retry GETs, a circuit breaker on POSTs, a timeout, and a fallback that returns an empty list.",
-      "expected_behavior": [
-        "Adds the ru.tinkoff.kora:resilient-kora dependency and ResilientModule to @KoraApp",
-        "Annotates methods with @Retry(\"name\"), @CircuitBreaker(\"name\"), @Timeout(\"name\")",
-        "Uses @Fallback(value = \"name\", method = \"...\") referencing a default fallback method",
-        "Puts the tuning values under the resilient.* config (retry/circuitbreaker/timeout blocks)",
-        "Does not use inline attributes like maxAttempts, failureThreshold, or a @Backoff annotation"
-      ],
-      "tags": ["resilience", "advanced"]
-    },
-    {
-      "id": "kora-http-client-custom-mapper",
-      "skills": ["kora-http-client"],
-      "query": "Send a plain-text request body instead of JSON from a Kora HTTP client, and decode different response shapes for 200 versus error status codes.",
-      "expected_behavior": [
-        "Implements HttpClientRequestMapper<T> returning HttpBody.plaintext(...) and references it with @Mapping",
-        "Uses @ResponseCodeMapper(code = 200, ...) and @ResponseCodeMapper(code = ResponseCodeMapper.DEFAULT, ...)",
+        "Implements HttpClientRequestMapper<T> with override fun apply(value: T): HttpBodyOutput returning HttpBody.plaintext(...) and references it with @Mapping(X::class)",
+        "Marks the request mapper @Component because @Mapping body mappers are always injected",
+        "Uses @ResponseCodeMapper(code = 200, mapper = X::class) and @ResponseCodeMapper(code = ResponseCodeMapper.DEFAULT, mapper = Y::class)",
         "Implements HttpClientResponseMapper<T> reading response.body().asInputStream() and response.code()",
-        "Models the result as a sealed interface with @Json record variants",
-        "Imports @Mapping from ru.tinkoff.kora.common.Mapping rather than inventing an annotation"
+        "Marks the response mappers @Component because they take a JsonReader dependency",
+        "Uses requireNotNull (or an explicit throw) around jsonReader.read(...) because JsonReader.read returns a nullable value in Kora 2.0",
+        "Imports @Mapping from io.koraframework.common.annotation.Mapping"
       ],
-      "tags": ["mappers", "advanced"]
+      "anti_behavior": [
+        "Uses the 1.x apply(Context, value) request-mapper signature",
+        "Treats jsonReader.read(...) as non-null in Kotlin",
+        "Imports Mapping from ru.tinkoff.kora.common.Mapping",
+        "Declares any client method suspend",
+        "Adds @Component to a dependency-free, non-open response mapper without warning about the duplicate binding"
+      ],
+      "tags": ["mappers", "kotlin", "advanced"]
+    },
+    {
+      "id": "kora-http-client-transport-choice",
+      "skills": ["kora-http-client"],
+      "query": "Set up a Kora 2.0 HTTP client transport: 5s connect timeout, 30s read timeout, HTTP/2, an explicit proxy, and a per-client block for usersApi at http://users-service:8080 with a 10s requestTimeout. Which transport should I pick?",
+      "expected_behavior": [
+        "Recommends io.koraframework:http-client-ok with OkHttpClientModule as the default choice",
+        "Puts connectTimeout, readTimeout, useEnvProxy and the proxy block at the base httpClient path, and followRedirects / httpVersion under httpClient.ok",
+        "Adds a separate httpClient.usersApi block with url and requestTimeout",
+        "Lists the three available transports (http-client-ok, http-client-jdk, http-client-apache) and their module interfaces and config sections",
+        "Notes that http-client-apache is new in Kora 2.0 and that its transport integration was corrected only after 2.0.0.RC1 — on RC1 it reads timeouts and proxy from httpClient.apache",
+        "States that exactly one transport module may be plugged into @KoraApp"
+      ],
+      "anti_behavior": [
+        "Offers http-client-async or AsyncHttpClientModule as an option",
+        "Uses OkHttpConfigurer for advanced tuning instead of io.koraframework.common.Configurer<OkHttpClient.Builder>",
+        "Plugs two transport modules into the same @KoraApp",
+        "Presents post-RC1 Apache/JDK behaviour as released 2.0.0.RC1 behaviour"
+      ],
+      "tags": ["transport", "config", "basic"]
+    },
+    {
+      "id": "kora-http-client-resilience-typed-specs",
+      "skills": ["kora-http-client"],
+      "query": "Make a Kora 2.0 HTTP client resilient: retry GETs, a circuit breaker on POSTs, a timeout, and a fallback that returns an empty list.",
+      "expected_behavior": [
+        "Adds io.koraframework:resilient-kora and ResilientModule on @KoraApp",
+        "Declares typed specification interfaces annotated @RetrySpec / @CircuitBreakerSpec / @TimeoutSpec, each extending Retry / CircuitBreaker / Timeouter and pointing at a resilient.* config path",
+        "Annotates methods with @Retryable(Spec.class), @CircuitBreakable(Spec.class), @Timeout(Spec.class) — class arguments, not strings",
+        "Uses @Fallback(method = \"...\") without a value attribute, and places the annotated method and its fallback in the same class (a service class, not the @HttpClient interface, whose generated impl declares only the route methods)",
+        "Configures the circuit breaker with countBased.windowSize, and warns that omitting countBased fails graph init with IllegalArgumentException: CircuitBreaker 'X' property 'countBased' is not configured",
+        "Notes that named resilient sections no longer inherit from default"
+      ],
+      "anti_behavior": [
+        "Uses @Retry(\"name\"), @CircuitBreaker(\"name\") or @Timeout(\"name\") with a string argument",
+        "Uses @Fallback(value = \"name\", method = \"...\")",
+        "Configures slidingWindowSize instead of countBased.windowSize",
+        "Declares the fallback as a default method on the @HttpClient interface",
+        "Marks the service class carrying the aspects final"
+      ],
+      "tags": ["resilience", "advanced", "regression-resilient-specs"]
     }
   ]
 }

@@ -1,29 +1,27 @@
 package com.example.controller
 
-import java.time.Instant
-import ru.tinkoff.kora.common.Component
-import ru.tinkoff.kora.http.common.HttpMethod
-import ru.tinkoff.kora.http.common.HttpResponseEntity
-import ru.tinkoff.kora.http.common.annotation.HttpRoute
-import ru.tinkoff.kora.http.common.annotation.Path
-import ru.tinkoff.kora.http.common.annotation.Query
-import ru.tinkoff.kora.http.common.body.HttpBody
-import ru.tinkoff.kora.http.common.header.HttpHeaders
-import ru.tinkoff.kora.http.server.common.HttpServerResponse
-import ru.tinkoff.kora.http.server.common.HttpServerResponseException
-import ru.tinkoff.kora.http.server.common.annotation.HttpController
-import ru.tinkoff.kora.json.common.annotation.Json
+import io.koraframework.common.annotation.Component
+import io.koraframework.http.common.HttpMethod
+import io.koraframework.http.common.HttpResponseEntity
+import io.koraframework.http.common.annotation.HttpRoute
+import io.koraframework.http.common.annotation.Path
+import io.koraframework.http.common.annotation.Query
+import io.koraframework.http.common.header.HttpHeaders
+import io.koraframework.http.server.common.annotation.HttpController
+import io.koraframework.http.server.common.response.HttpServerResponse
+import io.koraframework.http.server.common.response.HttpServerResponseException
+import io.koraframework.json.common.annotation.Json
 
 /**
- * CRUD controller template (Kotlin).
+ * CRUD controller template — Kora 2.0 (Kotlin).
  *
- * Demonstrates:
- * - @HttpController (no base path; the prefix lives on each @HttpRoute path)
- * - @HttpRoute with HttpMethod + path
- * - @Path / @Query parameter binding (nullable type for optional)
- * - @Json for request and response bodies
- * - HttpResponseEntity / HttpServerResponse for status and headers
- * - HttpServerResponseException for error short-circuit
+ * Behaviourally identical to UserController.java.template. Kotlin differences:
+ * - optionality is the nullable type; never a Java nullability annotation
+ * - handlers are plain functions. `suspend` is rejected by KSP with
+ *   "Suspend methods are not supported by the HTTP server controller generator"
+ *
+ * Requires: ksp("io.koraframework:symbol-processors"), io.koraframework:http-server-undertow,
+ * io.koraframework:json-common, and @KoraApp extending UndertowPublicHttpServerModule + JsonModule.
  */
 @Component
 @HttpController
@@ -37,7 +35,7 @@ class UserController(private val userService: UserService) {
 
     @HttpRoute(method = HttpMethod.GET, path = "/users")
     @Json
-    fun listUsers(@Query("page") page: Int?, @Query("size") size: Int?): List<UserResponse> =
+    fun listUsers(@Query page: Int?, @Query size: Int?): List<UserResponse> =
         userService.findAll(page ?: 0, size ?: 10)
 
     @HttpRoute(method = HttpMethod.POST, path = "/users")
@@ -49,18 +47,14 @@ class UserController(private val userService: UserService) {
 
     @HttpRoute(method = HttpMethod.PUT, path = "/users/{userId}")
     @Json
-    fun updateUser(@Path userId: String, @Json request: UserRequest): HttpResponseEntity<UserResponse> =
-        HttpResponseEntity.of(
-            200,
-            HttpHeaders.of("X-Updated-At", Instant.now().toString()),
-            userService.update(userId, request)
-                ?: throw HttpServerResponseException.of(404, "User not found: $userId")
-        )
+    fun updateUser(@Path userId: String, @Json request: UserRequest): UserResponse =
+        userService.update(userId, request)
+            ?: throw HttpServerResponseException.of(404, "User not found: $userId")
 
     @HttpRoute(method = HttpMethod.DELETE, path = "/users/{userId}")
     fun deleteUser(@Path userId: String): HttpServerResponse {
         userService.delete(userId)
-        return HttpServerResponse.of(204, HttpBody.empty())
+        return HttpServerResponse.of(204)
     }
 
     @Json

@@ -1,548 +1,569 @@
-# Custom JSON Mappers Reference
+# Custom JSON Mappers Reference (Kora 2.x)
 
-Source of truth: `.kora-agent/kora-docs/mkdocs/docs/en/documentation/json.md`
-(section "Custom types").
+Verified against the Kora 2.0 sources — [`json/json-common`](https://github.com/kora-projects/kora/tree/2.0.0.RC1/json/json-common)
+(`JsonReader`, `JsonWriter`, `JsonModule`, `reader/`, `writer/`) and the generated-code paths
+in `JsonReaderGenerator` / `JsonWriterGenerator`.
 
 ## Contents
 
 1. [Overview](#1-overview)
-2. [JsonReader interface](#2-jsonreader-interface)
-3. [JsonWriter interface](#3-jsonwriter-interface)
-4. [Combined reader + writer](#4-combined-reader--writer)
-5. [Common use cases](#5-common-use-cases)
-6. [Config-driven readers/writers](#6-config-driven-readerswriters)
-7. [Integration with @Json DTOs](#7-integration-with-json-dtos)
-8. [Testing custom mappers](#8-testing-custom-mappers)
-9. [Best practices](#9-best-practices)
-10. [Quick reference](#10-quick-reference)
+2. [The two contracts](#2-the-two-contracts)
+3. [Jackson 3 streaming API](#3-jackson-3-streaming-api)
+4. [Registering a mapper as a component](#4-registering-a-mapper-as-a-component)
+5. [Per-field mappers with @Mapping](#5-per-field-mappers-with-mapping)
+6. [Common use cases](#6-common-use-cases)
+7. [Config-driven readers/writers](#7-config-driven-readerswriters)
+8. [Kotlin specifics](#8-kotlin-specifics)
+9. [Testing custom mappers](#9-testing-custom-mappers)
+10. [Best practices](#10-best-practices)
+11. [Quick reference](#11-quick-reference)
 
 ---
 
 ## 1. Overview
 
-When a type is not in the built-in supported list, register a factory that provides a
-`JsonReader<T>` and/or `JsonWriter<T>`. Use cases:
+When a type is not in the built-in supported list, supply a `JsonReader<T>` and/or
+`JsonWriter<T>`. Use cases:
 
-- Custom value types (e.g. `UserId`, `Money`)
-- A non-standard wire format for a built-in type (e.g. a custom date pattern)
-- Compatibility with a legacy JSON layout
+- custom value types (`UserId`, `Money`)
+- a non-standard wire format for a built-in type (a custom date pattern)
+- compatibility with a legacy JSON layout
+- overriding one of Kora's own `@DefaultComponent` mappers
 
-Two equivalent ways to register the factory:
+Two registration routes, with different scope:
 
-- a `default` method directly in the `@KoraApp` interface (overrides the default binding), or
-- a `@DefaultComponent` factory method inside a `@Module` the app extends (a low-priority
-  binding that any non-default factory can override).
-
-Both make the mapper available to every `@Json` DTO that contains the custom type.
+| Route | Scope | When |
+|---|---|---|
+| A component of type `JsonReader<T>` / `JsonWriter<T>` in the graph | every `@Json` DTO containing `T` | the format is a property of the type |
+| `@Mapping(X.class)` on one field/parameter | that field only | the same type is encoded differently in different DTOs |
 
 ---
 
-## 2. JsonReader Interface
+## 2. The Two Contracts
 
-**Interface:**
+As published in `2.0.0.RC1`:
+
 ```java
-public interface JsonReader<T> { 
-    T read(JsonParser parser); 
+package io.koraframework.json.common;
+
+public interface JsonReader<T> extends Mapping.MappingFunction {
+    @Nullable T read(JsonParser parser);
+    // plus default read(byte[]) / read(byte[], int, int) / read(String) / read(InputStream)
+}
+
+public interface JsonWriter<T> extends Mapping.MappingFunction {
+    void write(JsonGenerator generator, @Nullable T object);
+    // plus default toByteArray(T) / toString(T) / toPrettyString(T)
 }
 ```
 
-**Example: Custom Reader**
+Three things follow:
+
+- **Only `read(JsonParser)` and `write(JsonGenerator, T)` have to be implemented.** The
+  byte-array / String / stream helpers are `default` methods on the interface.
+- **No checked exception, on either line.** RC1 declares no `throws` clause at all; the
+  `2.0.0-SNAPSHOT` development line adds `throws tools.jackson.core.JacksonException`, which
+  is unchecked (Kora's own `RawJsonWriter.write` and `ListJsonReader.read` override with no
+  `throws` clause). An implementation therefore never has to declare anything, and a caller
+  must never write `catch (IOException …)` around these methods — in Java that is a compile
+  error (`exception IOException is never thrown in body of corresponding try statement`).
+- **Both extend `Mapping.MappingFunction`**, which is what makes them usable from `@Mapping`.
+
+The module is `@NullMarked`, so `write` receives a `@Nullable` value and `read` may return
+`null` — implementations must handle both ends.
+
+---
+
+## 3. Jackson 3 Streaming API
+
+Kora 2.0 is built on **Jackson 3** (`tools.jackson.core`). Several method names differ from
+Jackson 2; these are the ones Kora's own generated code uses:
+
+| Purpose | Jackson 3 (`tools.jackson.core`) | Jackson 2 name (wrong here) |
+|---|---|---|
+| current / next token | `parser.currentToken()`, `parser.nextToken()` | same |
+| current property name | `parser.currentName()` | `getCurrentName()` |
+| read a string | `parser.getString()`, `parser.getValueAsString()` | `getText()` |
+| read numbers | `getIntValue()`, `getLongValue()`, `getShortValue()`, `getFloatValue()`, `getDoubleValue()`, `getDecimalValue()`, `getBigIntegerValue()` | same |
+| read base64 | `parser.getBinaryValue()` | same |
+| skip a subtree | `parser.nextToken(); parser.skipChildren();` | same |
+| JSON pointer of the cursor | `parser.streamReadContext().pathAsPointer()` | `getParsingContext()` |
+| write a property name | `gen.writeName("field")` | `writeFieldName(...)` |
+| write a value | `gen.writeString(…)`, `writeNumber(…)`, `writeBoolean(…)`, `writeNull()`, `writeBinary(…)` | same |
+| write structure | `gen.writeStartObject()`, `writeEndObject()`, `writeStartArray()`, `writeEndArray()` | same |
+| pass through raw JSON | `gen.writeRawValue(rawJson)` | same |
+| read failure | `throw new StreamReadException(parser, "message")` (`tools.jackson.core.exc`) | `JsonParseException` |
+
+Name + value are written as two calls (`writeName` then `writeString`), which is exactly what
+the generated writers do — do not reach for Jackson 2's `writeStringField`-style helpers.
+
+A `JsonFactory` is rarely needed: `JsonModule.JSON_FACTORY` is the pre-configured
+`tools.jackson.core.json.JsonFactory` the default methods use.
+
+---
+
+## 4. Registering a Mapper as a Component
+
+### As a class
+
 ```java
-public class UserIdReader implements JsonReader<UserId> {
-    @Override 
-    public UserId read(JsonParser parser) {
-        String value = parser.getText();
-        return UserId.from(value);  // Custom parsing
+package com.example.json;
+
+import io.koraframework.json.common.JsonReader;
+import io.koraframework.json.common.JsonWriter;
+import org.jspecify.annotations.Nullable;
+import tools.jackson.core.JsonGenerator;
+import tools.jackson.core.JsonParser;
+import tools.jackson.core.JsonToken;
+import tools.jackson.core.exc.StreamReadException;
+
+public final class UserIdJsonCodec implements JsonReader<UserId>, JsonWriter<UserId> {
+
+    @Override
+    public @Nullable UserId read(JsonParser parser) {
+        return switch (parser.currentToken()) {
+            case VALUE_NULL -> null;
+            case VALUE_STRING -> UserId.from(parser.getString());
+            default -> throw new StreamReadException(parser, "Expected a user id string");
+        };
+    }
+
+    @Override
+    public void write(JsonGenerator generator, @Nullable UserId value) {
+        if (value == null) {
+            generator.writeNull();
+        } else {
+            generator.writeString(value.value());
+        }
     }
 }
 ```
 
-**Registering in Module:**
+### Wiring it into the graph
+
 ```java
+import io.koraframework.common.annotation.Module;
+
 @Module
 public interface CustomJsonModule {
-    @DefaultComponent 
-    default JsonReader<UserId> userIdReader() { 
-        return new UserIdReader(); 
+
+    default UserIdJsonCodec userIdJsonCodec() {   // satisfies both JsonReader<UserId> and JsonWriter<UserId>
+        return new UserIdJsonCodec();
     }
 }
 
 @KoraApp
 public interface Application extends JsonModule, CustomJsonModule {
-    static void main(String[] args) { 
-        KoraApplication.run(ApplicationGraph::graph); 
+    static void main(String[] args) {
+        KoraApplication.run(ApplicationGraph::graph);
     }
 }
 ```
+
+`@Module` and `@DefaultComponent` live in **`io.koraframework.common.annotation`**.
+
+**Plain vs `@DefaultComponent`:**
+
+- A plain `default` factory method is an ordinary component. It **wins** over the
+  `@DefaultComponent` factories in `JsonModule`, which is how you replace a built-in mapper
+  (e.g. a different `LocalDate` format).
+- `@DefaultComponent` marks *your* factory as the fallback, so downstream code can override
+  it in turn. Do not use it to override a Kora built-in — two `@DefaultComponent` factories
+  for the same type leave the graph ambiguous.
+
+Declaring the factory as a `default` method on the `@KoraApp` interface itself works
+identically and is fine for a one-off.
 
 ---
 
-## 3. JsonWriter Interface
+## 5. Per-Field Mappers with `@Mapping`
 
-**Interface:**
-```java
-public interface JsonWriter<T> { 
-    void write(JsonGenerator generator, T value); 
-}
-```
+`io.koraframework.common.annotation.Mapping` is `@Repeatable` and targets `FIELD`, `METHOD`,
+`PARAMETER`, `RECORD_COMPONENT`. Point it at a class implementing `JsonReader<T>` and/or
+`JsonWriter<T>` to change the encoding of **one** field:
 
-**Example: Custom Writer**
 ```java
-public class UserIdWriter implements JsonWriter<UserId> {
-    @Override 
-    public void write(JsonGenerator generator, UserId value) {
-        generator.writeString(value != null ? value.toString() : null);
+import io.koraframework.common.annotation.Mapping;
+
+@Json
+public record JsonShowcase(
+    UUID id,
+    @Mapping(HexReader.class) @Mapping(HexWriter.class) Integer code
+) {
+    public static final class HexWriter implements JsonWriter<Integer> {
+        @Override
+        public void write(JsonGenerator generator, Integer value) {
+            generator.writeString(Integer.toHexString(value));
+        }
+    }
+
+    public static final class HexReader implements JsonReader<Integer> {
+        @Override
+        public Integer read(JsonParser parser) {
+            if (parser.currentToken() != JsonToken.VALUE_STRING) {
+                throw new StreamReadException(parser, "Expected hexadecimal string");
+            }
+            return Integer.parseInt(parser.getValueAsString(), 16);
+        }
     }
 }
 ```
-
-**Registering in Module:**
-```java
-@Module
-public interface CustomJsonModule {
-    @DefaultComponent 
-    default JsonWriter<UserId> userIdWriter() { 
-        return new UserIdWriter(); 
-    }
-}
+```json
+{ "id": "…", "code": "ff" }
 ```
+
+**Whether the mapper has to be a DI component depends on its shape:**
+
+- **`final` class with a no-arg constructor** → the generated mapper instantiates it inline
+  (`private static final HexReader … = new HexReader();`). No `@Component` needed. Kotlin
+  classes are `final` by default, so this is the usual case.
+- **anything else** (non-final, or a constructor with parameters) → it becomes a constructor
+  parameter of the generated mapper and must be resolvable from the graph, i.e. a
+  `@Component` or a module factory. Otherwise the build fails with
+  `No component found for dependency`.
+
+Kotlin accepts `@Mapping(HexReader::class)` on the constructor parameter, or
+`@field:Mapping(HexReader::class)` on the backing field — both are used in the sources.
 
 ---
 
-## 4. Combined Reader + Writer
+## 6. Common Use Cases
 
-**Combined Mapper:**
-```java
-public class UserIdMapper implements JsonReader<UserId>, JsonWriter<UserId> {
-    @Override 
-    public UserId read(JsonParser parser) {
-        String value = parser.getText(); 
-        return UserId.from(value);
-    }
-    
-    @Override 
-    public void write(JsonGenerator generator, UserId value) {
-        generator.writeString(value != null ? value.toString() : null);
-    }
-}
-```
+### Date/time with a custom format
 
-**Registering:**
-```java
-@Module
-public interface CustomJsonModule {
-    @DefaultComponent 
-    default UserIdMapper userIdMapper() { 
-        return new UserIdMapper(); 
-    }
-}
-```
-
----
-
-## 5. Common Use Cases
-
-### Date/Time with Custom Format
+Overrides the built-in `LocalDate` mappers everywhere — note the plain (non-default) factory
+methods:
 
 ```java
 @Module
 public interface DateTimeModule {
-     
-    @DefaultComponent
-    default JsonReader<LocalDate> localDateReader() { 
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy");
-        return parser -> LocalDate.parse(parser.getText(), formatter);
-    } 
-    
-    @DefaultComponent 
+
+    DateTimeFormatter DDMMYYYY = DateTimeFormatter.ofPattern("dd.MM.yyyy");
+
+    default JsonReader<LocalDate> localDateReader() {
+        return parser -> switch (parser.currentToken()) {
+            case VALUE_NULL -> null;
+            case VALUE_STRING -> LocalDate.parse(parser.getString(), DDMMYYYY);
+            default -> throw new StreamReadException(parser, "Expected a dd.MM.yyyy date string");
+        };
+    }
+
     default JsonWriter<LocalDate> localDateWriter() {
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy"); 
         return (generator, value) -> {
-            if (value != null) { 
-                generator.writeString(value.format(formatter));
-            } else { 
+            if (value == null) {
                 generator.writeNull();
-            } 
+            } else {
+                generator.writeString(value.format(DDMMYYYY));
+            }
         };
     }
 }
 ```
-
-**JSON format:**
 ```json
 { "birthDate": "15.01.1990" }
 ```
 
-### Enum with Custom Mapping
+### An enum whose codes are not its constant names
+
+Prefer the built-in mechanism — a `@Json`-annotated accessor — over a hand-written mapper:
 
 ```java
+@Json
 public enum Status {
-    ACTIVE("A"), INACTIVE("I"), PENDING("P"); 
-    
-    private final String code; 
-    
-    Status(String code) { this.code = code; } 
-    
-    public static Status fromCode(String code) { 
-        return Arrays.stream(values())
-            .filter(s -> s.code.equals(code)) 
-            .findFirst()
-            .orElseThrow(() -> new IllegalArgumentException("Unknown: " + code)); 
-    }
-}
+    ACTIVE("A"), INACTIVE("I"), PENDING("P");
 
-@Module
-public interface StatusModule {
-    @DefaultComponent
-    default JsonReader<Status> statusReader() { 
-        return parser -> Status.fromCode(parser.getText());
-    }
-    
-    @DefaultComponent
-    default JsonWriter<Status> statusWriter() { 
-        return (generator, value) -> {
-            if (value != null) { 
-                generator.writeString(value.code);
-            } else { 
-                generator.writeNull();
-            } 
-        };
-    }
+    private final String code;
+
+    Status(String code) { this.code = code; }
+
+    @Json
+    public String code() { return code; }
 }
 ```
-
-**JSON format:**
 ```json
-{ "status": "A" }  // Instead of "ACTIVE"
+{ "status": "A" }
 ```
 
-### Money/Currency
+### A composite value object
 
 ```java
-public class MoneyReader implements JsonReader<Money> {
+public final class MoneyJsonCodec implements JsonReader<Money>, JsonWriter<Money> {
+
     @Override
-    public Money read(JsonParser parser) { 
-        parser.nextToken();  // Start object
-        BigDecimal amount = null; 
+    public @Nullable Money read(JsonParser parser) {
+        if (parser.currentToken() == JsonToken.VALUE_NULL) {
+            return null;
+        }
+        if (parser.currentToken() != JsonToken.START_OBJECT) {
+            throw new StreamReadException(parser, "Expected an object for Money");
+        }
+        BigDecimal amount = null;
         String currency = null;
-         
         while (parser.nextToken() != JsonToken.END_OBJECT) {
-            String fieldName = parser.currentName(); 
+            var field = parser.currentName();
             parser.nextToken();
-             
-            if ("amount".equals(fieldName)) {
-                amount = parser.getDecimalValue(); 
-            } else if ("currency".equals(fieldName)) {
-                currency = parser.getText(); 
+            switch (field) {
+                case "amount" -> amount = parser.getDecimalValue();
+                case "currency" -> currency = parser.getString();
+                default -> parser.skipChildren();
             }
-        } 
-        
-        return new Money(amount, Currency.getInstance(currency)); 
+        }
+        if (amount == null || currency == null) {
+            throw new StreamReadException(parser, "Money requires amount and currency");
+        }
+        return new Money(amount, Currency.getInstance(currency));
+    }
+
+    @Override
+    public void write(JsonGenerator generator, @Nullable Money value) {
+        if (value == null) {
+            generator.writeNull();
+            return;
+        }
+        generator.writeStartObject();
+        generator.writeName("amount");
+        generator.writeNumber(value.amount());
+        generator.writeName("currency");
+        generator.writeString(value.currency().getCurrencyCode());
+        generator.writeEndObject();
     }
 }
 ```
-
-**JSON format:**
 ```json
 { "price": { "amount": 99.99, "currency": "USD" } }
 ```
 
-### Base64 Encoding
+### Base64 vs the built-in `byte[]`
 
-```java
-@Module
-public interface BinaryModule {
-     
-    @DefaultComponent
-    default JsonReader<byte[]> base64ByteArrayReader() { 
-        return parser -> Base64.getDecoder().decode(parser.getText());
-    }
-     
-    @DefaultComponent
-    default JsonWriter<byte[]> base64ByteArrayWriter() { 
-        return (generator, value) -> {
-            if (value != null) { 
-                generator.writeString(Base64.getEncoder().encodeToString(value));
-            } else {
-                generator.writeNull(); 
-            }
-        }; 
-    }
-}
-```
-
-**JSON format:**
-```json
-{ "signature": "SGVsbG8gV29ybGQ=" }
-```
+`byte[]` is already written as base64 by the generated code (`writeBinary`) and read with
+`getBinaryValue()`. A custom mapper is only needed for a different binary encoding (hex,
+URL-safe base64, …).
 
 ---
 
-## 6. Config-driven Readers/Writers
+## 7. Config-driven Readers/Writers
 
-Drive the format from a typed `@ConfigSource` (Kora's `Config` has no
-`getString(key, default)` — use a config interface instead). Inject it into the factory:
+Drive the format from a typed `@ConfigSource` and inject it into the factory:
 
 ```java
 @ConfigSource("json.date")
 public interface DateFormatConfig {
-    default String pattern() { return "yyyy-MM-dd"; } // overridable via HOCON
+    default String pattern() { return "yyyy-MM-dd"; }   // overridable via HOCON
 }
 
 @Module
 public interface ConfigurableDateModule {
 
-    @DefaultComponent
     default JsonReader<LocalDate> localDateReader(DateFormatConfig config) {
-        var formatter = DateTimeFormatter.ofPattern(config.pattern());
-        return parser -> LocalDate.parse(parser.getText(), formatter);
+        var formatter = DateTimeFormatter.ofPattern(config.pattern());   // built once, per graph
+        return parser -> switch (parser.currentToken()) {
+            case VALUE_NULL -> null;
+            case VALUE_STRING -> LocalDate.parse(parser.getString(), formatter);
+            default -> throw new StreamReadException(parser, "Expected a date string");
+        };
     }
 
-    @DefaultComponent
     default JsonWriter<LocalDate> localDateWriter(DateFormatConfig config) {
         var formatter = DateTimeFormatter.ofPattern(config.pattern());
         return (generator, value) -> {
-            if (value != null) {
-                generator.writeString(value.format(formatter));
-            } else {
+            if (value == null) {
                 generator.writeNull();
+            } else {
+                generator.writeString(value.format(formatter));
             }
         };
     }
 }
 ```
 
-**Configuration (HOCON):**
 ```hocon
 json {
-    date {
-        pattern = "dd.MM.yyyy"
+  date {
+    pattern = "dd.MM.yyyy"
+  }
+}
+```
+
+Build the `DateTimeFormatter` **outside** the lambda — the factory runs once, the lambda runs
+per value. See the `kora-config-hocon` skill for `@ConfigSource` details.
+
+---
+
+## 8. Kotlin Specifics
+
+The contracts are `@NullMarked`, so the overrides must match the declared nullability
+exactly:
+
+```kotlin
+import io.koraframework.json.common.JsonReader
+import io.koraframework.json.common.JsonWriter
+import tools.jackson.core.JsonGenerator
+import tools.jackson.core.JsonParser
+import tools.jackson.core.JsonToken
+import tools.jackson.core.exc.StreamReadException
+
+class HexWriter : JsonWriter<Int> {
+    override fun write(generator: JsonGenerator, value: Int?) {   // value MUST be nullable
+        if (value == null) generator.writeNull() else generator.writeString(value.toString(16))
+    }
+}
+
+class HexReader : JsonReader<Int> {
+    override fun read(parser: JsonParser): Int {                  // narrowing the return to non-null is allowed
+        if (parser.currentToken() != JsonToken.VALUE_STRING) {
+            throw StreamReadException(parser, "Expected hexadecimal string")
+        }
+        return parser.valueAsString.toInt(16)
     }
 }
 ```
 
----
+Declaring `value: Int` instead of `Int?` produces `'write' overrides nothing` — a message
+that says nothing about nullability. In a module:
 
-## 7. Integration with @Json DTOs
-
-### Using Custom Reader in DTO
-
-```java
-@Json
-public record OrderRequest(
-    String orderId, 
-    @JsonField("customer_id") CustomerId customerId,  // Custom type
-    List<OrderItem> items
-) {}
-
+```kotlin
 @Module
-public interface CustomerModule {
-    @DefaultComponent
-    default JsonReader<CustomerId> customerIdReader() { 
-        return parser -> CustomerId.from(parser.getText());
-    }
-}
-```
-
-### Using Custom Writer in DTO
-
-```java
-@Json
-public record OrderResponse(
-    String orderId, 
-    CustomerId customerId,
-    Money totalAmount,  // Custom type
-    LocalDateTime createdAt
-) {}
-
-@Module
-public interface MoneyModule {
-    @DefaultComponent
-    default JsonWriter<Money> moneyWriter() { 
-        return (generator, value) -> {
-            generator.writeStartObject(); 
-            generator.writeNumberField("amount", value.getAmount());
-            generator.writeStringField("currency", value.getCurrency().getCode()); 
-            generator.writeEndObject();
-        }; 
-    }
+interface CustomJsonModule {
+    fun hexWriter(): JsonWriter<Int> = HexWriter()
+    fun hexReader(): JsonReader<Int> = HexReader()
 }
 ```
 
 ---
 
-## 8. Testing Custom Mappers
+## 9. Testing Custom Mappers
 
-### Unit Test for Reader
+Use the interface's own `default` methods instead of building a `JsonFactory` by hand:
 
 ```java
-class UserIdReaderTest {
-    private final JsonReader<UserId> reader = new UserIdReader();
-    
+class UserIdJsonCodecTest {
+
+    private final UserIdJsonCodec codec = new UserIdJsonCodec();
+
     @Test
-    void testReadValidId() { 
-        JsonFactory factory = new JsonFactory();
-        try (JsonParser parser = factory.createParser("\"usr_123456\"")) { 
-            UserId userId = reader.read(parser);
-            assertThat(userId.value()).isEqualTo("usr_123456"); 
-        }
-    } 
-    
-    @Test 
-    void testReadInvalidId() {
-        JsonFactory factory = new JsonFactory(); 
-        try (JsonParser parser = factory.createParser("\"invalid\"")) {
-            assertThatThrownBy(() -> reader.read(parser)) 
-                .isInstanceOf(IllegalArgumentException.class);
-        } 
+    void readsValidId() {
+        assertThat(codec.read("\"usr_123456\"")).isEqualTo(UserId.from("usr_123456"));
+    }
+
+    @Test
+    void rejectsNonString() {
+        assertThatThrownBy(() -> codec.read("42"))
+            .isInstanceOf(StreamReadException.class);
+    }
+
+    @Test
+    void writesString() {
+        assertThat(codec.toString(UserId.from("usr_123456"))).isEqualTo("\"usr_123456\"");
+    }
+
+    @Test
+    void writesNull() {
+        assertThat(codec.toString(null)).isEqualTo("null");
     }
 }
 ```
 
-### Unit Test for Writer
-
-```java
-class UserIdWriterTest {
-    private final JsonWriter<UserId> writer = new UserIdWriter();
-    
-    @Test
-    void testWriteValidId() { 
-        StringWriter stringWriter = new StringWriter();
-        JsonFactory factory = new JsonFactory(); 
-        
-        try (JsonGenerator generator = factory.createGenerator(stringWriter)) { 
-            UserId userId = UserId.from("usr_123456");
-            writer.write(generator, userId); 
-        }
-        
-        assertThat(stringWriter.toString()).isEqualTo("\"usr_123456\"");
-    } 
-    
-    @Test 
-    void testWriteNull() {
-        StringWriter stringWriter = new StringWriter(); 
-        JsonFactory factory = new JsonFactory();
-        
-        try (JsonGenerator generator = factory.createGenerator(stringWriter)) {
-            writer.write(generator, null); 
-        }
-        
-        assertThat(stringWriter.toString()).isEqualTo("null");
-    }
-}
-```
+To test a mapper as it is actually wired, pull `JsonReader<T>`/`JsonWriter<T>` out of the
+graph with `@KoraAppTest` + `@TestComponent` — see
+[json-best-practices.md](json-best-practices.md#82-round-trip-test).
 
 ---
 
-## 9. Best Practices
+## 10. Best Practices
 
-### Error Handling
-
-```java
-public class SafeUserIdReader implements JsonReader<UserId> {
-    @Override
-    public UserId read(JsonParser parser) { 
-        try {
-            String value = parser.getText(); 
-            return UserId.from(value);
-        } catch (IllegalArgumentException e) { 
-            throw new JsonParseException(
-                parser,  
-                "Invalid user ID format: " + parser.getText(), 
-                e 
-            );
-        } 
-    }
-}
-```
-
-### Null Handling
-
-Always handle null values explicitly:
+### Handle `null` at both ends
 
 ```java
 // GOOD
 @Override
-public void write(JsonGenerator generator, UserId value) {
-    if (value != null) { 
-        generator.writeString(value.toString());
-    } else { 
+public void write(JsonGenerator generator, @Nullable UserId value) {
+    if (value == null) {
         generator.writeNull();
+    } else {
+        generator.writeString(value.value());
     }
 }
 
-// BAD — NPE if value is null
+// BAD — the contract passes null; this NPEs on a null field
 @Override
-public void write(JsonGenerator generator, UserId value) {
-    generator.writeString(value.toString());  // NPE!
+public void write(JsonGenerator generator, @Nullable UserId value) {
+    generator.writeString(value.value());
 }
 ```
 
-### Performance Considerations
+Readers should return `null` for `JsonToken.VALUE_NULL` rather than throwing — that is what
+every built-in reader in `JsonModule` does.
 
-**Cache formatters:**
+### Fail with a locatable message
+
+`StreamReadException(parser, message)` carries the parser location, which is what every
+built-in reader in `JsonModule` throws:
 
 ```java
-// GOOD — cache formatter
-public class CachedDateWriter implements JsonWriter<LocalDate> {
-    private static final DateTimeFormatter FORMATTER =  
-        DateTimeFormatter.ofPattern("dd.MM.yyyy");
-    
-    @Override
-    public void write(JsonGenerator generator, LocalDate value) { 
-        if (value != null) {
-            generator.writeString(value.format(FORMATTER)); 
-        } else {
-            generator.writeNull(); 
-        }
-    }
-}
+throw new StreamReadException(parser, "Expecting VALUE_STRING token, got " + parser.currentToken());
 ```
+
+Jackson can also give you the JSON pointer of the cursor —
+`parser.streamReadContext().pathAsPointer()` — if you want it in the message.
+
+### Do not re-position the parser
+
+`read(JsonParser)` is called with the parser already on the value's first token, and must
+leave it on that value's **last** token — `skipChildren()` after `nextToken()` is the safe
+way to discard an unknown subtree.
+
+### Keep formatters and lookups out of the hot path
+
+Build `DateTimeFormatter`s, tables and regexes once, in the factory method or as a `static
+final` field, never inside `read`/`write`.
 
 ---
 
-## 10. Quick Reference
+## 11. Quick Reference
 
-### Reader Template
+### Reader template
 
 ```java
-public class CustomReader implements JsonReader<CustomType> {
+public final class CustomReader implements JsonReader<CustomType> {
     @Override
-    public CustomType read(JsonParser parser) { 
-        String value = parser.getText();
-        return CustomType.from(value); 
+    public @Nullable CustomType read(JsonParser parser) {
+        return switch (parser.currentToken()) {
+            case VALUE_NULL -> null;
+            case VALUE_STRING -> CustomType.from(parser.getString());
+            default -> throw new StreamReadException(parser, "Expected a CustomType string");
+        };
     }
 }
 ```
 
-### Writer Template
+### Writer template
 
 ```java
-public class CustomWriter implements JsonWriter<CustomType> {
+public final class CustomWriter implements JsonWriter<CustomType> {
     @Override
-    public void write(JsonGenerator generator, CustomType value) { 
-        if (value != null) {
-            generator.writeString(value.toString()); 
+    public void write(JsonGenerator generator, @Nullable CustomType value) {
+        if (value == null) {
+            generator.writeNull();
         } else {
-            generator.writeNull(); 
+            generator.writeString(value.toString());
         }
     }
 }
 ```
 
-### Module Registration
+### Module registration
 
 ```java
 @Module
 public interface CustomJsonModule {
-    @DefaultComponent
-    default JsonReader<CustomType> customTypeReader() { 
-        return new CustomReader();
-    } 
-    
-    @DefaultComponent 
-    default JsonWriter<CustomType> customTypeWriter() {
-        return new CustomWriter(); 
-    }
+    default JsonReader<CustomType> customTypeReader() { return new CustomReader(); }
+    default JsonWriter<CustomType> customTypeWriter() { return new CustomWriter(); }
 }
+```
+
+### Per-field
+
+```java
+@Json
+public record Dto(@Mapping(CustomReader.class) @Mapping(CustomWriter.class) CustomType value) {}
 ```

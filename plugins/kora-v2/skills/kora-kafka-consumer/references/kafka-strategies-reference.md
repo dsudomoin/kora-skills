@@ -1,220 +1,144 @@
-# Kafka Consumer Strategies Reference
+# Kafka Consumption Strategies Reference (Kora 2.0)
 
-**Source:** [.kora-agent/kora-docs/mkdocs/docs/en/documentation/kafka.md](../../../.kora-agent/kora-docs/mkdocs/docs/en/documentation/kafka.md)
+Kora picks the container from one thing: whether `group.id` is present in `driverProperties`.
 
-Complete reference for Kafka consumption strategies: subscribe vs assign.
+```java
+if (config.driverProperties().getProperty(CommonClientConfigs.GROUP_ID_CONFIG) == null) {
+    return new KafkaAssignConsumerContainer<>(...);
+} else {
+    return new KafkaSubscribeConsumerContainer<>(...);
+}
+```
+
+Nothing else selects it — there is no `strategy` config key.
 
 ## Contents
 
-- [Overview](#overview)
-- [Subscribe Strategy (Consumer Groups)](#subscribe-strategy-consumer-groups)
-- [Assign Strategy (Partition Assignment)](#assign-strategy-partition-assignment)
-- [Strategy Comparison](#strategy-comparison)
-- [Configuration Examples](#configuration-examples)
-- [Best Practices](#best-practices)
+- [Subscribe](#subscribe-groupid-set)
+- [Assign](#assign-no-groupid)
+- [Side-by-side](#side-by-side)
+- [Choosing](#choosing)
+- [Failure modes](#failure-modes)
 
 ---
 
-## Overview
+## Subscribe (`group.id` set)
 
-Kora supports two consumption strategies that determine how messages are distributed across application instances.
-
-**Quick decision:**
-- **Subscribe** (with `group.id`) — load balancing between instances (recommended for most cases)
-- **Assign** (without `group.id`) — broadcast/pub-sub, each instance receives all messages
-
----
-
-## Subscribe Strategy (Consumer Groups)
-
-**Use when:** Messages should be distributed among instances (load balancing).
-
-Each message is processed by exactly one instance in the consumer group.
+Ordinary consumer-group membership. The broker splits partitions across group members; each record
+goes to exactly one member.
 
 ```hocon
-kafka {
-  consumer {
-    mySubscriber {
-      topics = ["my-topic"]
-      driverProperties {
-        "group.id" = "my-group-id"  # Required for subscribe
-        "bootstrap.servers" = "localhost:9093"
-      }
-    }
+kafka.consumer.orders {
+  topics = ["orders"]
+  driverProperties {
+    "bootstrap.servers" = ${?KAFKA_BOOTSTRAP}
+    "group.id" = "order-service"
+    "auto.offset.reset" = "earliest"
   }
 }
 ```
 
-### Characteristics
+- Multiple topics are fine, and `topicsPattern` works here.
+- A `ConsumerAwareRebalanceListener` tagged with the listener's tag is wired into
+  `subscribe(...)` and receives revoke / assign / lost callbacks.
+- Offsets are committed — by Kora, by the driver, or by you. See the
+  [offset reference](kafka-offset-reference.md).
+- The `offset` config key is **ignored**: committed offsets, or `auto.offset.reset` for a brand-new
+  group, decide where reading starts.
+- The constructor throws `IllegalArgumentException("Group id is required for subscribe container")`
+  if it is ever built without one.
 
-| Property | Description |
-|----------|-------------|
-| Message distribution | Distributed across instances |
-| Horizontal scaling | Add more instances |
-| Pattern | Task-queue processing |
-| Recommendation | Use for most use cases |
-
-### Consumer Group Behavior
-
-| Instances | Partitions | Messages per instance |
-|-----------|------------|----------------------|
-| 1         | 3          | All messages         |
-| 2         | 3          | ~50% each            |
-| 3         | 3          | ~33% each            |
-| 4         | 3          | 3 active, 1 idle     |
-
-> **Note:** If there are more instances than partitions, excess instances will be idle.
+Scale by adding instances (or `threads`), up to the partition count. Beyond that the extras idle.
 
 ---
 
-## Assign Strategy (Partition Assignment)
+## Assign (no `group.id`)
 
-**Use when:** Every instance should receive all messages (broadcast/pub-sub).
-
-Each instance reads all messages from the topic independently.
+Every instance assigns itself **all** partitions of the topic and reads everything. This is the
+broadcast / local-cache shape.
 
 ```hocon
-kafka {
-  consumer {
-    myAssigner {
-      topics = ["my-topic"]
-      driverProperties {
-        "bootstrap.servers" = "localhost:9093"
-        # group.id NOT specified - this triggers assign mode
-      }
-    }
+kafka.consumer.price-cache {
+  topics = ["prices"]
+  offset = "earliest"
+  partitionRefreshInterval = 1m
+  driverProperties {
+    "bootstrap.servers" = ${?KAFKA_BOOTSTRAP}
   }
 }
 ```
 
-### Characteristics
-
-| Property | Description |
-|----------|-------------|
-| Message distribution | Duplicated across all instances |
-| Topics | Only one topic at a time |
-| Pattern | Broadcast/pub-sub |
-| Coordination | No consumer group coordination |
-
-### Typical Use Cases
-
-- **Local cache** — each instance builds its own cache
-- **Indexing** — each instance builds its own index
-- **Audit log** — each instance logs all messages
-
----
-
-## Strategy Comparison
-
-| Aspect | Subscribe | Assign |
-|--------|-----------|--------|
-| `group.id` | Required | Not specified |
-| Message delivery | One instance per message | All instances receive |
-| Scaling | Horizontal (load balancing) | Vertical (more instances = more copies) |
-| Topics | Multiple topics | Single topic only |
-| Use case | Task queue, processing | Broadcast, caching, indexing |
+- **RC1 accepts exactly one topic.** The generated container method checks
+  `config.topics() == null || config.topics().size() != 1` and throws
+  `@KafkaListener require to specify 1 topic to subscribe when groupId is null, but received: ...`.
+  In Kotlin it is a bare `require(topics.size == 1)`. Multi-topic assign landed after RC1 on
+  `master` (`a0a2b8c1d`, #844) and is not in a released version.
+- `topicsPattern` cannot be used: with no `group.id` and no `topics`, the same "1 topic" check
+  fires. (On `master` it is rejected with a dedicated message.)
+- **Nothing is ever committed.** The container calls `handler.handle(observation, records, consumer,
+  false)` — `commitAllowed = false` — so neither Kora nor a `Consumer` parameter can commit
+  meaningfully. Position is in-memory only and resets on restart to whatever `offset` says.
+- `offset` decides the start position (`earliest` / `latest` / a `Duration` rewind via
+  `offsetsForTimes`).
+- Partitions are re-read every `partitionRefreshInterval` with a throwaway consumer so that new
+  partitions are picked up; a change triggers a re-assign and re-seek to the last in-memory offset.
+- The **consumer lag gauge** (`messaging.kafka.consumer.lag`) is reported only here — the subscribe
+  container never calls `reportLag`.
+- No rebalance listener: there is no group, so `ConsumerAwareRebalanceListener` is not consulted.
 
 ---
 
-## Configuration Examples
+## Side-by-side
 
-### Subscribe: Multiple Consumers with Different Groups
-
-```hocon
-kafka {
-  consumer {
-    orderProcessor {
-      topics = ["orders"]
-      driverProperties {
-        "group.id" = "order-processor"
-        "bootstrap.servers" = "localhost:9092"
-      }
-    }
-    
-    orderAnalytics {
-      topics = ["orders"]
-      driverProperties {
-        "group.id" = "order-analytics"
-        "bootstrap.servers" = "localhost:9092"
-      }
-    }
-  }
-}
-```
-
-Both consumers receive all messages but from different group perspectives.
-
-### Assign: Independent Processing
-
-```hocon
-kafka {
-  consumer {
-    cacheBuilder {
-      topics = ["events"]
-      driverProperties {
-        "bootstrap.servers" = "localhost:9092"
-        # No group.id - each instance gets all messages
-      }
-    }
-  }
-}
-```
-
-Each instance builds its own cache from all events.
+| | Subscribe | Assign |
+|---|---|---|
+| Trigger | `group.id` set | `group.id` absent |
+| Delivery | one member per record | every instance gets every record |
+| Topics | many, or a pattern | exactly one at RC1, no pattern |
+| Offsets | committed | never committed |
+| `offset` config key | ignored | authoritative |
+| `auto.offset.reset` | authoritative for a new group | irrelevant |
+| Rebalance listener | wired | ignored |
+| Lag gauge | not emitted | emitted |
+| Restart behaviour | resumes at the committed offset | re-seeks per `offset` |
 
 ---
 
-## Best Practices
+## Choosing
 
-### 1. Use Subscribe by Default
+Use **subscribe** for anything that must be processed once: order processing, notifications, writes
+to a shared database, work queues.
 
-For most business logic processing, use subscribe with `group.id`:
+Use **assign** when every replica needs the same stream: refreshing an in-process cache, building a
+per-instance index, a local routing table, a config stream. Accept that a restart replays from
+`offset` and that there is no lag-based backpressure signal from committed offsets — only the gauge.
 
-```hocon
-driverProperties {
-  "group.id" = "my-service-consumer"
-  "bootstrap.servers" = "localhost:9092"
-}
-```
-
-### 2. Naming Convention for Consumer Groups
-
-Use `<service>-<purpose>` format:
-
-```hocon
-"group.id" = "order-service-orders"
-"group.id" = "order-service-dlq"
-"group.id" = "notification-service-email"
-```
-
-### 3. Partition Count Planning
-
-Set partitions >= max expected instances for horizontal scaling:
-
-```bash
-# Create topic with enough partitions for future scaling
-kafka-topics.sh --create --topic orders --partitions 6 --replication-factor 3
-```
-
-### 4. Monitor Consumer Lag
-
-Track consumer lag metrics to detect consumption problems:
-
-```hocon
-telemetry {
-  metrics {
-    enabled = true
-    tags = {
-      "consumer-group" = "order-service"
-    }
-  }
-}
-```
+Two independent consumers of the same topic just need two different `group.id`s and two config
+sections; they do not need assign mode.
 
 ---
 
-## Related References
+## Failure modes
 
-- [Kafka Consumer Reference](kafka-consumer-reference.md) — Basic configuration
-- [Kafka Rebalance Reference](kafka-rebalance-reference.md) — Partition rebalancing
-- [Kafka Offset Reference](kafka-offset-reference.md) — Offset management
+| Symptom | Cause | Fix |
+|---|---|---|
+| `require to specify 1 topic ... when groupId is null` | assign mode with 0 or 2+ topics, or a `topicsPattern` | list one topic, or add `group.id` |
+| Kotlin `IllegalArgumentException` with no message at startup | the same check, from `require(topics.size == 1)` | as above |
+| Every instance processes every record | `group.id` missing — you are in assign mode without meaning to be | add `group.id` |
+| Records replayed on every restart | assign mode with `offset = "earliest"` | switch to subscribe, or accept the replay and make handlers idempotent |
+| `consumer.commitSync()` appears to do nothing | assign mode: `commitAllowed = false` | commits are meaningless without a group |
+| Rebalance listener never fires | assign mode, or a tag mismatch | subscribe mode + matching `@Tag` |
+| Some instances idle | more members than partitions | add partitions or reduce `threads`/replicas |
+
+---
+
+## Related references
+
+- [Consumer configuration](kafka-consumer-reference.md)
+- [Offsets](kafka-offset-reference.md)
+- [Rebalance](kafka-rebalance-reference.md)
+- [Telemetry](kafka-telemetry-reference.md)
+
+**Source:** framework tag `2.0.0.RC1` —
+[KafkaSubscribeConsumerContainer](https://github.com/kora-projects/kora/blob/2.0.0.RC1/kafka/kafka/src/main/java/io/koraframework/kafka/common/consumer/containers/KafkaSubscribeConsumerContainer.java) ·
+[KafkaAssignConsumerContainer](https://github.com/kora-projects/kora/blob/2.0.0.RC1/kafka/kafka/src/main/java/io/koraframework/kafka/common/consumer/containers/KafkaAssignConsumerContainer.java)

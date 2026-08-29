@@ -1,13 +1,15 @@
 # Core Modules Reference
 
-The Kora modules almost every service needs: configuration, JSON, and logging.
+The Kora 2.0 modules almost every service needs: configuration, JSON, and logging — plus the minimal
+build and `@KoraApp` that tie them together.
 
 ## Contents
 
 - [Required modules](#required-modules)
 - [Configuration modules](#configuration-modules)
+- [Config sections that changed in 2.0](#config-sections-that-changed-in-20)
 - [Logging](#logging)
-- [JSON module](#json-module)
+- [JSON](#json)
 - [Minimal build](#minimal-build)
 - [Application interface](#application-interface)
 
@@ -16,10 +18,12 @@ The Kora modules almost every service needs: configuration, JSON, and logging.
 ## Required modules
 
 | Artifact | Module interface | When |
-|----------|------------------|------|
-| `ru.tinkoff.kora:config-hocon` | `HoconConfigModule` | Always (or `config-yaml`) |
-| `ru.tinkoff.kora:json-module` | `JsonModule` | DTOs, HTTP, Kafka |
-| `ru.tinkoff.kora:logging-logback` | `LogbackModule` | Always |
+|---|---|---|
+| `io.koraframework:config-hocon` | `HoconConfigModule` | Always (or `config-yaml`) |
+| `io.koraframework:json-common` | `JsonModule` | DTOs, HTTP, Kafka |
+| `io.koraframework:logging-logback` | `LogbackModule` | Always |
+
+The artifact for JSON is `json-common`; `json-module` does not exist in 2.0.
 
 ---
 
@@ -28,51 +32,118 @@ The Kora modules almost every service needs: configuration, JSON, and logging.
 ### HOCON (recommended)
 
 ```groovy
-implementation "ru.tinkoff.kora:config-hocon"
+implementation "io.koraframework:config-hocon"
 ```
 
-`src/main/resources/application.conf` — note that config keys are not prefixed with `kora.`; modules read their own top-level sections (for example `httpServer`, `db`):
+`src/main/resources/application.conf` — keys are not prefixed with `kora.`; each module reads its own
+top-level section:
 
 ```hocon
 httpServer {
-  publicApiHttpPort = 8080
-  privateApiHttpPort = 8085
+  port = 8080
+  telemetry.logging.enabled = true
+  telemetry.metrics.enabled = true
 }
 
-db {
-  jdbcUrl = ${?DB_URL}
-  username = ${?DB_USER}
-  password = ${?DB_PASS}
+httpServer.system {
+  port = 8085
+}
+
+jdbc {
+  jdbcUrl = ${POSTGRES_JDBC_URL}
+  username = ${POSTGRES_USER}
+  password = ${POSTGRES_PASS}
+  maxPoolSize = 10
+}
+
+logging.levels {
+  "root" = "WARN"
+  "io.koraframework" = "INFO"
 }
 ```
+
+Substitution:
+
+- Required: `jdbcUrl = ${POSTGRES_JDBC_URL}` — startup fails if the variable is unset.
+- Optional: `password = ${?DB_PASS}` — the key is left absent when unset.
+- Literal default with an optional override — declare the value, then the optional substitution on
+  the next line:
+
+  ```hocon
+  maxPoolSize = 10
+  maxPoolSize = ${?DB_MAX_POOL}
+  ```
 
 ### YAML (alternative)
 
 ```groovy
-implementation "ru.tinkoff.kora:config-yaml"
+implementation "io.koraframework:config-yaml"
 ```
 
 `src/main/resources/application.yaml`:
 
 ```yaml
 httpServer:
-  publicApiHttpPort: 8080
-  privateApiHttpPort: 8085
+  port: 8080
+  system:
+    port: 8085
+  telemetry:
+    logging:
+      enabled: true
 
-db:
-  jdbcUrl: ${DB_URL}
-  username: ${DB_USER}
-  password: ${DB_PASS}
+jdbc:
+  jdbcUrl: ${POSTGRES_JDBC_URL}
+  username: ${POSTGRES_USER}
+  password: ${?DB_PASS}
+  maxPoolSize: ${DB_MAX_POOL:10}
 ```
 
-Pick one format. HOCON is preferred for substitution, includes, and richer structure. Typed config is declared with `@ConfigSource("path")` interfaces (see `kora-config-hocon`).
+YAML substitution: `${VAR}` required, `${?VAR}` optional, `${VAR:default}` with a default. Note the
+default form has **no** `?`.
+
+Pick one format. Typed config is declared with `@ConfigSource("path")` interfaces — see
+[`kora-config-hocon`](../../kora-config-hocon/SKILL.md).
+
+---
+
+## Config sections that changed in 2.0
+
+These rename silently: the build stays green and the failure appears at startup.
+
+| 1.x key | 2.0 key | What a stale key does |
+|---|---|---|
+| `httpServer.publicApiHttpPort` | `httpServer.port` | Ignored — the public server starts on the `8080` default |
+| `httpServer.privateApiHttpPort` | `httpServer.system.port` | Ignored. `SystemHttpServerConfig` **overrides** `port()` to `8085`, so the system server starts on `8085` — not on the port you configured |
+| `httpServer.privateApiHttpReadinessPath` / `…LivenessPath` / `…MetricsPath` | `httpServer.system.readinessPath` / `livenessPath` / `metricsPath` | Defaults `/system/readiness`, `/system/liveness`, `/metrics` are used instead |
+| `db { … }` | `jdbc { … }` | `ConfigValueException: Config expected value, but got null at path: 'ROOT.jdbc.username'` |
+| `openapi.management.file` | `openapi.management.files` (a list) | The endpoint serves an empty spec |
+
+**Why the port rows are the dangerous ones.** Kora does not reject unrecognised config keys — no
+schema check exists in `config-common` or `config-hocon`, so a key nothing declares is simply never
+read. A 1.x config carrying `publicApiHttpPort = 8081` / `privateApiHttpPort = 8086` therefore
+produces **no error at all**: both keys are ignored, and each server falls back to its own default —
+`HttpServerConfig.port()` = `8080` for the public server, and `SystemHttpServerConfig.port()`, which
+**overrides** the inherited default, = `8085` for the system server. The service starts green on
+`8080`/`8085` while probes, the Prometheus scrape and the load balancer are all pointed at
+`8081`/`8086` and hit nothing.
+
+Guidance claiming the system server falls back to `8080` and collides with the public one describes a
+pre-release build; that default was fixed before `2.0.0.RC1`. `Address already in use` happens only in
+the narrower case where the *new* keys genuinely point two servers at one port.
+
+Telemetry defaults also changed: `telemetry.metrics.enabled` and `telemetry.logging.enabled` default
+to **`false`** in 2.0 (`telemetry.tracing.enabled` defaults to `true`). Adding `micrometer-module`
+alone produces no `http_server_*` / `db_*` metrics — enable them per component.
+
+HOCON embedded in test sources counts too: `KoraConfigModification.ofString("""…""")` blocks carry
+the same keys and are missed by scanners that only look at `.conf` / `.yaml` files.
 
 ---
 
 ## Logging
 
 ```groovy
-implementation "ru.tinkoff.kora:logging-logback"
+implementation "io.koraframework:logging-logback"
 ```
 
 ```java
@@ -80,35 +151,42 @@ implementation "ru.tinkoff.kora:logging-logback"
 public interface Application extends LogbackModule { }
 ```
 
+Logger names moved with the packages — `logging.levels` entries keyed on `ru.tinkoff.kora` no longer
+match anything. Use `io.koraframework`.
+
 ---
 
-## JSON module
+## JSON
 
 ```groovy
-implementation "ru.tinkoff.kora:json-module"
+implementation "io.koraframework:json-common"
 ```
 
-DTO — `@Json` triggers generation of a reader and writer:
+`@Json` triggers compile-time generation of a reader and a writer:
 
 ```java
-import jakarta.annotation.Nullable;
-import ru.tinkoff.kora.json.common.annotation.Json;
+import org.jspecify.annotations.Nullable;
+import io.koraframework.json.common.annotation.Json;
 
 @Json
 public record UserDto(
     String id,
     String name,
     String email,
-    @Nullable String phone   // optional field
+    @Nullable String phone
 ) {}
 ```
 
-Sealed type with a discriminator (`@JsonDiscriminatorField` on the parent, `@JsonDiscriminatorValue` on each subtype):
+Java nullability is JSpecify (`org.jspecify.annotations.Nullable`), which is a **type-use**
+annotation — position matters (`List<@Nullable String>`, `String @Nullable []`). Kotlin expresses
+nullability in the type (`String?`) and must not carry the Java annotations.
+
+Sealed type with a discriminator:
 
 ```java
-import ru.tinkoff.kora.json.common.annotation.Json;
-import ru.tinkoff.kora.json.common.annotation.JsonDiscriminatorField;
-import ru.tinkoff.kora.json.common.annotation.JsonDiscriminatorValue;
+import io.koraframework.json.common.annotation.Json;
+import io.koraframework.json.common.annotation.JsonDiscriminatorField;
+import io.koraframework.json.common.annotation.JsonDiscriminatorValue;
 
 @Json
 @JsonDiscriminatorField("type")
@@ -122,6 +200,13 @@ public sealed interface PaymentResult {
 }
 ```
 
+Two 2.0 changes that bite:
+
+- The `*Unchecked` methods are gone and the plain ones no longer declare checked exceptions —
+  `toStringUnchecked` → `toString`, `toByteArrayUnchecked` → `toByteArray`, `readUnchecked` → `read`.
+  In Java a `try/catch (IOException)` around `toByteArray` becomes a compile error.
+- `JsonReader<T>.read(data)` returns **nullable**; in Kotlin wrap it in `requireNotNull(...)`.
+
 ---
 
 ## Minimal build
@@ -134,9 +219,13 @@ plugins {
     id "application"
 }
 
+repositories {
+    mavenCentral()
+}
+
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
+        languageVersion = JavaLanguageVersion.of(25)
         vendor = JvmVendorSpec.ADOPTIUM
     }
 }
@@ -144,16 +233,17 @@ java {
 configurations {
     koraBom
     annotationProcessor.extendsFrom(koraBom)
+    compileOnly.extendsFrom(koraBom)
     implementation.extendsFrom(koraBom)
 }
 
 dependencies {
-    koraBom platform("ru.tinkoff.kora:kora-parent:$koraVersion")
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+    annotationProcessor "io.koraframework:annotation-processors"
 
-    implementation "ru.tinkoff.kora:logging-logback"
-    implementation "ru.tinkoff.kora:config-hocon"
-    implementation "ru.tinkoff.kora:json-module"
+    implementation "io.koraframework:logging-logback"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:json-common"
 }
 ```
 
@@ -161,29 +251,26 @@ dependencies {
 
 ```kotlin
 plugins {
-    application
-    kotlin("jvm") version "1.9.25"
-    id("com.google.devtools.ksp") version "1.9.25-1.0.20"
+    id("application")
+    kotlin("jvm") version "2.4.10"
+    id("com.google.devtools.ksp") version "2.3.11"
 }
 
-val koraBom: Configuration by configurations.creating
-configurations {
-    ksp.get().extendsFrom(koraBom)
-    implementation.get().extendsFrom(koraBom)
+repositories {
+    mavenCentral()
 }
 
-val koraVersion: String by project
 dependencies {
-    koraBom(platform("ru.tinkoff.kora:kora-parent:$koraVersion"))
-    ksp("ru.tinkoff.kora:symbol-processors")
+    implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+    ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
 
-    implementation("ru.tinkoff.kora:logging-logback")
-    implementation("ru.tinkoff.kora:config-hocon")
-    implementation("ru.tinkoff.kora:json-module")
+    implementation("io.koraframework:logging-logback")
+    implementation("io.koraframework:config-hocon")
+    implementation("io.koraframework:json-common")
 }
 
 kotlin {
-    jvmToolchain(21)
+    jvmToolchain(25)
 }
 ```
 
@@ -191,14 +278,16 @@ kotlin {
 
 ## Application interface
 
-The `@KoraApp` interface lists capabilities by extending `*Module` interfaces. `@KoraApp` comes from `ru.tinkoff.kora.common` and the runner is `ru.tinkoff.kora.application.graph.KoraApplication`. The processor generates `ApplicationGraph`.
+The `@KoraApp` interface lists capabilities by extending `*Module` interfaces. `@KoraApp` comes from
+`io.koraframework.common.annotation` and the runner from `io.koraframework.application.graph`. The
+processor generates `ApplicationGraph`.
 
 ```java
-import ru.tinkoff.kora.application.graph.KoraApplication;
-import ru.tinkoff.kora.common.KoraApp;
-import ru.tinkoff.kora.config.hocon.HoconConfigModule;
-import ru.tinkoff.kora.json.module.JsonModule;
-import ru.tinkoff.kora.logging.logback.LogbackModule;
+import io.koraframework.application.graph.KoraApplication;
+import io.koraframework.common.annotation.KoraApp;
+import io.koraframework.config.hocon.HoconConfigModule;
+import io.koraframework.json.common.JsonModule;
+import io.koraframework.logging.logback.LogbackModule;
 
 @KoraApp
 public interface Application extends
@@ -212,11 +301,26 @@ public interface Application extends
 }
 ```
 
-Typed config interface injected as a component:
+```kotlin
+import io.koraframework.application.graph.KoraApplication
+import io.koraframework.common.annotation.KoraApp
+import io.koraframework.config.hocon.HoconConfigModule
+import io.koraframework.json.common.JsonModule
+import io.koraframework.logging.logback.LogbackModule
+
+@KoraApp
+interface Application : HoconConfigModule, JsonModule, LogbackModule
+
+fun main() {
+    KoraApplication.run { ApplicationGraph.graph() }
+}
+```
+
+Typed config injected as a component:
 
 ```java
-import jakarta.annotation.Nullable;
-import ru.tinkoff.kora.config.common.annotation.ConfigSource;
+import org.jspecify.annotations.Nullable;
+import io.koraframework.config.common.annotation.ConfigSource;
 
 @ConfigSource("app")
 public interface AppConfig {
@@ -226,12 +330,16 @@ public interface AppConfig {
 }
 ```
 
+`@ConfigSource` kept its name in 2.0. Its sibling for reusable/library config was renamed:
+`@ConfigValueExtractor` → **`@ConfigMapper`**.
+
 ---
 
 ## See Also
 
-- [SKILL.md](../SKILL.md) — Quick start, module catalog
+- [SKILL.md](../SKILL.md) — quick start, module picking
+- [artifact-catalog.md](artifact-catalog.md) — every published artifact
 - [bom-usage-reference.md](bom-usage-reference.md) — BOM setup
-- [annotation-processors-reference.md](annotation-processors-reference.md) — Processors / KSP setup
+- [annotation-processors-reference.md](annotation-processors-reference.md) — processors / KSP setup
 - [`kora-config-hocon/SKILL.md`](../../kora-config-hocon/SKILL.md) — typed `@ConfigSource` config
 - [`kora-http-server/SKILL.md`](../../kora-http-server/SKILL.md), [`kora-database-jdbc/SKILL.md`](../../kora-database-jdbc/SKILL.md), [`kora-kafka-producer/SKILL.md`](../../kora-kafka-producer/SKILL.md)

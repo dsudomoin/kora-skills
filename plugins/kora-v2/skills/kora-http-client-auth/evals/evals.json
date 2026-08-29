@@ -1,108 +1,258 @@
 {
   "evals": [
     {
-      "id": "kora-http-client-auth-basic",
+      "id": "kora-http-client-auth-basic-java",
       "skills": ["kora-http-client-auth"],
-      "query": "My Kora service calls an external API over HTTP that needs HTTP Basic auth with a username and password. How do I add it to my @HttpClient?",
+      "query": "My Kora 2.0 Java service calls an external API that needs HTTP Basic auth with a username and password. How do I add it to my @HttpClient?",
       "expected_behavior": [
-        "Registers the built-in BasicAuthHttpClientInterceptor from a @Module factory using the two-argument (username, password) constructor",
-        "Binds username and password through a @ConfigSource interface, externalizing the password with ${ENV_VAR} substitution",
-        "Attaches the interceptor with @InterceptWith(BasicAuthHttpClientInterceptor.class) on the @HttpClient interface or a method",
-        "Sets the target URL via httpClient.<client>.url in config, not a baseUrl annotation attribute",
-        "Uses constructor injection only (no field injection), no @Value-style placeholder annotation, and no non-existent interceptors = {...} attribute on @HttpClient"
+        "Supplies BasicAuthHttpClientInterceptor from io.koraframework.http.client.common.interceptor via a @Module factory method using the two-argument (username, password) constructor",
+        "Adds that hand-written @Module to the @KoraApp extends clause, and does NOT add the @ConfigSource or @HttpClient interfaces there",
+        "Binds username and password through a @ConfigSource interface from io.koraframework.config.common.annotation, externalizing the password with ${ENV_VAR} substitution",
+        "Declares the password accessor non-nullable, noting that a null credential makes the interceptor send no Authorization header at all and surfaces only as an upstream 401",
+        "Attaches the interceptor with @InterceptWith from io.koraframework.http.common.annotation on the @HttpClient interface or a method",
+        "Uses @HttpClient(\"httpClient.someClient\") with the path as value, never configPath =, and sets the target address via httpClient.<client>.url in config rather than an annotation attribute",
+        "Depends on io.koraframework:http-client-common plus a transport (http-client-ok, http-client-jdk or http-client-apache) through the io.koraframework:kora-bom platform at 2.0.0.RC1",
+        "Does not use ru.tinkoff.kora packages, the kora-parent BOM, field injection, a @Value-style placeholder annotation, or a non-existent interceptors = {...} attribute on @HttpClient"
       ],
-      "tags": ["basic-auth", "basic"]
+      "tags": ["basic-auth", "java", "basic"]
     },
     {
-      "id": "kora-http-client-auth-apikey-header",
+      "id": "kora-http-client-auth-apikey-header-kotlin",
       "skills": ["kora-http-client-auth"],
-      "query": "The third-party API I integrate with requires an API key in the X-API-KEY header. Set this up for my Kora HTTP client.",
+      "query": "Kotlin Kora 2.0 service. The third-party API I integrate with requires an API key in the X-API-KEY header. Set this up for my HTTP client.",
       "expected_behavior": [
-        "Uses the built-in ApiKeyHttpClientInterceptor with ApiKeyLocation.HEADER, the header name X-API-KEY, and the secret",
+        "Uses the built-in ApiKeyHttpClientInterceptor with the nested enum, referenced as ApiKeyHttpClientInterceptor.ApiKeyLocation.HEADER rather than a bare or top-level ApiKeyLocation",
+        "Supplies it from a @Module factory function, since a framework class cannot carry @Component, and lists that module in the @KoraApp supertypes",
         "Provides the key through a @ConfigSource interface referencing an environment variable",
-        "Attaches the interceptor with @InterceptWith",
-        "Mentions http-client-common (and a transport like http-client-ok) and notes there is no http-client-auth artifact",
-        "Does not use field injection or a @Value-style annotation for the key"
+        "Attaches it with @InterceptWith(ApiKeyHttpClientInterceptor::class)",
+        "Uses ksp(\"io.koraframework:symbol-processors\") for Kotlin rather than annotationProcessor, with Kotlin 2.4.10 / KSP 2.3.11",
+        "Mentions io.koraframework:http-client-common plus a transport, and states there is no http-client-auth artifact in any Kora version",
+        "Does not use suspend, runBlocking or Dispatchers.IO anywhere in the wiring",
+        "Does not use field injection, a @Value-style annotation, or ru.tinkoff.kora imports"
       ],
-      "tags": ["api-key", "basic"]
+      "tags": ["api-key", "kotlin", "basic"]
     },
     {
       "id": "kora-http-client-auth-bearer-static",
       "skills": ["kora-http-client-auth"],
-      "query": "I have a static bearer token in an env var that I need to send on every request from my Kora HTTP client.",
+      "query": "I have a static bearer token in an env var that I need to send on every request from my Kora 2.0 HTTP client.",
       "expected_behavior": [
-        "Registers BearerAuthHttpClientInterceptor from a @Module, supplying an HttpClientTokenProvider (or the static-token constructor)",
-        "Implements HttpClientTokenProvider returning CompletionStage<String> when a provider is used",
+        "Uses BearerAuthHttpClientInterceptor, either the single-argument static-token constructor or an HttpClientTokenProvider, supplied from a @Module",
+        "If a provider is written, implements io.koraframework.http.client.common.auth.HttpClientTokenProvider with the synchronous signature String getToken(HttpClientRequest) and never CompletionStage",
         "Reads the token from a @ConfigSource interface bound to ${API_TOKEN}",
         "Attaches it with @InterceptWith(BearerAuthHttpClientInterceptor.class)",
-        "Does not invent an interceptors attribute on @HttpClient or use foreign-framework constructs"
+        "Notes that the provider returns the bare token because the interceptor adds the \"Bearer \" prefix itself",
+        "Does not invent an interceptors attribute on @HttpClient, and does not define a second interface named HttpClientTokenProvider instead of implementing the framework one"
       ],
-      "tags": ["bearer", "basic"]
+      "tags": ["bearer", "java", "basic"]
     },
     {
       "id": "kora-http-client-auth-jwt-refresh",
       "skills": ["kora-http-client-auth"],
-      "query": "I need to authenticate outgoing requests with a JWT fetched from an auth server, cache it, and refresh it 60 seconds before it expires.",
+      "query": "Kora 2.0. I need to authenticate outgoing requests with a JWT fetched from an auth server, cache it, and refresh it 60 seconds before it expires.",
       "expected_behavior": [
-        "Implements HttpClientTokenProvider with getToken returning CompletionStage<String> for non-blocking fetch",
-        "Caches the token in a thread-safe component and refreshes ahead of expiry using a margin (e.g. 60s)",
-        "Fetches the token through a separate declarative @HttpClient against the token endpoint",
-        "Wires the provider into BearerAuthHttpClientInterceptor via a @Module",
-        "Does not block with .join() inside the provider as the primary approach, and does not use field injection"
+        "Implements HttpClientTokenProvider with the synchronous getToken returning a String, explaining that blocking is correct because Kora 2.0 contracts run on virtual threads",
+        "Does not use CompletionStage, CompletableFuture, thenApply/thenCompose, Mono, Flux, or Kotlin suspend anywhere in the provider",
+        "Caches the token in a thread-safe component that reads without a lock and re-checks after acquiring it, so concurrent callers trigger exactly one refresh",
+        "Takes the token lifetime from the auth server's expires_in and refreshes ahead of it with a margin, rather than assuming a fixed lifetime",
+        "Fetches the token through a separate declarative @HttpClient against the token endpoint, and does not attach the Bearer interceptor to that auth client",
+        "Uses @JsonField(\"access_token\") from io.koraframework.json.common.annotation for the response field names, not @Json(\"access_token\"), and depends on io.koraframework:json-common rather than json-module",
+        "Wires the provider into BearerAuthHttpClientInterceptor through a @Module listed in @KoraApp"
       ],
-      "tags": ["bearer", "jwt", "advanced"]
+      "tags": ["bearer", "jwt", "java", "advanced"]
     },
     {
       "id": "kora-http-client-auth-oauth2-cc",
       "skills": ["kora-http-client-auth"],
-      "query": "Implement OAuth2 client-credentials flow for service-to-service auth in Kora: POST client_id/client_secret to the token endpoint, then send Bearer tokens to the resource server.",
+      "query": "Implement the OAuth2 client-credentials flow for service-to-service auth in Kora 2.0: POST client_id/client_secret to the token endpoint, then send Bearer tokens to the resource server.",
       "expected_behavior": [
-        "Explains Kora has no built-in OAuth2 flow and assembles it from HttpClientTokenProvider, a token cache, and a declarative auth @HttpClient",
-        "Uses BasicAuthHttpClientInterceptor on the auth client to send client_id/client_secret and posts grant_type=client_credentials",
-        "Parses access_token and expires_in (e.g. via @Json field names) and caches with the real lifetime",
-        "Registers BearerAuthHttpClientInterceptor for the resource-server client and attaches it with @InterceptWith",
-        "Externalizes the client secret with ${OAUTH2_CLIENT_SECRET}; does not use a @Value-style annotation or field injection"
+        "States that Kora ships no OAuth2 flow and assembles it from HttpClientTokenProvider, a token cache, and a declarative auth @HttpClient",
+        "Uses BasicAuthHttpClientInterceptor on the auth client to carry client_id/client_secret, and posts grant_type=client_credentials as io.koraframework.http.common.form.FormUrlEncoded",
+        "Parses access_token and expires_in with @JsonField and caches with the real lifetime from the response",
+        "Registers BearerAuthHttpClientInterceptor for the resource-server client from a @Module and attaches it with @InterceptWith",
+        "Keeps every contract synchronous — the auth client method returns the DTO directly, with no CompletionStage, Mono or suspend",
+        "Externalizes the client secret with ${OAUTH2_CLIENT_SECRET} and declares the config accessors non-nullable so a missing secret fails at startup",
+        "Does not attach the Bearer interceptor to the auth client itself"
       ],
-      "tags": ["oauth2", "advanced"]
+      "tags": ["oauth2", "java", "advanced"]
     },
     {
-      "id": "kora-http-client-auth-custom-interceptor",
+      "id": "kora-http-client-auth-custom-interceptor-java",
       "skills": ["kora-http-client-auth"],
-      "query": "The external API wants the key in a non-standard header named X-Custom-Token. Write a custom interceptor for my Kora HTTP client.",
+      "query": "Kora 2.0 Java. The external API wants the key in a non-standard header named X-Custom-Token. Write a custom interceptor for my HTTP client.",
       "expected_behavior": [
-        "Implements HttpClientInterceptor with processRequest(Context ctx, InterceptChain chain, HttpClientRequest request) returning CompletionStage<HttpClientResponse>",
-        "Builds the authorized request with request.toBuilder().header(name, value).build() and calls chain.process(ctx, request)",
-        "Annotates the interceptor with @Component and injects config via a @ConfigSource interface in the constructor",
+        "Implements io.koraframework.http.client.common.interceptor.HttpClientInterceptor with the exact 2.0 signature HttpClientResponse processRequest(InterceptChain chain, HttpClientRequest request) throws Exception",
+        "Has no Context parameter and does not return CompletionStage",
+        "Builds the authorized request with request.toBuilder().header(name, value).build() and ends by calling chain.process(request) with a single argument",
+        "Annotates the interceptor with @Component from io.koraframework.common.annotation and injects config via a @ConfigSource interface in the constructor",
         "Attaches it with @InterceptWith",
         "Does not mutate the original request in place and does not use a @Value-style annotation"
       ],
-      "tags": ["custom-interceptor", "advanced"]
+      "tags": ["custom-interceptor", "java", "advanced"]
     },
     {
-      "id": "kora-http-client-auth-race",
+      "id": "kora-http-client-auth-custom-interceptor-kotlin",
       "skills": ["kora-http-client-auth"],
-      "query": "Under load my token provider fires many simultaneous token refreshes. How do I make refresh thread-safe in Kora?",
+      "query": "Kotlin Kora 2.0: write an HttpClientInterceptor that adds an Authorization header to my @HttpClient.",
       "expected_behavior": [
-        "Uses a synchronized block (or lock) with a double-check after acquiring it so only one refresh runs",
-        "Marks the cached token and expiry fields volatile for cross-thread visibility",
-        "Keeps getToken returning CompletionStage<String> and refreshes ahead of expiry with a margin",
-        "Recommends a single shared token cache component injected into the provider",
-        "Does not introduce foreign-framework constructs or field injection"
+        "Declares override fun processRequest(chain: HttpClientInterceptor.InterceptChain, request: HttpClientRequest): HttpClientResponse, qualifying the nested InterceptChain type",
+        "Notes or avoids the failure mode where an unqualified InterceptChain or a stale signature is reported as \"'processRequest' overrides nothing\" without mentioning the real cause",
+        "Does not declare the function suspend, and does not wrap chain.process in runBlocking or withContext(Dispatchers.IO)",
+        "Annotates the class @Component even though Kotlin classes referenced by @InterceptWith may have no constructor dependencies",
+        "Handles the nullable result of HttpClientTokenProvider.getToken with ?: rather than !! if a token provider is used",
+        "Uses io.koraframework packages throughout and does not carry JSpecify or jakarta @Nullable annotations into Kotlin"
+      ],
+      "tags": ["custom-interceptor", "kotlin", "advanced"]
+    },
+    {
+      "id": "kora-http-client-auth-regression-configpath",
+      "skills": ["kora-http-client-auth"],
+      "query": "Migrating to Kora 2.0. My auth client still says @HttpClient(configPath = \"httpClient.auth\") and the build fails with cannot find symbol: method configPath(). What is the fix?",
+      "expected_behavior": [
+        "Explains that 2.0 declares @HttpClient with String value() default \"\" plus telemetryTag() and httpClientTag(), and that configPath was removed",
+        "Rewrites it as @HttpClient(\"httpClient.auth\")",
+        "Uses io.koraframework.http.client.common.annotation.HttpClient as the import",
+        "May note that omitting the value defaults the path to httpClient.<clientInterfaceName> with the first letter lower-cased, so passing it explicitly is safer",
+        "Does not suggest a baseUrl attribute or any other invented @HttpClient attribute"
+      ],
+      "tags": ["migration", "regression", "basic"]
+    },
+    {
+      "id": "kora-http-client-auth-regression-context-completionstage",
+      "skills": ["kora-http-client-auth"],
+      "query": "Port this Kora 1.x token refresh to 2.0: public CompletionStage<HttpClientResponse> processRequest(Context ctx, InterceptChain chain, HttpClientRequest request) { return tokenProvider.getToken(request).thenCompose(t -> chain.process(ctx, request.toBuilder().header(\"authorization\", \"Bearer \" + t).build())); }",
+      "expected_behavior": [
+        "Removes the Context parameter and states that Context no longer exists anywhere in Kora 2.0, with no replacement — it is a redesign, not a rename",
+        "Changes the return type from CompletionStage<HttpClientResponse> to HttpClientResponse and the signature to processRequest(InterceptChain chain, HttpClientRequest request)",
+        "Changes chain.process(ctx, request) to chain.process(request)",
+        "Replaces the thenCompose chain with straight-line blocking code, explaining that blocking a virtual thread is the intended 2.0 execution model",
+        "Calls HttpClientTokenProvider.getToken as a synchronous String-returning method",
+        "Does not introduce an executor, a dispatcher, or any other mechanism to keep the call non-blocking"
+      ],
+      "tags": ["migration", "regression", "java", "advanced"]
+    },
+    {
+      "id": "kora-http-client-auth-regression-suspend-wrapper",
+      "skills": ["kora-http-client-auth"],
+      "query": "In my Kotlin Kora 2.0 service I wrote: override suspend fun getToken(request: HttpClientRequest): String = withContext(Dispatchers.IO) { runBlocking { authClient.fetchToken().accessToken } }. Review this auth wrapper.",
+      "expected_behavior": [
+        "Rejects suspend on the override: HttpClientTokenProvider.getToken is a plain synchronous method and suspend is not a Kora 2.0 contract",
+        "Removes withContext(Dispatchers.IO) and runBlocking, explaining the call already runs on a virtual thread so the dispatcher hop is pure overhead",
+        "Rewrites it as override fun getToken(request: HttpClientRequest): String? = ... calling the auth client directly",
+        "Keeps the auth client's own method non-suspend as well",
+        "Points out that concurrency safety comes from single-flight caching around the fetch, not from a coroutine dispatcher"
+      ],
+      "tags": ["migration", "regression", "kotlin", "advanced"]
+    },
+    {
+      "id": "kora-http-client-auth-regression-interceptor-component",
+      "skills": ["kora-http-client-auth"],
+      "query": "Kora 2.0 build fails with \"No component found for dependency: com.example.ApiKeyAuthInterceptor (no tags)\" on my @HttpClient. It is a final class with a constructor that takes my config. What is wrong?",
+      "expected_behavior": [
+        "Explains that the generated client takes each @InterceptWith class as a constructor parameter, so the interceptor must be a graph component",
+        "Fixes it by adding @Component from io.koraframework.common.annotation to the interceptor class, or by supplying it from a @Module factory method",
+        "States that exactly one provider is allowed, and that having both @Component and a @Module factory produces \"Multiple components match dependency:\" with a Candidates list",
+        "Does not apply the mapper rule here — an interceptor needs a provider whether or not it has constructor dependencies, unlike a dependency-free mapper which must not carry @Component",
+        "Notes that framework interceptors such as BasicAuthHttpClientInterceptor cannot be annotated and therefore must come from a @Module"
+      ],
+      "tags": ["troubleshooting", "regression", "java", "advanced"]
+    },
+    {
+      "id": "kora-http-client-auth-regression-duplicate-component",
+      "skills": ["kora-http-client-auth"],
+      "query": "Kotlin Kora 2.0: my build says \"Multiple components match dependency: BearerAuthHttpClientInterceptor (no tags)\" with two candidates. I have two clients that each need their own bearer token.",
+      "expected_behavior": [
+        "Diagnoses two providers matching one untagged claim",
+        "Recommends @Tag(SomeMarker::class) on each @Module factory and @InterceptWith(value = BearerAuthHttpClientInterceptor::class, tag = SomeMarker::class) on the corresponding client, using the tag attribute that @InterceptWith declares",
+        "Alternatively removes the duplicate provider where the two clients really share one credential",
+        "Warns not to keep both @Component on a class and a @Module factory for the same type",
+        "Notes that each audience needs its own token cache instance, since one cache holds a single token and sharing it makes the two clients overwrite each other"
+      ],
+      "tags": ["troubleshooting", "regression", "kotlin", "advanced"]
+    },
+    {
+      "id": "kora-http-client-auth-regression-removed-artifacts",
+      "skills": ["kora-http-client-auth"],
+      "query": "I added implementation \"ru.tinkoff.kora:http-client-auth\" and implementation \"io.koraframework:http-client-async\" for my Kora 2.0 auth client and set interceptors = {MyAuth.class} on @HttpClient. The build fails and I still get 401.",
+      "expected_behavior": [
+        "States that http-client-auth has never existed in any Kora version; auth lives in io.koraframework:http-client-common",
+        "States that http-client-async was removed in Kora 2.0 with no replacement, and the transports are http-client-ok, http-client-jdk and http-client-apache",
+        "Explains that @HttpClient has no interceptors attribute and the interceptor is attached with @InterceptWith",
+        "Confirms the interceptor must be a registered component via @Component or a @Module factory",
+        "Suggests checking that httpClient.<client>.url is set and that the credential header actually leaves the client",
+        "Does not keep any ru.tinkoff.kora coordinate or suggest kora-parent as the BOM"
+      ],
+      "tags": ["troubleshooting", "regression", "advanced"]
+    },
+    {
+      "id": "kora-http-client-auth-regression-removed-interceptor-type",
+      "skills": ["kora-http-client-auth"],
+      "query": "Kora 2.0 migration, Java. My 1.x client wired new RootUriInterceptor(config.baseUrl()) next to my Basic auth interceptor and the build now fails with cannot find symbol: class RootUriInterceptor. What replaced it?",
+      "expected_behavior": [
+        "States that RootUriInterceptor was deleted from http-client-common in Kora 2.0 and that no type replaced it — it is the one class the interceptor package lost",
+        "Points at httpClient.<client>.url as where the base address belongs, since the generated client already resolves each route against it, so the interceptor is simply removed",
+        "Does not invent a 2.0 RootUriInterceptor, a baseUrl or rootUri attribute on @HttpClient, or any config key other than httpClient.<client>.url, and does not present a hand-copied 1.x RootUriInterceptor as the recommended fix",
+        "Confirms the auth types beside it did survive: BasicAuthHttpClientInterceptor, ApiKeyHttpClientInterceptor, BearerAuthHttpClientInterceptor, HttpClientTokenProvider and BasicAuthHttpClientTokenProvider all exist in 2.0 under io.koraframework.http.client.common.auth and .interceptor",
+        "Ports the surviving Basic auth wiring rather than rewriting it: the @Module factory still calls new BasicAuthHttpClientInterceptor(username, password) and is still attached with @InterceptWith",
+        "If any hand-written interceptor is shown, uses the 2.0 signature HttpClientResponse processRequest(InterceptChain chain, HttpClientRequest request) with no Context parameter and no CompletionStage"
+      ],
+      "tags": ["migration", "regression", "java", "advanced"]
+    },
+    {
+      "id": "kora-http-client-auth-token-race",
+      "skills": ["kora-http-client-auth"],
+      "query": "Under load my Kora 2.0 token provider fires many simultaneous token refreshes against the auth server. How do I fix that?",
+      "expected_behavior": [
+        "Reads the cached token without a lock on the fast path, then takes a lock and re-checks before fetching, so only one caller performs the refresh",
+        "Publishes token value and expiry together through a single volatile reference to an immutable value rather than two separate mutable fields",
+        "Keeps getToken synchronous and returning String; no CompletionStage, no suspend, no coroutine mutex framing",
+        "Refreshes ahead of expiry with a margin so callers keep being served during the window",
+        "Uses one shared cache component injected into the provider, and tags per-audience instances when there is more than one credential",
+        "Does not suggest @Cacheable or the Kora cache modules for a single keyless access token"
       ],
       "tags": ["concurrency", "advanced"]
     },
     {
-      "id": "kora-http-client-auth-401-debug",
+      "id": "kora-http-client-auth-401-retry",
       "skills": ["kora-http-client-auth"],
-      "query": "I added implementation \"ru.tinkoff.kora:http-client-auth\" and set interceptors = {MyAuth.class} on @HttpClient but the build fails and I still get 401. What is wrong?",
+      "query": "Kora 2.0: my access token is sometimes revoked before it expires and requests fail with 401. I want the client to fetch a new token and retry once.",
       "expected_behavior": [
-        "Explains that ru.tinkoff.kora:http-client-auth does not exist; depend on http-client-common plus a transport such as http-client-ok",
-        "Explains @HttpClient has no interceptors attribute and the interceptor must be attached with @InterceptWith",
-        "Confirms the auth interceptor must be a registered component (@Component or a @Module factory)",
-        "Suggests verifying the URL is configured via httpClient.<client>.url and the credential header is actually set",
-        "Does not recommend foreign-framework annotations or a @Value-style placeholder"
+        "Writes an HttpClientInterceptor that calls chain.process, inspects response.code(), and retries once on 401",
+        "Closes the discarded 401 response, noting that HttpClientResponse is Closeable and only the response the generated client finally returns is closed automatically",
+        "Invalidates the cached token before retrying",
+        "Retries exactly once rather than looping, and does not retry a 403",
+        "Uses this interceptor instead of BearerAuthHttpClientInterceptor rather than alongside it, since both write the Authorization header",
+        "Rebuilds the request from the original, noting that header() replaces but queryParam() appends"
       ],
       "tags": ["troubleshooting", "advanced"]
+    },
+    {
+      "id": "kora-http-client-auth-log-masking",
+      "skills": ["kora-http-client-auth"],
+      "query": "I turned on request logging for my Kora 2.0 HTTP client to debug auth and now I want to make sure the X-API-KEY header is not written to the log. I set httpClient.myApi.telemetry.logging.maskHeaders = [\"X-API-KEY\"].",
+      "expected_behavior": [
+        "Points out that header names are stored lower-cased and the mask set is matched against the stored name, so \"X-API-KEY\" never matches — it must be \"x-api-key\"",
+        "Points out that setting maskHeaders replaces the default [\"authorization\", \"set-cookie\", \"cookie\"] instead of extending it, so the defaults must be restated alongside the new entry",
+        "Notes that client telemetry logging and metrics default to false in Kora 2.0 while tracing defaults to true, so logging only exposes headers once explicitly enabled",
+        "Mentions that an API key in a query parameter needs maskQueries, which starts empty, and that request bodies are not masked at all",
+        "Does not invent config keys outside telemetry.logging"
+      ],
+      "tags": ["telemetry", "security", "advanced"]
+    },
+    {
+      "id": "kora-http-client-auth-openapi-token-provider",
+      "skills": ["kora-http-client-auth", "kora-openapi-generator-client"],
+      "query": "My Kora 2.0 OpenAPI-generated client fails to build asking for HttpClientTokenProvider with @Tag(ApiSecurity.BearerAuth.class), and the spec also declares an OAuth scheme my service never calls. What do I supply?",
+      "expected_behavior": [
+        "Explains that the generated ApiSecurity module supplies providers for http basic and apiKey schemes but not for bearer or oauth2, so the application must provide one HttpClientTokenProvider per such scheme name",
+        "Supplies a provider for every scheme that appears in an operation's security list, including alternatives the service never takes, with those returning null — and notes that a scheme declared under components/securitySchemes but referenced by no operation needs no provider at all",
+        "Explains that the generated interceptor evaluates the security alternatives in declaration order and applies the first one whose providers all returned non-null, so a non-null token from an alternative the service does not use silently wins and the request goes out with the wrong header",
+        "Notes that when no alternative comes out complete the request is forwarded with no credential after a single WARN, so the failure surfaces as an upstream 401 rather than an error in the service",
+        "Notes that for http, oauth2 and openId schemes the returned string becomes the whole Authorization header value, so a bearer provider must return \"Bearer \" + token — unlike BearerAuthHttpClientInterceptor, which adds the prefix itself",
+        "Uses @Tag(ApiSecurity.BearerAuth.class) with the scheme-name tag class rather than an ordinal SecurityRequirementTagN form",
+        "Defers the generated client's config paths and generator settings to the OpenAPI client skill"
+      ],
+      "tags": ["openapi", "bearer", "advanced"]
     }
   ]
 }

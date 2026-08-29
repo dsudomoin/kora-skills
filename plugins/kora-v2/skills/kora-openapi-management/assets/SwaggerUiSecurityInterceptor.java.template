@@ -1,54 +1,78 @@
 package com.example.api;
 
-import java.util.concurrent.CompletionStage;
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.common.Context;
-import ru.tinkoff.kora.common.Tag;
-import ru.tinkoff.kora.http.common.body.HttpBody;
-import ru.tinkoff.kora.http.server.common.HttpServerModule;
-import ru.tinkoff.kora.http.server.common.HttpServerInterceptor;
-import ru.tinkoff.kora.http.server.common.HttpServerRequest;
-import ru.tinkoff.kora.http.server.common.HttpServerResponse;
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Tag;
+import io.koraframework.http.common.body.HttpBody;
+import io.koraframework.http.server.common.HttpServer;
+import io.koraframework.http.server.common.interceptor.HttpServerInterceptor;
+import io.koraframework.http.server.common.request.HttpServerRequest;
+import io.koraframework.http.server.common.response.HttpServerResponse;
+import org.jspecify.annotations.Nullable;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.List;
 
 /**
- * Gates the OpenAPI documentation endpoints with a bearer token.
+ * Gates the OpenAPI documentation routes ({@code /openapi}, {@code /swagger-ui}, {@code /scalar})
+ * with a bearer token, letting every other request through untouched.
  *
- * Registered globally because the OpenAPI management controllers are generated
- * by OpenApiManagementModule, not by your code: a single interceptor tagged with
- * {@code @Tag(HttpServerModule.class)} runs on every request. Only the docs paths
- * are checked; all other requests pass through unchanged.
+ * <p>The routes are contributed by {@code OpenApiManagementModule}, not by your code, so there is
+ * no method to annotate with {@code @InterceptWith}. A global interceptor is the only hook, and it
+ * is collected by exactly one tag: {@code @Tag(HttpServer.class)}. The Kora 1.x
+ * {@code @Tag(HttpServerModule.class)} still compiles — {@code HttpServerModule} is a real type in
+ * 2.0 — but nothing claims that tag, so the component is never collected and the docs stay open.
+ * Assert the 401 in a test rather than trusting the annotation.
  *
- * Set the expected token via the DOCS_API_TOKEN environment variable. If it is
- * unset, the interceptor allows access (use only in development).
+ * <p>The token comes from the {@code DOCS_API_TOKEN} environment variable. Behaviour is fail
+ * closed: with the variable unset the documentation routes return 401. Do not add the interceptor
+ * to a deployment whose docs are meant to be public.
  */
-@Tag(HttpServerModule.class)
+@Tag(HttpServer.class)
 @Component
 public final class SwaggerUiSecurityInterceptor implements HttpServerInterceptor {
 
-    private static final String REQUIRED_TOKEN = System.getenv("DOCS_API_TOKEN");
+    private static final List<String> DOCS_PREFIXES = List.of("/openapi", "/swagger-ui", "/scalar");
+    private static final String BEARER_PREFIX = "Bearer ";
+
+    private final byte @Nullable [] requiredToken;
+
+    public SwaggerUiSecurityInterceptor() {
+        var token = System.getenv("DOCS_API_TOKEN");
+        this.requiredToken = (token == null || token.isBlank())
+            ? null
+            : token.getBytes(StandardCharsets.UTF_8);
+    }
 
     @Override
-    public CompletionStage<HttpServerResponse> intercept(Context context,
-                                                         HttpServerRequest request,
-                                                         InterceptChain chain) throws Exception {
-        String path = request.path();
-        boolean isDocs = path.startsWith("/swagger-ui")
-                || path.startsWith("/rapidoc")
-                || path.startsWith("/openapi");
-
-        if (isDocs && !isAuthorized(request)) {
-            return java.util.concurrent.CompletableFuture.completedFuture(
-                    HttpServerResponse.of(401, HttpBody.plaintext("Unauthorized")));
+    public HttpServerResponse intercept(HttpServerRequest request, InterceptChain chain) throws Exception {
+        if (!isDocsRequest(request.path()) || isAuthorized(request)) {
+            return chain.process(request);
         }
 
-        return chain.process(context, request);
+        return HttpServerResponse.of(401, HttpBody.plaintext("Unauthorized"));
+    }
+
+    private static boolean isDocsRequest(String path) {
+        for (var prefix : DOCS_PREFIXES) {
+            if (path.equals(prefix) || path.startsWith(prefix + "/")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean isAuthorized(HttpServerRequest request) {
-        if (REQUIRED_TOKEN == null || REQUIRED_TOKEN.isEmpty()) {
-            return true; // no token configured: allow (development only)
+        if (this.requiredToken == null) {
+            return false;
         }
-        String header = request.headers().getFirst("Authorization");
-        return header != null && REQUIRED_TOKEN.equals(header.replace("Bearer ", ""));
+
+        var header = request.headers().getFirst("Authorization");
+        if (header == null || !header.startsWith(BEARER_PREFIX)) {
+            return false;
+        }
+
+        var presented = header.substring(BEARER_PREFIX.length()).getBytes(StandardCharsets.UTF_8);
+        return MessageDigest.isEqual(this.requiredToken, presented);
     }
 }

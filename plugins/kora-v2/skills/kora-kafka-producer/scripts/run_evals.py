@@ -6,7 +6,7 @@ Loads evals/evals.json (Anthropic rubric format) and prints each eval's query
 and expected_behavior checklist for manual or LLM-judge review.
 
 Usage:
-    python run_evals.py [--verbose]
+    python3 run_evals.py [--verbose]
 """
 
 import json

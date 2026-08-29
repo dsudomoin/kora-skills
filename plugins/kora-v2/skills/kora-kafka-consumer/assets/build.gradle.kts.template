@@ -1,52 +1,47 @@
 plugins {
     id("application")
-    kotlin("jvm") version ("1.9.25")
-    // KSP runs the Kora symbol processors at compile time — mandatory for Kotlin
-    id("com.google.devtools.ksp") version ("1.9.25-1.0.20")
+    kotlin("jvm") version ("2.4.10")
+    // KSP runs the Kora symbol processors — mandatory for Kotlin, kapt is not used
+    id("com.google.devtools.ksp") version ("2.3.11")
 }
 
-val koraBom: Configuration by configurations.creating
-configurations {
-    ksp.get().extendsFrom(koraBom)
-    compileOnly.get().extendsFrom(koraBom)
-    implementation.get().extendsFrom(koraBom)
-    testImplementation.get().extendsFrom(koraBom)
-    kspTest.get().extendsFrom(koraBom)
+repositories {
+    mavenCentral()
 }
 
 dependencies {
-    koraBom(platform("ru.tinkoff.kora:kora-parent:${property("koraVersion")}"))
-    // Kora symbol processors generate the DI graph, listeners, JSON readers/writers
-    ksp("ru.tinkoff.kora:symbol-processors")
-    kspTest("ru.tinkoff.kora:symbol-processors")
+    // koraVersion=2.0.0.RC1 in gradle.properties
+    implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+    ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
 
-    // Kafka module for messaging
-    implementation("ru.tinkoff.kora:kafka")
+    implementation("io.koraframework:kafka")
+    implementation("io.koraframework:json-common")
+    implementation("io.koraframework:config-hocon")
+    implementation("io.koraframework:logging-logback")
 
-    // JSON for message serialization/deserialization
-    implementation("ru.tinkoff.kora:json-module")
+    // Telemetry — required for telemetry.metrics.enabled / telemetry.tracing.enabled to do anything
+    // implementation("io.koraframework:micrometer-module")
+    // implementation("io.koraframework:opentelemetry-tracing")
+    // implementation("io.koraframework:opentelemetry-tracing-exporter-grpc")
 
-    // Configuration (HOCON format)
-    implementation("ru.tinkoff.kora:config-hocon")
+    // Retry / circuit breaker on listener methods
+    // implementation("io.koraframework:resilient-kora")
 
-    // Logging
-    implementation("ru.tinkoff.kora:logging-logback")
+    testImplementation("io.koraframework:test-junit5")
+    // Testcontainers 2.x module names: testcontainers-kafka, NOT kafka
+    testImplementation("io.goodforgod:testcontainers-extensions-kafka:0.15.0")
+    // Not managed by kora-bom; these are the versions the migrated examples pin.
+    testImplementation("org.awaitility:awaitility:4.2.0")
+    testImplementation("org.json:json:20231013")
 
-    // Telemetry (optional but recommended for production)
-    // implementation("ru.tinkoff.kora:micrometer-module")  // For metrics (Prometheus on the private port)
-    // implementation("ru.tinkoff.kora:opentelemetry-tracing-exporter-grpc")  // For OTLP tracing
-
-    // Tests
-    testImplementation("ru.tinkoff.kora:test-junit5")
-    testImplementation("org.testcontainers:kafka:1.19.3")
-    testImplementation("org.testcontainers:junit-jupiter:1.19.3")
-    testImplementation("org.awaitility:awaitility:4.2.1")
-    testImplementation("org.assertj:assertj-core:3.25.3")
+    // Only when the test sources declare their own @KoraApp:
+    // kspTest("io.koraframework:symbol-processors:${property("koraVersion")}")
 }
 
+// Kora 2.0 artifacts are compiled to class-file 69 — JDK 25 is the floor.
 kotlin {
     jvmToolchain {
-        languageVersion.set(JavaLanguageVersion.of(21))
+        languageVersion.set(JavaLanguageVersion.of(25))
     }
 }
 
@@ -55,10 +50,7 @@ application {
 }
 
 tasks.withType<JavaExec> {
-    environment(
-        "KAFKA_BOOTSTRAP_SERVERS",
-        System.getenv("KAFKA_BOOTSTRAP_SERVERS") ?: "localhost:9092"
-    )
+    environment("KAFKA_BOOTSTRAP", System.getenv("KAFKA_BOOTSTRAP") ?: "localhost:9092")
 }
 
 tasks.test {

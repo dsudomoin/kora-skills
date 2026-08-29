@@ -1,23 +1,21 @@
 package ${package};
 
-import ru.tinkoff.kora.database.cassandra.annotation.UDT;
-import ru.tinkoff.kora.database.common.annotation.Column;
+import io.koraframework.database.cassandra.annotation.UDT;
+import io.koraframework.database.common.annotation.Column;
 
-/**
- * Nested UDT example - UDT containing another UDT.
+/*
+ * TEMPLATE NOTES — delete this block after copying.
  *
- * Example: Location contains Coordinates UDT.
+ * A @UDT may contain another @UDT, to any depth. EVERY level needs its own @UDT — an
+ * un-annotated nested record fails with
+ * "No component found for dependency: CassandraRowColumnMapper<${child_udt_name}>".
  *
  * CQL:
- * CREATE TYPE coordinates (
- *     latitude DOUBLE,
- *     longitude DOUBLE
- * );
- *
- * CREATE TYPE location (
- *     name TEXT,
- *     coordinates FROZEN<coordinates>
- * );
+ *   CREATE TYPE IF NOT EXISTS ${child_udt_name} (latitude DOUBLE, longitude DOUBLE);
+ *   CREATE TYPE IF NOT EXISTS ${parent_udt_name} (
+ *       name        TEXT,
+ *       coordinates FROZEN<${child_udt_name}>
+ *   );
  */
 @UDT
 public record ${parent_udt_name}(

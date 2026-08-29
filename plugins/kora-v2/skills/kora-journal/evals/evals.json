@@ -1,50 +1,152 @@
 {
   "evals": [
     {
-      "id": "kora-journal-record-kora-mistake",
+      "id": "kora-journal-record-silent-2-0-mistake",
       "skills": ["kora-journal"],
-      "query": "I just realized I used @Autowired in a Kora service instead of constructor injection and had to fix it. Record this.",
+      "query": "I tagged my global HttpServerInterceptor @Tag(HttpServerModule.class) in our Kora 2.0 service. It compiled and the app started, but the interceptor never ran — I had to retag it @Tag(HttpServer.class). Record this.",
       "expected_behavior": [
-        "Runs kora_journal.py add with a title and --context, --problem, --solution, --files arguments",
-        "Frames the entry as Kora incorrect usage (Spring @Autowired instead of Kora constructor injection)",
+        "Runs kora_journal.py add with a title plus the required --context, --problem, --solution and --files arguments",
+        "Frames the entry as incorrect Kora 2.0 usage: @Tag(HttpServerModule.class) still compiles because HttpServerModule exists, but nothing collects interceptors by that tag",
+        "Records the 2.0 fix — @Tag(HttpServer.class) from io.koraframework.http.server.common, the collection point being HttpServerModule.publicHttpApiRouter",
+        "Captures that the failure was silent (green build, no warning), since that is what makes the entry worth keeping",
+        "Points --files at the affected skill documentation (e.g. skills/kora-http-server/SKILL.md), not at the application source file",
         "Stores the entry as a separate Markdown file under ~/.kora-journal/<project>/<module>/<YYYY-MM-DD>_slug.md",
-        "Does not hand-write the journal file when the CLI is available and does not invent extra add subcommand flags"
+        "Runs the CLI from the project directory, since project and module are derived from the working directory"
       ],
-      "tags": ["journal", "add", "basic"]
+      "anti_behavior": [
+        "Invents add flags the CLI does not have (--tag singular, --status, --project, --module, --scope on add)",
+        "Writes the Markdown file directly into ~/.kora-journal/ instead of calling add",
+        "Records @Tag(HttpServerModule.class) as the correct Kora 2.0 form",
+        "Claims the mistake would have been caught by the compiler or the annotation processors"
+      ],
+      "tags": ["journal", "add", "regression-silent", "basic"]
+    },
+    {
+      "id": "kora-journal-record-1x-api-in-2-0-project",
+      "skills": ["kora-journal"],
+      "query": "I wrote import ru.tinkoff.kora.common.annotation.Component and depended on ru.tinkoff.kora:json-module in our Kora 2.0 module, then had to fix both. Journal it.",
+      "expected_behavior": [
+        "Runs kora_journal.py add and classifies this as the 'Kora 1.x API used in a 2.0 project' row of the record table",
+        "Records the concrete coordinates in --problem/--solution: ru.tinkoff.kora.* -> io.koraframework.*, artifact json-module -> json-common, BOM kora-parent -> kora-bom",
+        "Either lets the tags be auto-derived (the text yields kora1x) or passes --tags including kora1x so the entry is findable by the 1.x-carryover tag",
+        "Notes that the entry is stamped kora: \"2.x\" so a future reader knows which framework line it was written against",
+        "Lists the affected skill files with --files"
+      ],
+      "anti_behavior": [
+        "Declares the entry out of scope because it is 'just a migration detail'",
+        "Records ru.tinkoff.kora as a package that still exists in Kora 2.0",
+        "Suggests a separate per-version journal store such as ~/.kora-journal-2.0/",
+        "Sends the reader to kora-docs to confirm the 2.0 package names"
+      ],
+      "tags": ["journal", "add", "migration", "regression-coordinates"]
+    },
+    {
+      "id": "kora-journal-use-cli-not-handwritten-file",
+      "skills": ["kora-journal"],
+      "query": "Create the journal entry file for me under ~/.kora-journal — just write the Markdown yourself with the right front matter, no need to run the script.",
+      "expected_behavior": [
+        "Uses kora_journal.py add anyway, and says why: add owns the filename slug, the YAML front matter, the kora: \"2.x\" stamp and the tag extraction",
+        "Explains that a hand-written file is not tagged, so search --by-tags never finds it, and integrate cannot reliably resolve it",
+        "Passes the entry content through --context/--problem/--solution/--files rather than composing the file body by hand",
+        "Confirms the resulting path printed by the CLI"
+      ],
+      "anti_behavior": [
+        "Writes a .md file into ~/.kora-journal/<project>/<module>/ with an editor or a shell heredoc",
+        "Creates the ~/.kora-journal directory tree manually with mkdir",
+        "Invents front-matter fields the tool does not write",
+        "Silently complies without noting that the CLI is the supported path"
+      ],
+      "tags": ["journal", "add", "tooling", "regression-silent"]
     },
     {
       "id": "kora-journal-scope-reject",
       "skills": ["kora-journal"],
       "query": "Add a journal entry: our checkout total was computing tax before the discount, I fixed the business rule order.",
       "expected_behavior": [
-        "Recognizes this is application business logic, not Kora Framework incorrect usage, and is out of scope for the journal",
-        "Declines to add the entry and explains the journal records only Kora misuse (wrong annotation, hallucinated API, misapplied pattern)",
+        "Recognizes this is application business logic, not incorrect Kora Framework usage, and is out of scope for the journal",
+        "Declines to add the entry and explains the journal records only Kora misuse (wrong annotation or tag, hallucinated API or config key, misapplied pattern, 1.x API in a 2.0 project)",
         "Does not run kora_journal.py add for this domain/business change"
+      ],
+      "anti_behavior": [
+        "Runs add with the business rule as the problem",
+        "Suggests recording it and marking it archived later",
+        "Rewrites the business change as a fake Kora issue to make it fit"
       ],
       "tags": ["journal", "scope", "basic"]
     },
     {
       "id": "kora-journal-search-before-solving",
       "skills": ["kora-journal"],
-      "query": "Before I implement an HTTP client interceptor for auth in Kora, check the journal for prior issues.",
+      "query": "Before I implement an HTTP client interceptor for auth in our Kora 2.0 service, check the journal for prior issues.",
       "expected_behavior": [
         "Runs kora_journal.py search with the relevant keywords (e.g. \"http interceptor auth\") and a --limit",
-        "Optionally uses --by-tags for a tag-only search or --status to filter",
+        "Knows search covers the whole shared store by default (--scope all), so entries from other projects are included",
+        "Optionally narrows with --by-tags for a tag-only search, or --status / --scope",
         "Reads the matched entry file and applies the recorded solution",
-        "Does not skip the search or invent a query subcommand that the CLI does not provide"
+        "Reports honestly when there is no hit, and continues with the sub-skill rather than inventing a result"
+      ],
+      "anti_behavior": [
+        "Skips the search and implements straight away",
+        "Invents a subcommand the CLI does not provide (query, find, grep)",
+        "Greps ~/.kora-journal/ by hand instead of using search",
+        "Claims a hit without having read the entry file"
       ],
       "tags": ["journal", "search", "basic"]
     },
     {
+      "id": "kora-journal-shared-store-1x-entry",
+      "skills": ["kora-journal"],
+      "query": "The journal search returned an entry about @Cacheable(parameters = \"id\") with 'Kora line: unset'. Apply it to my Kora 2.0 service.",
+      "expected_behavior": [
+        "Treats 'Kora line: unset' as an entry written before the stamp existed — possibly against Kora 1.x — and verifies it before applying",
+        "Verifies against the Kora 2.0 source from R0 (.kora-agent/kora-source-2.0/) and finds that 2.0 renamed the attribute to args",
+        "Applies args = \"id\", not parameters = \"id\", and says why the entry could not be pasted as-is",
+        "Keeps the shared store intact — the stale entry is corrected or re-recorded, not deleted because it came from the 1.x line"
+      ],
+      "anti_behavior": [
+        "Applies parameters = \"id\" verbatim because the journal said so",
+        "Treats the journal entry as an API authority outranking the framework source",
+        "Proposes splitting the store per Kora version so 1.x entries stop appearing",
+        "Confirms the attribute name from kora-docs, which documents 1.x on every branch"
+      ],
+      "tags": ["journal", "search", "migration", "advanced"]
+    },
+    {
       "id": "kora-journal-integrate-after-apply",
       "skills": ["kora-journal"],
-      "query": "I applied the fix from a pending journal entry into the skill docs. Mark it done.",
+      "query": "I folded the fix from that pending journal entry into the skill docs. Mark it done.",
       "expected_behavior": [
         "Runs kora_journal.py integrate <entry-file> to mark the entry integrated",
-        "Explains pending -> integrated status transition after the fix is folded into the skills",
-        "Does not delete the entry or edit its status field by hand when the CLI subcommand exists"
+        "Passes the identifier search printed — a bare filename for the current module, or the <project>/<module>/<file>.md form for an entry from another project",
+        "Explains the pending -> integrated transition after the fix is folded into the skills",
+        "Checks the command actually succeeded: integrate exits non-zero when the entry cannot be resolved, and refuses any path outside ~/.kora-journal/"
+      ],
+      "anti_behavior": [
+        "Edits the Status field of the entry file by hand",
+        "Deletes the entry instead of marking it integrated",
+        "Passes a path outside the journal store, such as a SKILL.md, to integrate",
+        "Uses a --status value the CLI does not accept on integrate (only integrated and archived)"
       ],
       "tags": ["journal", "integrate", "intermediate"]
+    },
+    {
+      "id": "kora-journal-export-pending-for-integration",
+      "skills": ["kora-journal"],
+      "query": "Time for the monthly skill maintenance pass — show me everything that hasn't been folded back into the skills since the start of August 2026.",
+      "expected_behavior": [
+        "Runs kora_journal.py export --since 2026-08-01 --status pending",
+        "Knows export defaults to --scope all, so the pass covers every project in the shared store",
+        "Reads the exported entries and proposes the concrete SKILL.md / references edits they imply",
+        "Flags any exported entry whose Kora line is unset as needing verification against the 2.0 source before it is folded in",
+        "Marks each entry integrated with integrate once its fix has actually been applied"
+      ],
+      "anti_behavior": [
+        "Uses list instead of export and calls the maintenance pass done",
+        "Passes --since in a format other than YYYY-MM-DD",
+        "Marks entries integrated before applying anything",
+        "Assumes export only covers the current module and reports the store as empty"
+      ],
+      "tags": ["journal", "export", "intermediate"]
     }
   ]
 }

@@ -1,51 +1,57 @@
-# Kafka Transactions Reference
+# Kafka Transactions Reference (Kora 2.0)
 
-**Source:** [.kora-agent/kora-docs/mkdocs/docs/en/documentation/kafka.md](../../../.kora-agent/kora-docs/mkdocs/docs/en/documentation/kafka.md)
-**Examples:** [.kora-agent/kora-examples/examples/java/kora-java-kafka/](../../../.kora-agent/kora-examples/examples/java/kora-java-kafka/)
-
-In Kora, Kafka transactions are a **producer-side** feature. There is no special
-transactional consumer annotation: a consumer participates in a read-process-write
-flow only by configuring `isolation.level = read_committed` so it ignores aborted
-records, while the atomic write is performed by a transactional `@KafkaPublisher`.
+Transactions are a **producer-side** feature. There is no transactional `@KafkaListener`, no
+`@KoraTransaction` annotation and no transaction parameter — a consumer takes part in a
+read-process-write flow through `isolation.level` and by handing its offsets to a producer
+transaction.
 
 ## Contents
 
 - [What Kora provides](#what-kora-provides)
-- [Transactional publisher](#transactional-publisher)
-- [Sending in a transaction with inTx](#sending-in-a-transaction-with-intx)
-- [Manual transaction control](#manual-transaction-control)
+- [Declaring a transactional publisher](#declaring-a-transactional-publisher)
+- [inTx and withTx](#intx-and-withtx)
+- [Manual control with begin](#manual-control-with-begin)
+- [Read-process-write](#read-process-write)
 - [Configuration](#configuration)
 - [Consumer side: read_committed](#consumer-side-read_committed)
 - [Pitfalls](#pitfalls)
-- [Related references](#related-references)
 
 ---
 
 ## What Kora provides
 
-| Token | Kind | Purpose |
-|-------|------|---------|
-| `TransactionalPublisher<P>` | interface (extend it) | Marks a `@KafkaPublisher` interface as transactional, wrapping a plain publisher `P` |
-| `inTx(...)` | method | Runs a lambda; all sends commit on success, abort on exception |
-| `begin()` | method | Opens a transaction in a try-with-resources block; commit on close |
-| `abort()` | method | Aborts the open transaction |
-| `KafkaPublisherConfig.TransactionConfig` | config class | `idPrefix`, `maxPoolSize`, `maxWaitTime` |
+`io.koraframework.kafka.common.producer.TransactionalPublisher<P>`:
 
-Transactions are NOT declared on a `@KafkaListener`. Do not look for a
-`@KoraTransaction` annotation or a `KafkaTransactionContext` parameter — they do not
-exist in Kora.
+| Member | Signature |
+|---|---|
+| `begin()` | `Transaction<? extends P> begin()` — initialises and begins a transaction |
+| `inTx(...)` | `void inTx(TransactionalConsumer<P, E>)` / `R inTx(TransactionalFunction<P, E, R>)` — the callback receives the **publisher** |
+| `withTx(...)` | `void withTx(TransactionConsumer<P, E>)` / `R withTx(TransactionFunction<P, E, R>)` — the callback receives the **`Transaction`** |
+
+`Transaction<P> extends AutoCloseable`:
+
+| Member | Purpose |
+|---|---|
+| `P publisher()` | the wrapped `@KafkaPublisher` interface |
+| `Producer<byte[], byte[]> producer()` | the raw Kafka producer |
+| `sendOffsetsToTransaction(Map<TopicPartition, OffsetAndMetadata>, ConsumerGroupMetadata)` | commit consumer offsets inside the transaction |
+| `abort()` / `abort(@Nullable Throwable)` | abort |
+| `flush()` | flush pending sends |
+| `close()` | commits — this is what makes try-with-resources work |
+
+`inTx` and `withTx` both `begin()`, run the callback, `abort()` on any `Throwable`, rethrow, and
+commit via `close()` on the normal path.
 
 ---
 
-## Transactional publisher
+## Declaring a transactional publisher
 
-First declare a regular publisher, then a transactional publisher that extends
-`TransactionalPublisher` parameterized with it. This mirrors the example app:
+A transactional publisher wraps an ordinary one. Both are `@KafkaPublisher` interfaces:
 
 ```java
-import ru.tinkoff.kora.kafka.common.annotation.KafkaPublisher;
-import ru.tinkoff.kora.kafka.common.annotation.KafkaPublisher.Topic;
-import ru.tinkoff.kora.kafka.common.producer.TransactionalPublisher;
+import io.koraframework.kafka.common.annotation.KafkaPublisher;
+import io.koraframework.kafka.common.annotation.KafkaPublisher.Topic;
+import io.koraframework.kafka.common.producer.TransactionalPublisher;
 
 @KafkaPublisher("kafka.producer.my-transactional")
 public interface MyTransactionalPublisher
@@ -60,132 +66,206 @@ public interface MyTransactionalPublisher
 }
 ```
 
-`MyTransactionalPublisher` is injectable as a `@Component` dependency like any other
-publisher.
-
----
-
-## Sending in a transaction with inTx
-
-`inTx` accepts a lambda receiving the wrapped publisher. Every send inside the lambda
-commits atomically if the lambda returns normally, and is aborted if it throws:
-
-```java
-publisher.inTx(producer -> {
-    producer.send("value-1");
-    producer.send("value-2");
-});
-```
-
-If the lambda throws, none of the sends are visible to `read_committed` consumers:
-
-```java
-publisher.inTx(producer -> {
-    producer.send("value-1");
-    if (somethingWrong) {
-        throw new IllegalStateException("abort the whole batch");
-    }
-    producer.send("value-2");
-});
-// IllegalStateException propagates; both sends are aborted
-```
-
-Kotlin uses a `TransactionalConsumer` functional interface:
-
 ```kotlin
-transactionalPublisher.inTx(TransactionalConsumer {
-    it.send("value-1")
-    it.send("value-2")
-})
+@KafkaPublisher("kafka.producer.my-transactional")
+interface MyTransactionalPublisher : TransactionalPublisher<MyTransactionalPublisher.TopicPublisher> {
+
+    @KafkaPublisher("kafka.producer.my-publisher")
+    interface TopicPublisher {
+        @Topic("kafka.producer.my-topic")
+        fun send(value: String)
+    }
+}
 ```
+
+Inject `MyTransactionalPublisher` like any other component.
 
 ---
 
-## Manual transaction control
+## `inTx` and `withTx`
 
-For finer control, open the transaction explicitly. The commit happens on
-try-with-resources close; call `abort()` to roll back instead:
+Use `inTx` when you only need to send:
 
 ```java
-try (var transaction = transactionalPublisher.begin()) {
-    transaction.producer().send(record);
-    if (somethingBad) {
+publisher.inTx(topicPublisher -> {
+    topicPublisher.send("value-1");
+    topicPublisher.send("value-2");
+});
+```
+
+Use `withTx` when you need the `Transaction` itself — offsets, the raw producer, an explicit abort:
+
+```java
+publisher.withTx(transaction -> {
+    transaction.publisher().send("value-1");
+    transaction.producer().flush();
+});
+```
+
+If the callback throws, the transaction is aborted and the exception propagates; a
+`read_committed` consumer never sees the sends.
+
+**Kotlin.** The four functional overloads are not distinguishable from a bare lambda, so the
+migrated Kotlin example uses `begin().use { }` instead. If you want the callback form, pass an
+explicit SAM constructor (`TransactionalPublisher.TransactionalConsumer { ... }`).
+
+---
+
+## Manual control with `begin`
+
+`close()` commits, so try-with-resources is the commit:
+
+```java
+try (var transaction = publisher.begin()) {
+    transaction.publisher().send("value");
+    if (somethingWrong) {
         transaction.abort();
     }
 }
 ```
 
 ```kotlin
-transactionalPublisher.begin().use {
-    it.producer().send(record)
-    if (somethingBad) {
-        it.abort()
+publisher.begin().use { transaction ->
+    transaction.publisher().send("value")
+    if (somethingWrong) {
+        transaction.abort()
     }
 }
 ```
+
+Forgetting the try-with-resources / `use` leaks a producer from the pool and never commits.
+
+---
+
+## Read-process-write
+
+The only place a consumer touches a transaction: hand its offsets to the producer so the write and
+the offset commit are atomic. This is the migrated example, verbatim in shape:
+
+```java
+@Component
+public final class TransactionalPipelineListener {
+
+    private final MyTransactionalPublisher publisher;
+
+    public TransactionalPipelineListener(MyTransactionalPublisher publisher) {
+        this.publisher = publisher;
+    }
+
+    @KafkaListener("kafka.consumer.transactional-pipeline")
+    public void process(ConsumerRecord<String, String> record, Consumer<String, String> consumer) {
+        publisher.withTx(transaction -> {
+            transaction.publisher().send("processed:" + record.value());
+            transaction.sendOffsetsToTransaction(
+                Map.of(new TopicPartition(record.topic(), record.partition()),
+                       new OffsetAndMetadata(record.offset() + 1)),
+                consumer.groupMetadata());
+        });
+    }
+}
+```
+
+```kotlin
+@Component
+class TransactionalPipelineListener(private val publisher: MyTransactionalPublisher) {
+
+    @KafkaListener("kafka.consumer.transactional-pipeline")
+    fun process(record: ConsumerRecord<String, String>, consumer: Consumer<String, String>) {
+        publisher.begin().use { transaction ->
+            transaction.publisher().send("processed:${record.value()}")
+            transaction.sendOffsetsToTransaction(
+                mapOf(TopicPartition(record.topic(), record.partition()) to
+                          OffsetAndMetadata(record.offset() + 1)),
+                consumer.groupMetadata())
+        }
+    }
+}
+```
+
+The `Consumer` parameter is **required** — both to obtain `groupMetadata()` and to stop Kora from
+committing the offset itself outside the transaction. The consumer must have a `group.id`
+(subscribe mode); in assign mode there is no group metadata to send.
 
 ---
 
 ## Configuration
 
-A transactional publisher is configured with `KafkaPublisherConfig.TransactionConfig`:
-
 ```hocon
 kafka {
   producer {
+    my-publisher {
+      driverProperties {
+        "bootstrap.servers" = ${?KAFKA_BOOTSTRAP}
+      }
+      telemetry.logging.enabled = true
+    }
+
     my-transactional {
-      idPrefix = "kafka-app-"   # transaction identifier prefix
-      maxPoolSize = 10          # connection-set size for transactions
-      maxWaitTime = "10s"       # maximum transaction waiting time
+      idPrefix = "my-transaction"   # default "kora-app-"; a random UUID is appended
+      maxPoolSize = 10              # transactional producer pool size
+      maxWaitTime = 10s             # wait for a free producer from the pool
+      telemetry.logging.enabled = true
+    }
+
+    my-topic {
+      topic = "my-topic-producer"
     }
   }
 }
 ```
 
-The wrapped plain publisher (`my-publisher` above) keeps its own
-`driverProperties` / `telemetry` block as usual. Only the transactional wrapper uses
-`idPrefix` / `maxPoolSize` / `maxWaitTime`.
+`idPrefix` / `maxPoolSize` / `maxWaitTime` belong to `KafkaPublisherConfig.TransactionConfig` and are
+read from the **transactional** section; `driverProperties` and `telemetry` come from the wrapped
+publisher's own section.
 
 ---
 
-## Consumer side: read_committed
+## Consumer side: `read_committed`
 
-A consumer that should only see committed records sets `isolation.level`:
+A consumer that must not see aborted records sets the standard Kafka property:
 
 ```hocon
-kafka {
-  consumer {
-    my-listener {
-      topics = ["my-topic"]
-      driverProperties {
-        "bootstrap.servers" = ${KAFKA_BOOTSTRAP}
-        "group.id" = "my-group-id"
-        "isolation.level" = "read_committed"
-      }
-    }
+kafka.consumer.transactional-pipeline {
+  topics = ["transactional-input"]
+  driverProperties {
+    "bootstrap.servers" = ${?KAFKA_BOOTSTRAP}
+    "group.id" = "transactional-pipeline"
+    "auto.offset.reset" = "earliest"
+    "enable.auto.commit" = false
+    "isolation.level" = "read_committed"
   }
 }
 ```
 
-The consumer itself uses the ordinary `@KafkaListener` signatures from
-[the listener reference](kafka-listener-reference.md). There is no transactional
-consumer container — only this driver property changes its visibility behavior.
+The default is `read_uncommitted`, so without this the consumer sees records from transactions that
+were later aborted. Nothing else about the listener changes — ordinary signatures apply.
 
 ---
 
 ## Pitfalls
 
 | Symptom | Cause | Fix |
-|---------|-------|-----|
-| Aborted records still consumed | Consumer left at default isolation | Set `"isolation.level" = "read_committed"` |
-| `inTx` partially applied | Caught the exception inside the lambda | Let the exception propagate so Kora aborts the whole batch |
-| Looking for `@KoraTransaction` | That annotation does not exist | Use a `TransactionalPublisher` and `inTx` / `begin` |
-| Transaction never commits with `begin()` | Forgot try-with-resources | `begin()` commits on close; always use it in a `try (...)` block |
+|---|---|---|
+| Aborted records still consumed | default `read_uncommitted` | `"isolation.level" = "read_committed"` |
+| Offsets committed outside the transaction | no `Consumer` parameter, so Kora commits after the handler | declare `Consumer<K, V>` and use `sendOffsetsToTransaction` |
+| Transaction never commits | `begin()` without try-with-resources / `use` | `close()` is the commit |
+| Producers exhausted after `maxWaitTime` | transactions left open | always close; raise `maxPoolSize` only after fixing leaks |
+| Partial batch published | exception caught **inside** the callback | let it propagate so `inTx`/`withTx` aborts |
+| Kotlin: ambiguous `inTx` overload | four functional overloads | use `begin().use { }` or an explicit SAM constructor |
+| `groupMetadata()` fails | assign mode has no consumer group | give the consumer a `group.id` |
+| Looking for `@KoraTransaction` | it does not exist | use `TransactionalPublisher` |
 
 ---
 
 ## Related references
 
-- [Kafka Listener Reference](kafka-listener-reference.md)
-- [Kafka Error Handling Reference](kafka-error-handling-reference.md)
-- [Kafka Producer Reference](../../kora-kafka-producer/references/kafka-producer-reference.md)
+- [Offsets](kafka-offset-reference.md)
+- [Listener signatures](kafka-listener-reference.md)
+- [kora-kafka-producer](../../kora-kafka-producer/SKILL.md)
+
+**Source:** framework tag `2.0.0.RC1` —
+[TransactionalPublisher](https://github.com/kora-projects/kora/blob/2.0.0.RC1/kafka/kafka/src/main/java/io/koraframework/kafka/common/producer/TransactionalPublisher.java) ·
+[KafkaPublisherConfig](https://github.com/kora-projects/kora/blob/2.0.0.RC1/kafka/kafka/src/main/java/io/koraframework/kafka/common/producer/KafkaPublisherConfig.java);
+migrated examples on `migration/2.0` —
+[kora-java-kafka](https://github.com/kora-projects/kora-examples/tree/migration/2.0/examples/java/kora-java-kafka) ·
+[kora-kotlin-kafka](https://github.com/kora-projects/kora-examples/tree/migration/2.0/examples/kotlin/kora-kotlin-kafka)

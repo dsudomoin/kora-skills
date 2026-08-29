@@ -1,90 +1,271 @@
 {
   "evals": [
     {
-      "id": "kora-config-yaml-quickstart",
-      "skills": ["kora-config-yaml"],
-      "query": "Set up YAML-based configuration in my Kora service with an application.yaml holding app name and version, and bind it to a type-safe interface.",
-      "expected_behavior": [
-        "Adds the ru.tinkoff.kora:config-yaml dependency and the ru.tinkoff.kora:annotation-processors annotation processor",
-        "Adds YamlConfigModule to the @KoraApp interface",
-        "Creates src/main/resources/application.yaml with an app section",
-        "Defines a @ConfigSource(\"app\") interface with name() and version() methods imported from ru.tinkoff.kora.config.common.annotation",
-        "Does not use reflection-based property binding or field injection; uses constructor injection of the @ConfigSource component"
+      "id": "kora-config-yaml-quickstart-java",
+      "skills": [
+        "kora-config-yaml"
       ],
-      "tags": ["config", "basic"]
+      "query": "Set up YAML-based configuration in my Java Kora service with an application.yaml holding app name and version, and bind it to a type-safe interface.",
+      "expected_behavior": [
+        "Adds implementation \"io.koraframework:config-yaml\" and annotationProcessor \"io.koraframework:annotation-processors\", with versions constrained by the platform(\"io.koraframework:kora-bom:$koraVersion\") BOM rather than pinned per artifact",
+        "Uses the published release koraVersion=2.0.0.RC1 from plain mavenCentral(), not 2.0.0-SNAPSHOT (which would also require the Maven snapshots repository) and not a 2.0.0.alphaN build",
+        "Adds io.koraframework.config.yaml.YamlConfigModule to the @KoraApp interface",
+        "Creates src/main/resources/application.yaml with a nested app section",
+        "Defines a @ConfigSource(\"app\") interface with name() and version(), importing io.koraframework.config.common.annotation.ConfigSource",
+        "Injects the config through a constructor and does not list a generated config module in @KoraApp (every generated @Module joins the graph automatically)",
+        "Does not use ru.tinkoff.kora packages, the kora-parent BOM, reflection-based binding, or field injection"
+      ],
+      "tags": [
+        "config",
+        "java",
+        "basic",
+        "migration-2.0"
+      ]
+    },
+    {
+      "id": "kora-config-yaml-quickstart-kotlin",
+      "skills": [
+        "kora-config-yaml"
+      ],
+      "query": "Same thing in Kotlin: read app.name, an optional app.description and app.retries defaulting to 3 from application.yaml in my Kora Kotlin service.",
+      "expected_behavior": [
+        "Uses ksp(\"io.koraframework:symbol-processors:$koraVersion\") rather than an annotationProcessor, plus implementation(\"io.koraframework:config-yaml\") under the io.koraframework:kora-bom platform at koraVersion=2.0.0.RC1",
+        "Declares @ConfigSource(\"app\") on a Kotlin interface with fun name(): String",
+        "Expresses the optional value as a nullable return type fun description(): String? and never with a Java @Nullable annotation",
+        "Expresses the default with a non-abstract member, e.g. fun retries(): Int = 3",
+        "Extends YamlConfigModule on the @KoraApp interface and runs KoraApplication.run(ApplicationGraph::graph)",
+        "Does not use @DefaultValue, jakarta.annotation.Nullable, @field:Nullable, or ru.tinkoff.kora packages"
+      ],
+      "tags": [
+        "config",
+        "kotlin",
+        "basic",
+        "migration-2.0"
+      ]
     },
     {
       "id": "kora-config-yaml-env-substitution",
-      "skills": ["kora-config-yaml"],
-      "query": "My YAML config must read DATABASE_URL and DATABASE_USER from environment variables, treat DATABASE_URL as required, and fall back to a default host when DB_HOST is unset.",
-      "expected_behavior": [
-        "Uses ${DATABASE_URL} for the required value that fails fast at startup when missing",
-        "Uses ${DB_HOST:localhost} default form for the value with a fallback",
-        "Explains that ${?VAR} marks an optional value and requires a @Nullable return type",
-        "Does not invent a config.environment profile mechanism"
+      "skills": [
+        "kora-config-yaml"
       ],
-      "tags": ["config", "substitution", "basic"]
+      "query": "My YAML config must read DATABASE_URL from an environment variable as a required value, fall back to localhost when DB_HOST is unset, and treat DB_NOTE as optional.",
+      "expected_behavior": [
+        "Uses ${DATABASE_URL} for the required value and explains that startup fails when it is unset",
+        "Uses ${DB_HOST:localhost} for the literal-default form, which works because YAML has no substitution logic of its own and the raw string reaches Kora's resolver",
+        "Uses ${?DB_NOTE} for the optional value and pairs it with a @Nullable return type (Kotlin: String?)",
+        "May note that a reference can also point at another config path, e.g. ${app.name}, since substitution resolves against the merged root",
+        "Does not invent a config.environment / profile-activation mechanism or a @DefaultValue annotation",
+        "Does not present ${VAR:default} as a shared YAML/HOCON form — in application.conf typesafe resolves first and the inline default never reaches Kora, so HOCON assigns the key twice instead (key = fallback, then key = ${?VAR})",
+        "Does not use the shell form ${VAR:-default}, which is invalid in both formats"
+      ],
+      "tags": [
+        "config",
+        "substitution",
+        "basic"
+      ]
     },
     {
-      "id": "kora-config-yaml-optional-default",
-      "skills": ["kora-config-yaml"],
-      "query": "How do I make one config field optional and give another field a default value of 3 in a Kora YAML @ConfigSource interface?",
-      "expected_behavior": [
-        "Marks the optional field with @Nullable (jakarta.annotation.Nullable or equivalent)",
-        "Implements the default value with a Java default method body returning 3, or a Kotlin method body",
-        "States that Kora has no @DefaultValue annotation",
-        "Does not invent a @DefaultValue annotation or use field injection"
+      "id": "kora-config-yaml-nested-config-mapper",
+      "skills": [
+        "kora-config-yaml"
       ],
-      "tags": ["config", "defaults", "basic"]
-    },
-    {
-      "id": "kora-config-yaml-nested-extractor",
-      "skills": ["kora-config-yaml"],
-      "query": "I have a database section with a nested pool object (maxSize, connectionTimeout) in application.yaml. How do I bind the nested object in Kora YAML config?",
+      "query": "I have an app section with a nested pool object (maxSize, connectionTimeout) in application.yaml. How do I bind the nested object in Kora YAML config?",
       "expected_behavior": [
-        "Declares the nested type with @ConfigValueExtractor rather than a second @ConfigSource",
+        "Declares the nested type with @ConfigMapper from io.koraframework.config.common.annotation, not with a second @ConfigSource",
         "Exposes the nested type as a method on the parent @ConfigSource interface",
-        "Binds connectionTimeout to java.time.Duration from a string like \"30s\"",
-        "Does not nest a relative-path @ConfigSource for the inner object"
+        "Binds connectionTimeout to java.time.Duration from a string such as \"30s\"",
+        "Writes the YAML nested under app: -> pool:, not as a dotted app.pool.maxSize key",
+        "Does not use @ConfigValueExtractor, which no longer exists in Kora 2.0"
       ],
-      "tags": ["config", "nested", "advanced"]
+      "tags": [
+        "config",
+        "nested",
+        "advanced",
+        "migration-2.0"
+      ]
     },
     {
       "id": "kora-config-yaml-reuse-tagged",
-      "skills": ["kora-config-yaml"],
-      "query": "Two integration clients share the same endpoint/requestTimeout config shape under libs.lib1 and libs.lib2 in YAML. How do I bind both to one reusable type in Kora and inject the correct one?",
-      "expected_behavior": [
-        "Defines the shared shape once with @ConfigValueExtractor",
-        "Adds factory methods on the @KoraApp interface that call extractor.extract(config.get(\"libs.lib1\")) and config.get(\"libs.lib2\")",
-        "Distinguishes the two instances with @Tag and injects them by tag in the constructor",
-        "Injects ru.tinkoff.kora.config.common.Config and ru.tinkoff.kora.config.common.extractor.ConfigValueExtractor",
-        "Disambiguates with @Tag rather than a name-based qualifier, and uses constructor injection rather than field injection"
+      "skills": [
+        "kora-config-yaml"
       ],
-      "tags": ["config", "reuse", "advanced"]
+      "query": "Two integration clients share the same endpoint/requestTimeout config shape under libs.lib1 and libs.lib2 in application.yaml. How do I bind both to one reusable type in Kora and inject the correct one?",
+      "expected_behavior": [
+        "Defines the shared shape once with @ConfigMapper",
+        "Adds factory methods on the @KoraApp interface that take io.koraframework.config.common.Config and io.koraframework.config.common.mapper.ConfigValueMapper<LibConfig>",
+        "Calls mapper.mapOrThrow(config.get(\"libs.lib1\")) and mapper.mapOrThrow(config.get(\"libs.lib2\"))",
+        "Distinguishes the two instances with @Tag from io.koraframework.common.annotation and injects them by tag through the constructor",
+        "Does not call extract(...), does not import io.koraframework.config.common.extractor or ru.tinkoff.kora.config.common.extractor, and does not disambiguate with a name-based qualifier"
+      ],
+      "tags": [
+        "config",
+        "reuse",
+        "advanced",
+        "migration-2.0"
+      ]
+    },
+    {
+      "id": "kora-config-yaml-custom-value-mapper",
+      "skills": [
+        "kora-config-yaml"
+      ],
+      "query": "My application.yaml has foo.apiToken: \"Bearer secret\" and I want it bound to my own Token record instead of a String.",
+      "expected_behavior": [
+        "Points the config method at a mapper with @Mapping(TokenConfigValueMapper.class) from io.koraframework.common.annotation",
+        "Implements io.koraframework.config.common.mapper.ConfigValueMapper<Token> with map(ConfigValue<?> value)",
+        "Registers the mapper with @Component so the graph can supply it",
+        "Handles ConfigValue.NullValue by returning null rather than throwing",
+        "In Kotlin declares the override as fun map(value: ConfigValue<*>): Token? with a non-null parameter and nullable result",
+        "Does not implement a ConfigValueExtractor or an extract(...) method"
+      ],
+      "tags": [
+        "config",
+        "mapping",
+        "advanced",
+        "migration-2.0"
+      ]
+    },
+    {
+      "id": "kora-config-yaml-dotted-key-no-effect",
+      "skills": [
+        "kora-config-yaml"
+      ],
+      "query": "I copied this from a Kora HOCON config into my application.yaml but the setting is ignored:\n\nhttpServer:\n  telemetry.metrics.enabled: true\n\nWhy does it not take effect?",
+      "expected_behavior": [
+        "Explains that YAML has no path expressions: telemetry.metrics.enabled is a single key whose name contains dots, so no lookup ever matches it",
+        "Rewrites it as nested mappings httpServer: -> telemetry: -> metrics: -> enabled: true",
+        "Notes that nothing fails, the section simply keeps its defaults, which is why the compile and startup stay green",
+        "Notes that HOCON expands a.b = v into nested objects, which is why the snippet worked in application.conf",
+        "May note the exception: for a value bound to Map or Properties (logging.levels, Kafka driverProperties) the dotted key is the map key and is correct",
+        "Does not claim the key is rejected or that an error is logged"
+      ],
+      "tags": [
+        "config",
+        "yaml-syntax",
+        "troubleshooting",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-config-yaml-stale-port-keys",
+      "skills": [
+        "kora-config-yaml"
+      ],
+      "query": "I upgraded to Kora 2.0. My application.yaml still has:\n\nhttpServer:\n  publicApiHttpPort: 9090\n  privateApiHttpPort: 9091\n\nThe app starts with no errors, but nothing answers on 9090 and our readiness probe on 9091 times out. What is going on?",
+      "expected_behavior": [
+        "Identifies publicApiHttpPort and privateApiHttpPort as Kora 1.x keys that Kora 2.0 never reads, so they are silently ignored with no warning",
+        "Explains that each server therefore falls back to its own default — public 8080 from HttpServerConfig.port(), system 8085 from SystemHttpServerConfig.port() — which is why the app starts green on the wrong ports",
+        "Renames them to httpServer.port and httpServer.system.port, written as nested YAML mappings (httpServer: -> port:, and httpServer: -> system: -> port:) rather than dotted keys",
+        "Also maps privateApiHttpReadinessPath / privateApiHttpLivenessPath / privateApiHttpMetricsPath to httpServer.system.readinessPath / livenessPath / metricsPath, whose defaults are /system/readiness, /system/liveness and /metrics",
+        "Does not claim the two servers collide on 8080 or that startup fails with 'Address already in use' — with both keys ignored they take 8080 and 8085 and no collision occurs",
+        "Does not claim an unknown YAML key produces a warning or an error"
+      ],
+      "tags": [
+        "config",
+        "migration-2.0",
+        "regression",
+        "troubleshooting",
+        "silent-failure"
+      ]
+    },
+    {
+      "id": "kora-config-yaml-db-section-renamed",
+      "skills": [
+        "kora-config-yaml"
+      ],
+      "query": "My Kora 2.0 app fails on startup with \"ConfigValueException: Config expected value, but got null at path: 'ROOT.jdbc.username'\", but my application.yaml clearly has a db section with username and password. What is wrong?",
+      "expected_behavior": [
+        "Identifies that the JDBC datasource section was renamed from db to jdbc in Kora 2.0",
+        "Renames the top-level db: block to jdbc: keeping jdbcUrl, username and password inside it",
+        "Explains the misleading error: the module reads the hardcoded jdbc path, so every value under db is simply never seen",
+        "Notes that the compile stays green because an unread YAML key is not an error",
+        "Does not suggest adding a username key under db or renaming the interface methods"
+      ],
+      "tags": [
+        "config",
+        "migration-2.0",
+        "regression",
+        "troubleshooting"
+      ]
+    },
+    {
+      "id": "kora-config-yaml-telemetry-defaults",
+      "skills": [
+        "kora-config-yaml"
+      ],
+      "query": "Write the application.yaml for a Kora 2.0 service that exposes HTTP server metrics and request logging.",
+      "expected_behavior": [
+        "Enables metrics and logging explicitly under httpServer.telemetry, because metrics.enabled and logging.enabled default to false in Kora 2.0",
+        "Writes them as nested mappings (httpServer: -> telemetry: -> metrics: -> enabled: true), not as dotted keys",
+        "States that tracing.enabled defaults to true while metrics and logging default to false, and that httpServer.system is the exception where SystemHttpServerTracingConfig overrides tracing to false",
+        "Notes that the same telemetry block exists per component, so enabling it once does not turn it on globally",
+        "Does not claim component metrics appear by default or that a metrics endpoint returning 200 proves they are collected"
+      ],
+      "tags": [
+        "config",
+        "telemetry",
+        "migration-2.0",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-config-yaml-config-value-extractor-residue",
+      "skills": [
+        "kora-config-yaml"
+      ],
+      "query": "Migrating this Kora 1.x YAML config code to 2.0:\n\n@ConfigValueExtractor\npublic interface LibConfig { String endpoint(); }\n\ndefault LibConfig lib1(Config config, ConfigValueExtractor<LibConfig> extractor) {\n    return extractor.extract(config.get(\"libs.lib1\"));\n}",
+      "expected_behavior": [
+        "Replaces @ConfigValueExtractor with @ConfigMapper from io.koraframework.config.common.annotation",
+        "Replaces the ConfigValueExtractor<T> parameter with io.koraframework.config.common.mapper.ConfigValueMapper<T>",
+        "Replaces extract(value) with mapOrThrow(value), and mentions map(value) as the nullable variant",
+        "Flags that 1.x map(Function) was composition and is now andThen(Function), while 2.0 map(value) is the extraction method — so a mechanical map -> map rename compiles and silently changes meaning",
+        "States that the io.koraframework.config.common.extractor package does not exist in Kora 2.0",
+        "Keeps @ConfigSource unchanged in name and semantics, and rewrites the remaining ru.tinkoff.kora imports to io.koraframework",
+        "Does not claim @ConfigValueExtractor still works or invent a compatibility alias"
+      ],
+      "tags": [
+        "config",
+        "migration-2.0",
+        "regression"
+      ]
     },
     {
       "id": "kora-config-yaml-per-environment",
-      "skills": ["kora-config-yaml"],
+      "skills": [
+        "kora-config-yaml"
+      ],
       "query": "How do I run my Kora YAML app with a production config file application-prod.yaml instead of the default application.yaml?",
       "expected_behavior": [
-        "Creates a complete self-contained application-prod.yaml",
-        "Selects it with the config.resource system property, for example -Dconfig.resource=application-prod.yaml",
-        "Mentions config.file as the filesystem alternative to config.resource",
-        "Does not invent a config.environment or profile-activation mechanism"
+        "Creates a complete self-contained application-prod.yaml, noting it replaces application.yaml rather than layering over it",
+        "Selects it with -Dconfig.resource=application-prod.yaml",
+        "Mentions -Dconfig.file as the filesystem alternative, and that setting both properties now fails at startup with 'Application config source is ambiguous'",
+        "Warns that a config.resource that is not on the classpath resolves to an empty configuration instead of failing",
+        "Does not invent a config.environment, spring-style profile, or an application-{env}.yaml auto-activation mechanism"
       ],
-      "tags": ["config", "environments", "advanced"]
+      "tags": [
+        "config",
+        "environments",
+        "advanced"
+      ]
     },
     {
       "id": "kora-config-yaml-startup-failure",
-      "skills": ["kora-config-yaml"],
-      "query": "My Kora app fails at startup with an unresolved substitution error for a value in application.yaml. What is wrong and how do I fix it?",
-      "expected_behavior": [
-        "Identifies that a required ${VAR} substitution has no value at startup",
-        "Suggests providing the environment variable/system property, or switching to ${VAR:default} or ${?VAR}",
-        "Notes the annotation processor and YamlConfigModule must be present for binding to occur",
-        "Does not suggest a profile-activation or external property-source fix; stays within Kora substitution and config.resource/config.file"
+      "skills": [
+        "kora-config-yaml"
       ],
-      "tags": ["config", "troubleshooting", "advanced"]
+      "query": "My Kora app fails at startup with \"Config reference '${APP_VERSION}' cannot be resolved at path 'app.version'\". What is wrong and how do I fix it?",
+      "expected_behavior": [
+        "Identifies that the required ${APP_VERSION} substitution has no value in the environment, system properties or config",
+        "Offers the three fixes: provide the value, switch to ${APP_VERSION:default}, or make it optional with ${?APP_VERSION} plus a @Nullable return type",
+        "Explains the lookup namespace: environment variable > system property > application file, all reachable through ${...}",
+        "May note that -Dapp.version=... works as a direct override because system-property names are expanded on dots, while environment variable names stay flat",
+        "Does not suggest a profile mechanism or an external property source outside Kora substitution and config.resource/config.file"
+      ],
+      "tags": [
+        "config",
+        "troubleshooting",
+        "advanced"
+      ]
     }
   ]
 }

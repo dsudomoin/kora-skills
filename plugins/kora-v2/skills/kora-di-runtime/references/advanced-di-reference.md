@@ -1,218 +1,234 @@
-# Advanced DI Runtime Patterns
+# Advanced runtime DI patterns
 
-**Kora Version:** 1.2.x
+**Kora 2.0** · `io.koraframework.application.graph` · `io.koraframework.common.annotation`
 
-This reference covers advanced runtime DI patterns in Kora, including `LifecycleWrapper` exact signatures and generic factory warnings.
+The material here is what you reach for after `@Root`, `Lifecycle`, `@Tag` and `All<T>` are not
+enough: generic component templates, the "meta" dependency claims (`Graph`, `Node`, `TypeRef`), and
+the type rules the resolver enforces.
 
 ---
 
-## LifecycleWrapper Exact Signature
+## 1. The complete claim vocabulary
 
-### Purpose
+A constructor or module-method parameter is turned into exactly one *dependency claim*. These are all
+of them:
 
-When wrapping a third-party resource (MongoClient, external RPC client, etc.) in a `@Module` factory method, you cannot implement `Lifecycle` directly on the resource. Use `LifecycleWrapper` to add init/release behavior.
+| Parameter type | Claim | Notes |
+|---|---|---|
+| `T` | `ONE_REQUIRED` | the default |
+| `@Nullable T` / `T?` | `ONE_NULLABLE` | absent → `null` |
+| `ValueOf<T>` | `VALUE_OF` | current value, refresh-isolated |
+| `@Nullable ValueOf<T>` / `ValueOf<T>?` | `NULLABLE_VALUE_OF` | |
+| `PromiseOf<T>` | `PROMISE_OF` | `get()` returns `Optional<T>` |
+| `@Nullable PromiseOf<T>` / `PromiseOf<T>?` | `NULLABLE_PROMISE_OF` | |
+| `All<T>` | `ALL_OF_ONE` | |
+| `All<ValueOf<T>>` | `ALL_OF_VALUE` | |
+| `All<PromiseOf<T>>` | `ALL_OF_PROMISE` | |
+| `TypeRef<T>` | `TYPE_REF` | reified type token, filled in by generated code |
+| `Node<T>` | `NODE_OF` | handle to another node |
+| `Graph` / `RefreshableGraph` | `GRAPH` | the live graph |
 
-### Signature (Kora 1.2.x)
+Anything else — `List<T>`, `Optional<T>`, `Provider<T>`, `Supplier<T>` used as a laziness wrapper —
+is just a request for a component of that exact type.
+
+Every claim also carries a tag, so `@Tag(X.class) All<ValueOf<T>>` is a normal, supported shape.
+
+---
+
+## 2. Component templates — generic module methods
+
+A generic method in a module is a **component template**: the processor instantiates it per required
+type argument.
 
 ```java
-public class LifecycleWrapper<T> implements Wrapped<T>, Lifecycle {
-    public LifecycleWrapper(T value, Function<T, Void> initFn, Function<T, Void> releaseFn) {
-        // ...
-    }
-}
-```
-
-**Key points:**
-- Return type is `Wrapped<T>`, **NOT** `T`
-- Use **constructor** — static `wrap()` method does **NOT** exist in Kora 1.2.14
-- Capture external resource in the `releaseFn` lambda
-
-### Example: MongoDB Wrapper
-
-```java
-import com.mongodb.client.MongoClient;
-import com.mongodb.client.MongoClients;
-import com.mongodb.client.MongoDatabase;
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.common.Module;
-import ru.tinkoff.kora.common.Default;
-import ru.tinkoff.kora.application.graph.Wrapped;
-import ru.tinkoff.kora.application.graph.LifecycleWrapper;
-
 @Module
-public interface MongoModule {
-    
-    @Default
-    @Component
-    default Wrapped<MongoDatabase> mongoDatabase(MongoConfig config) {
-        MongoClient client = MongoClients.create(config.connectionString());
-        
-        // Constructor: LifecycleWrapper(value, initFn, releaseFn)
-        return new LifecycleWrapper<>(
-            client.getDatabase(config.databaseName()),  // The wrapped value
-            db -> {                                      // Init function (async-safe)
-                // Optional: verify connection, create indexes, etc.
-                try {
-                    db.runCommand(new Document("ping", 1));
-                    System.out.println("MongoDB connected");
-                } catch (Exception e) {
-                    throw new RuntimeException("MongoDB ping failed", e);
-                }
-                return null;  // Void return
-            },
-            db -> {                                      // Release function
-                // Capture 'client' to close
-                client.close();
-                System.out.println("MongoDB connection closed");
-                return null;  // Void return
-            }
-        );
+public interface StorageModule {
+
+    default Function<Integer, byte[]> intMapper() {
+        return i -> new byte[] { i.byteValue() };
+    }
+
+    default Function<String, byte[]> stringMapper() {
+        return s -> s.getBytes(StandardCharsets.UTF_8);
+    }
+
+    default <T> Storage<T> typedStorage(Function<T, byte[]> mapper) {
+        return new TempFileStorage<>(mapper);
     }
 }
 ```
 
-### Alternative: Implement Lifecycle Directly
+```kotlin
+@Module
+interface StorageModule {
 
-For your own classes, implement `Lifecycle` directly instead of wrapping:
+    fun intMapper(): Function<Int, ByteArray> = Function { i -> byteArrayOf(i.toByte()) }
+
+    fun stringMapper(): Function<String, ByteArray> = Function { s -> s.toByteArray(StandardCharsets.UTF_8) }
+
+    fun <T> typedStorage(mapper: Function<T, ByteArray>): Storage<T> = TempFileStorage(mapper)
+}
+```
+
+A consumer asking for `Storage<String>` gets one built from `stringMapper()`; a consumer asking for
+`Storage<Integer>` gets one built from `intMapper()`. The template contributes nothing on its own —
+only actual requests instantiate it.
+
+Matching (`ComponentTemplateHelper`) binds type variables by unifying the declared return type with
+the required type, honouring the variables' bounds and unwrapping `Wrapped<T>` on both sides.
+
+**Every non-`private`, non-`static` method of a module interface is a declaration.** A helper method
+you did not mean to publish becomes a component — or, if generic, an over-broad template that starts
+answering requests you never intended. Mark helpers `private` (interface private methods) or
+`static`; both are skipped by `KoraAppUtils.parseComponents`.
 
 ```java
+@Module
+public interface ReportModule {
+
+    default ReportRenderer renderer(TemplateEngine engine) {
+        return new ReportRenderer(engine, defaults());
+    }
+
+    private static RenderOptions defaults() {   // private → not a component
+        return RenderOptions.compact();
+    }
+}
+```
+
+Keep templates narrowly bounded (`<T extends Event>` rather than `<T>`) so a stray request cannot
+match them.
+
+---
+
+## 3. `Wrapped<T>` unwrapping in resolution
+
+Resolution tries a direct assignment first and then an *unwrapped* one
+(`ServiceTypesHelper.isAssignableToUnwrapped`): a component declared as `Wrapped<T>` satisfies a
+claim for `T`. This applies to plain claims, to `All<T>` members and to template matching.
+
+Consequences:
+
+- a module method returning `Wrapped<T>` and another returning `T` are **the same component type**
+  for the resolver — declaring both is an ambiguity, not an overload;
+- `Wrapped.unwrap(ValueOf<Wrapped<T>>)` returns `ValueOf<T>` when you hold the wrapper yourself;
+- the wrapper object is what the container keeps for lifecycle purposes, which is exactly why
+  `LifecycleWrapper` works — see [`lifecycle-reference.md`](lifecycle-reference.md).
+
+---
+
+## 4. Injecting `Graph`, `Node<T>` and `TypeRef<T>`
+
+These exist for components that must manipulate the container rather than merely live in it — config
+watchers, admin endpoints that trigger a refresh, factories that must reify a type argument.
+
+```java
+import io.koraframework.application.graph.Node;
+import io.koraframework.application.graph.RefreshableGraph;
+
 @Component
-public final class DatabasePool implements Lifecycle {
-    private final DataSource dataSource;
-    private final ScheduledExecutorService scheduler;
-    
-    public DatabasePool(DataSource dataSource) {
-        this.dataSource = dataSource;
-        this.scheduler = Executors.newSingleThreadScheduledExecutor();
+public final class RoutingTableAdmin {
+
+    private final RefreshableGraph graph;
+    private final Node<RoutingTable> tableNode;
+
+    public RoutingTableAdmin(RefreshableGraph graph, Node<RoutingTable> tableNode) {
+        this.graph = graph;
+        this.tableNode = tableNode;
     }
-    
-    @Override
-    public void init() throws Exception {
-        try (Connection conn = dataSource.getConnection()) {
-            System.out.println("Database connection OK");
-        }
-        scheduler.scheduleAtFixedRate(this::cleanup, 5, 5, TimeUnit.MINUTES);
+
+    /** Rebuilds the routing table and everything downstream of it. */
+    public void reload() {
+        graph.refresh(tableNode);
     }
-    
-    @Override
-    public void release() throws Exception {
-        scheduler.shutdown();
-        if (!scheduler.awaitTermination(30, TimeUnit.SECONDS)) {
-            scheduler.shutdownNow();
-        }
-        if (dataSource instanceof AutoCloseable) {
-            ((AutoCloseable) dataSource).close();
-        }
+}
+```
+
+Use these sparingly. A component that reaches into the graph is harder to test and to reason about
+than one that declares what it needs; Kora's own `ConfigWatcher` is the model for when it is
+warranted — see [`runtime-graph-api-reference.md`](runtime-graph-api-reference.md).
+
+`TypeRef<T>` is the reified-type carrier for generic factories:
+
+```java
+@Module
+public interface CodecModule {
+
+    default <T> Codec<T> codec(TypeRef<T> type, ObjectMapper mapper) {
+        return new JacksonCodec<>(type, mapper);
     }
 }
 ```
 
 ---
 
-## ⚠️ Generic Factories Warning
+## 5. Type rules the resolver enforces
 
-### Problem
+**Raw types are rejected**, both on providers and on claims:
 
-Kora treats generic methods in a `@Module` interface as **"generic factories"** (container.md §Generic Factory) and may use them for **ANY** matching type in the graph. This leads to implicit, hard-to-debug behavior.
+```
+Component provider returns a raw type:
+  type: java.util.function.Function
 
-### Wrong: Generic Method Inside Module
-
-```java
-@Module
-public interface JdbcMappersModule {
-    
-    // BAD: Generic method inside module becomes a generic factory
-    // Kora may use this for ANY Enum type, not just intended ones
-    private <E extends Enum<E>> JdbcResultColumnMapper<E> enumMapper(Class<E> enumClass) {
-        return (rs, index, columnCount) -> {
-            String value = rs.getString(index);
-            return value != null ? Enum.valueOf(enumClass, value) : null;
-        };
-    }
-    
-    // This implicitly creates bindings for all Enum types
-    // Hard to debug: which enum uses which mapper?
-}
+Raw component types are forbidden because they make dependency resolution ambiguous.
 ```
 
-### Correct: Top-Level Helper Methods
-
-Move generic helpers to top-level `private static` methods in the same file — they are **not** module members and do **not** enter the graph:
-
-```java
-@Module
-public interface JdbcMappersModule {
-    
-    // GOOD: Monomorphic per-type factories
-    @Default
-    @Component
-    default JdbcResultColumnMapper<Status> statusMapper() {
-        return enumMapper(Status.class);
-    }
-    
-    @Default
-    @Component
-    default JdbcResultColumnMapper<Role> roleMapper() {
-        return enumMapper(Role.class);
-    }
-    
-    @Default
-    @Component
-    default JdbcResultColumnMapper<PunishmentType> punishmentTypeMapper() {
-        return enumMapper(PunishmentType.class);
-    }
-}
-
-// Top-level helper — NOT a module member, does not enter the graph
-private static <E extends Enum<E>> JdbcResultColumnMapper<E> enumMapper(Class<E> enumClass) {
-    return (rs, index, columnCount) -> {
-        String value = rs.getString(index);
-        return value != null ? Enum.valueOf(enumClass, value) : null;
-    };
-}
+```
+Dependency uses a raw type:
+  type: io.koraframework.application.graph.All
 ```
 
-### Verification
+**Unresolved generics in a claim are rejected**:
 
-Inspect generated `$ApplicationImpl`:
+```
+Dependency uses an unresolved generic type:
+  type: T
 
-```java
-// Generated graph should contain:
-object : JdbcMappersModule {}
-
-// With monomorphic methods only:
-this.statusMapper()
-this.roleMapper()
-this.punishmentTypeMapper()
-
-// NOT generic factories:
-// this.<E>enumMapper(...)  // Should NOT appear
+Kora dependency keys must be concrete types.
 ```
 
-### When Generic Factories Are Appropriate
+**Primitives are rejected** — components are classes or interfaces, so an `int` or `long` parameter
+cannot be a dependency. Configuration values reach components through a `@ConfigSource` interface,
+not as loose scalars.
 
-Generic factories are useful when you **intentionally** want a single implementation to handle multiple types:
-
-```java
-@Module
-public interface CacheModule {
-    
-    // GOOD: Intentional generic factory for all cache types
-    @Default
-    @Component
-    default <K, V> Cache<K, V> caffeineCache(CacheConfig config) {
-        return new CaffeineCache<>(config);
-    }
-}
-```
-
-Use generic factories deliberately, not accidentally.
+**A `@Component` class must have exactly one public constructor.** Extra constructors must be
+non-public, or the construction logic belongs in a module method.
 
 ---
 
-## See Also
+## 6. Fallbacks and overrides
 
-- [Root Component Reference](references/root-component-reference.md) — `@Root` for self-starting components
-- [Lifecycle Reference](references/lifecycle-reference.md) — `Lifecycle`, init/release, graceful shutdown
-- [Tag Injection Reference](references/tag-injection-reference.md) — `@Tag` for disambiguation
-- [Collection Injection Reference](references/collection-injection-reference.md) — `All<T>`, `List<T>`
+| Goal | Mechanism |
+|---|---|
+| provide a component only if nobody else does | `@DefaultComponent` on the provider |
+| replace a module's component in the application | override the module method in the `@KoraApp` interface — repeat its `@Tag` |
+| provide a component only under a runtime condition | `@Conditional` + `GraphCondition` |
+| several independently-configured families of one type | `@FactoryModule` + `@Tag.Factory` |
+
+When several candidates match a claim, the resolver first drops the `@DefaultComponent` ones; if
+exactly one non-default remains it wins. If several remain and they are **all** `@Conditional`, the
+choice is deferred to runtime (see
+[`conditional-graph-evaluation-reference.md`](conditional-graph-evaluation-reference.md)). Otherwise the build
+fails with a duplicate-dependency error.
+
+---
+
+## 7. Pitfalls
+
+| Symptom | Cause |
+|---|---|
+| a helper in a module became a component | non-`private`, non-`static` module methods are all declarations |
+| a generic template answers unrelated requests | unbounded type variable — add a bound |
+| "raw component types are forbidden" | a provider or claim lost its type arguments |
+| `Wrapped<T>` and `T` providers collide | both register the same component type |
+| a component reads `Graph` and is untestable | declare the dependency instead |
+| `@Component class must have exactly one public constructor` | extra public constructors |
+
+---
+
+## See also
+
+- [`lifecycle-reference.md`](lifecycle-reference.md) — `Wrapped<T>`, `LifecycleWrapper`
+- [`conditional-graph-evaluation-reference.md`](conditional-graph-evaluation-reference.md) — `@Conditional`, `GraphCondition`
+- [`tag-injection-reference.md`](tag-injection-reference.md) — `@Tag.Factory` and factory modules
+- [`kora-di-compile`](../../kora-di-compile/SKILL.md) — module and component declaration rules

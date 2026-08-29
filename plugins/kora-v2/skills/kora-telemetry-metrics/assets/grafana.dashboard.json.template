@@ -1,99 +1,157 @@
-# Grafana Dashboard Configuration Example
-
-# Import this dashboard JSON into Grafana for visualizing Kora application metrics.
-# Works with Prometheus as data source.
-
 {
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "type": "datasource",
+      "pluginId": "prometheus"
+    }
+  ],
   "dashboard": {
-    "title": "Kora Application Metrics",
+    "title": "Kora 2.0 Application Metrics",
     "tags": ["kora", "micrometer", "prometheus"],
     "timezone": "browser",
+    "description": "Import into Grafana against a Prometheus data source that scrapes the Kora SYSTEM port (httpServer.system.port, default 8085). BEFORE USING: (1) every panel needs httpServer.telemetry.metrics.enabled = true in application.conf, otherwise the queries return no data while /metrics still answers 200; (2) confirm the exact series names on your deployment with: curl -s http://HOST:8085/metrics | grep '^# TYPE' -- Micrometer derives the Prometheus name from the meter name plus a base-unit suffix, so http.server.request.duration is exported as http_server_request_duration_seconds_*; (3) in Kora 2.0 the HTTP SERVER duration timer carries NO http_response_status_code label, so error panels filter on error_type instead. The HTTP client timer does carry the status code.",
     "panels": [
       {
         "id": 1,
-        "title": "Request Rate",
+        "title": "Request rate",
         "type": "timeseries",
-        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
         "targets": [
           {
-            "expr": "sum(rate(http_server_request_duration_milliseconds_count[5m])) by (http_request_method, http_route)",
+            "expr": "sum(rate(http_server_request_duration_seconds_count[5m])) by (http_request_method, http_route)",
             "legendFormat": "{{http_request_method}} {{http_route}}"
           }
         ]
       },
       {
         "id": 2,
-        "title": "Error Rate",
+        "title": "Error rate (error.type is set)",
         "type": "timeseries",
-        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+        "description": "Kora 2.0 puts no status code on the server duration timer. error_type is \"\" on success and the exception's canonical class name on failure.",
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
         "targets": [
           {
-            "expr": "sum(rate(http_server_request_duration_milliseconds_count{http_response_status_code=~\"5..\"}[5m])) / sum(rate(http_server_request_duration_milliseconds_count[5m])) * 100",
-            "legendFormat": "Error Rate %"
+            "expr": "sum(rate(http_server_request_duration_seconds_count{error_type!=\"\"}[5m])) / sum(rate(http_server_request_duration_seconds_count[5m])) * 100",
+            "legendFormat": "Error rate %"
           }
         ]
       },
       {
         "id": 3,
-        "title": "Latency Percentiles",
+        "title": "Latency percentiles",
         "type": "timeseries",
-        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+        "description": "Computed from the SLO buckets configured by httpServer.telemetry.metrics.slo. Quantile resolution is limited by those boundaries.",
+        "fieldConfig": {
+          "defaults": { "unit": "s" },
+          "overrides": []
+        },
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
         "targets": [
           {
-            "expr": "histogram_quantile(0.50, sum(rate(http_server_request_duration_milliseconds_bucket[5m])) by (le))",
+            "expr": "histogram_quantile(0.50, sum(rate(http_server_request_duration_seconds_bucket[5m])) by (le))",
             "legendFormat": "p50"
           },
           {
-            "expr": "histogram_quantile(0.90, sum(rate(http_server_request_duration_milliseconds_bucket[5m])) by (le))",
+            "expr": "histogram_quantile(0.90, sum(rate(http_server_request_duration_seconds_bucket[5m])) by (le))",
             "legendFormat": "p90"
           },
           {
-            "expr": "histogram_quantile(0.95, sum(rate(http_server_request_duration_milliseconds_bucket[5m])) by (le))",
+            "expr": "histogram_quantile(0.95, sum(rate(http_server_request_duration_seconds_bucket[5m])) by (le))",
             "legendFormat": "p95"
           },
           {
-            "expr": "histogram_quantile(0.99, sum(rate(http_server_request_duration_milliseconds_bucket[5m])) by (le))",
+            "expr": "histogram_quantile(0.99, sum(rate(http_server_request_duration_seconds_bucket[5m])) by (le))",
             "legendFormat": "p99"
           }
         ]
       },
       {
         "id": 4,
-        "title": "JVM Memory",
+        "title": "In-flight requests",
         "type": "timeseries",
-        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
         "targets": [
           {
-            "expr": "jvm_memory_used_bytes{area=\"heap\"}",
-            "legendFormat": "Heap Used"
-          },
-          {
-            "expr": "jvm_memory_max_bytes{area=\"heap\"}",
-            "legendFormat": "Heap Max"
+            "expr": "sum(http_server_active_requests) by (http_route)",
+            "legendFormat": "{{http_route}}"
           }
         ]
       },
       {
         "id": 5,
-        "title": "Business Metrics - User Registrations",
-        "type": "stat",
-        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 16},
+        "title": "Database operation latency (p99)",
+        "type": "timeseries",
+        "description": "Requires jdbc.telemetry.metrics.enabled = true. The 2.0 meter is db.client.operation.duration -- 1.x called it db.client.request.duration.",
+        "fieldConfig": {
+          "defaults": { "unit": "s" },
+          "overrides": []
+        },
+        "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
         "targets": [
           {
-            "expr": "sum(increase(user_creation_total[1h]))",
-            "legendFormat": "Registrations (1h)"
+            "expr": "histogram_quantile(0.99, sum(rate(db_client_operation_duration_seconds_bucket[5m])) by (le, db_operation_name))",
+            "legendFormat": "{{db_operation_name}}"
           }
         ]
       },
       {
         "id": 6,
-        "title": "Business Metrics - Payment Success Rate",
+        "title": "JVM heap",
+        "type": "timeseries",
+        "fieldConfig": {
+          "defaults": { "unit": "bytes" },
+          "overrides": []
+        },
+        "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+        "targets": [
+          {
+            "expr": "jvm_memory_used_bytes{area=\"heap\"}",
+            "legendFormat": "used"
+          },
+          {
+            "expr": "jvm_memory_max_bytes{area=\"heap\"}",
+            "legendFormat": "max"
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "title": "Kora build",
+        "type": "stat",
+        "description": "kora.up is a constant-1 gauge whose version label is read from META-INF/kora/version/common. The cheapest way to see which build a pod is running.",
+        "gridPos": { "h": 4, "w": 6, "x": 0, "y": 24 },
+        "targets": [
+          {
+            "expr": "kora_up",
+            "legendFormat": "{{version}}"
+          }
+        ]
+      },
+      {
+        "id": 8,
+        "title": "User registrations (1h)",
+        "type": "stat",
+        "description": "Custom business metric from MetricsService.java.template. Custom meters need MetricsModule only -- no telemetry.metrics.enabled flag applies to them.",
+        "gridPos": { "h": 4, "w": 6, "x": 6, "y": 24 },
+        "targets": [
+          {
+            "expr": "sum(increase(user_creation_total[1h]))",
+            "legendFormat": "Registrations"
+          }
+        ]
+      },
+      {
+        "id": 9,
+        "title": "Payment success rate",
         "type": "gauge",
-        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 16},
+        "description": "Custom business metric from PaymentMetricsService.java.template.",
+        "gridPos": { "h": 4, "w": 6, "x": 12, "y": 24 },
         "targets": [
           {
             "expr": "sum(rate(payment_processed_total{status=\"success\"}[5m])) / sum(rate(payment_processed_total[5m])) * 100",
-            "legendFormat": "Success Rate %"
+            "legendFormat": "Success rate %"
           }
         ]
       }

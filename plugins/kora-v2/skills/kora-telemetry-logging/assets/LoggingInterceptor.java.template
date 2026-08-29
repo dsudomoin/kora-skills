@@ -1,47 +1,44 @@
 package ${package}.telemetry;
 
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.common.Context;
-import ru.tinkoff.kora.common.Tag;
-import ru.tinkoff.kora.http.server.common.HttpServerModule;
-import ru.tinkoff.kora.http.server.common.HttpServerInterceptor;
-import ru.tinkoff.kora.http.server.common.HttpServerRequest;
-import ru.tinkoff.kora.http.server.common.HttpServerResponse;
-import ru.tinkoff.kora.logging.common.MDC;
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Tag;
+import io.koraframework.http.server.common.HttpServer;
+import io.koraframework.http.server.common.interceptor.HttpServerInterceptor;
+import io.koraframework.http.server.common.request.HttpServerRequest;
+import io.koraframework.http.server.common.response.HttpServerResponse;
+import io.koraframework.logging.common.MDC;
 
 import java.util.UUID;
-import java.util.concurrent.CompletionStage;
 
 /**
- * HTTP interceptor that seeds trace correlation ids into Kora MDC for every request.
+ * Seeds a correlation id into Kora MDC for every request, so it appears on every record written
+ * inside the request scope.
  *
- * Reads traceId / requestId from request headers (lower-cased) or generates them, puts them
- * into Kora MDC (propagated by KoraAsyncAppender), and removes them after the chain completes.
- * @Tag(HttpServerModule.class) applies it to all controllers (only one such interceptor allowed).
+ * The Undertow request handler binds a fresh Kora MDC around the whole exchange, so MDC.put here
+ * is safe and the values are discarded with the request — no cleanup needed.
+ *
+ * Do NOT put traceId/spanId in by hand: KoraAsyncAppender captures Span.current().getSpanContext()
+ * and ConsoleTextRecordEncoder prints them.
+ *
+ * @Tag(HttpServer.class) is what makes this global — HttpServerModule injects
+ * @Tag(HttpServer.class) All<HttpServerInterceptor>, so several interceptors may coexist.
+ * The Kora 1.x tag @Tag(HttpServerModule.class) still compiles but is never looked up, leaving
+ * the interceptor silently uninvoked.
  */
-@Tag(HttpServerModule.class)
+@Tag(HttpServer.class)
 @Component
 public final class LoggingInterceptor implements HttpServerInterceptor {
 
-    @Override
-    public CompletionStage<HttpServerResponse> intercept(Context context,
-                                                         HttpServerRequest request,
-                                                         InterceptChain chain) throws Exception {
-        var traceId = headerOrRandom(request, "x-trace-id");
-        var requestId = headerOrRandom(request, "x-request-id");
+    private static final String REQUEST_ID_HEADER = "x-request-id";
 
-        MDC.put("traceId", traceId);
-        MDC.put("requestId", requestId);
-        try {
-            return chain.process(context, request);
-        } finally {
-            MDC.remove("traceId");
-            MDC.remove("requestId");
-        }
+    @Override
+    public HttpServerResponse intercept(HttpServerRequest request, InterceptChain chain) throws Exception {
+        MDC.put("requestId", requestIdOf(request));
+        return chain.process(request);
     }
 
-    private static String headerOrRandom(HttpServerRequest request, String name) {
-        var value = request.headers().getFirst(name);
+    private static String requestIdOf(HttpServerRequest request) {
+        var value = request.headers().getFirst(REQUEST_ID_HEADER);   // @Nullable; header names are lower-cased
         return value != null ? value : UUID.randomUUID().toString();
     }
 }

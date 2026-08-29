@@ -1,30 +1,35 @@
 package ${packagePath};
 
-import ru.tinkoff.kora.application.graph.KoraApplication;
-import ru.tinkoff.kora.common.KoraApp;
-import ru.tinkoff.kora.config.hocon.HoconConfigModule;
-import ru.tinkoff.kora.logging.logback.LogbackModule;
+import io.koraframework.application.graph.KoraApplication;
+import io.koraframework.common.annotation.KoraApp;
+import io.koraframework.config.hocon.HoconConfigModule;
+import io.koraframework.logging.logback.LogbackModule;
 
 /**
- * Main application entry point.
+ * Application entry point — the Kora 2.x dependency container configuration.
  *
- * This is a minimal Kora application interface.
- * Requires Java 25 (VERSION_25) — recommended for all new Kora projects.
+ * <p>@KoraApp is only valid on an interface. The processor generates {@code ApplicationGraph}
+ * into THIS package (name = interface simple name + "Graph"), so it is referenced unqualified
+ * and must never be imported from io.koraframework.
  *
- * Add more modules as needed:
- * - JsonModule for JSON serialization (Jackson, Gson)
- * - JdbcDatabaseModule for database access
- * - ValidationModule for validation
- * - MicrometerModule for metrics
+ * <p>Modules shipped as artifacts must be listed in {@code extends}. A @Module interface compiled
+ * in this same Gradle module is discovered automatically and must not be listed.
  *
+ * <p>Commonly added modules:
+ * <ul>
+ *   <li>{@code io.koraframework.json.common.JsonModule}                              — json-common
+ *   <li>{@code io.koraframework.database.jdbc.JdbcDatabaseModule}                    — database-jdbc
+ *   <li>{@code io.koraframework.validation.module.ValidationModule}                  — validation-module
+ *   <li>{@code io.koraframework.micrometer.module.MetricsModule}                     — micrometer-module
+ *   <li>{@code io.koraframework.http.server.undertow.UndertowPublicHttpServerModule} — http-server-undertow
+ * </ul>
+ *
+ * <p>See: references/kora-app-component-reference.md
  */
 @KoraApp
 public interface Application extends
     HoconConfigModule,
     LogbackModule {
-    // JsonModule - add if using JSON serialization
-    // ValidationModule - add if using validation
-    // MicrometerModule - add if using metrics
 
     static void main(String[] args) {
         KoraApplication.run(ApplicationGraph::graph);

@@ -1,0 +1,89 @@
+// Kora 2.0 SOAP client — Java.
+// Requires gradle.properties:  koraVersion=2.0.0.RC1
+//
+// Build chain:
+//   src/main/resources/wsdl/*.wsdl
+//     -> wsdl2java (Apache CXF 4.x, jakarta) -> jakarta.jws @WebService interface + JAXB models
+//     -> io.koraframework:annotation-processors -> $Iface_SoapClientImpl + $Iface_SoapClientModule
+//     -> @KoraApp graph: inject the @WebService interface
+
+plugins {
+    id "java"
+    id "application"
+
+    id "com.github.bjornvester.wsdl2java" version "2.0.2"
+}
+
+java {
+    toolchain {
+        // Kora 2.0 artifacts are class-file 69; 25 is the floor, not a preference.
+        languageVersion = JavaLanguageVersion.of(25)
+        vendor = JvmVendorSpec.ADOPTIUM
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+configurations {
+    koraBom
+    annotationProcessor.extendsFrom(koraBom); compileOnly.extendsFrom(koraBom); implementation.extendsFrom(koraBom)
+    api.extendsFrom(koraBom); testImplementation.extendsFrom(koraBom); testAnnotationProcessor.extendsFrom(koraBom)
+}
+
+dependencies {
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+    annotationProcessor "io.koraframework:annotation-processors"
+
+    implementation "io.koraframework:soap-client"
+
+    // HTTP transport: exactly one of http-client-ok / http-client-apache / http-client-jdk.
+    implementation "io.koraframework:http-client-ok"
+
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
+
+    testImplementation "io.koraframework:test-junit5"
+
+    // No excludes on soap-client: it ships jakarta.xml.ws-api, jakarta.xml.bind-api and
+    // org.glassfish.jaxb:jaxb-runtime as api dependencies at versions the module was built against.
+}
+
+wsdl2java {
+    cxfVersion = "4.0.2"
+    wsdlDir = layout.projectDirectory.dir("src/main/resources/wsdl")
+    useJakarta = true          // false emits javax.jws, which Kora 2.0 does not process at all
+    markGenerated = true
+    verbose = false
+    packageName = "com.example.generated.soap"
+    generatedSourceDir.set(layout.buildDirectory.dir("generated/sources/wsdl2java/java"))
+    includesWithOptions = [
+            // -wsdlLocation keeps the local build path out of the generated @WebServiceClient
+            "**/simple-service.wsdl": ["-wsdlLocation", "https://example.com/simple/service?wsdl"],
+    ]
+}
+
+application {
+    applicationName = "application"
+    mainClass = "com.example.Application"
+    applicationDefaultJvmArgs = ["-Dfile.encoding=UTF-8"]
+}
+
+compileJava {
+    options.encoding = "UTF-8"
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events("passed", "skipped", "failed")
+        exceptionFormat = "full"
+    }
+}
+
+// After changing packageName, or any package rename:
+//   ./gradlew clean --continue
+//   ./gradlew classes testClasses --continue --no-build-cache
+// wsdl2java does not delete its previous output and the build-cache key ignores packageName,
+// so both packages end up in one source set and javac reports errors in build/generated.

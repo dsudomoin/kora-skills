@@ -1,36 +1,56 @@
-# gRPC Client Interceptors Reference
+# gRPC Client Interceptors Reference (Kora 2.0)
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/grpc-client.md`, guide `.kora-agent/kora-docs/mkdocs/docs/en/guides/grpc-client-advanced.md`
+How Kora collects `io.grpc.ClientInterceptor` components, what tag binds them, and the other
+per-service extension points on the channel.
 
 ## Contents
 
-- [1. Overview](#1-overview)
-- [2. Interface](#2-interface)
-- [3. Registration with @Tag](#3-registration-with-tag)
-- [4. Patterns](#4-patterns)
-- [5. Default interceptors](#5-default-interceptors)
-- [6. GraphInterceptor alternative](#6-graphinterceptor-alternative)
-- [7. Troubleshooting](#7-troubleshooting)
+- [1. How interceptors are collected](#1-how-interceptors-are-collected)
+- [2. Registration — the tag is the generated `<Service>Grpc` class](#2-registration--the-tag-is-the-generated-servicegrpc-class)
+- [3. Metadata patterns](#3-metadata-patterns)
+- [4. ChannelCredentials — TLS](#4-channelcredentials--tls)
+- [5. Configurer — everything else on the builder](#5-configurer--everything-else-on-the-builder)
+- [6. Replacing telemetry](#6-replacing-telemetry)
+- [7. Kora Context does not exist; io.grpc.Context does](#7-kora-context-does-not-exist-iogrpccontext-does)
+- [8. Troubleshooting](#8-troubleshooting)
 
-## 1. Overview
+---
 
-A `io.grpc.ClientInterceptor` intercepts outbound calls before they reach the server. Use them for logging, metadata-based authentication, request IDs, deadlines, and tracing — concerns that belong near the transport boundary rather than at every call site.
+## 1. How interceptors are collected
 
-## 2. Interface
+`ManagedChannelLifecycle` takes `All<ClientInterceptor> interceptors` as its **third** constructor
+parameter, and the compile-time extension tags the first four parameters with the service tag. So
+the graph request is, verbatim:
 
 ```java
-public interface ClientInterceptor {
-    <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
-        MethodDescriptor<ReqT, RespT> method,
-        CallOptions callOptions,
-        Channel next
-    );
-}
+@Tag(UserServiceGrpc.class) All<ClientInterceptor> interceptors
 ```
 
-## 3. Registration with @Tag
+At `init()` the lifecycle builds the list and hands it to the channel builder:
 
-Register the interceptor as a `@Component` and scope it to one service's client with `@Tag(ServiceGrpc.class)`. The `@Tag` is what binds the interceptor to that generated client; it does not affect stub injection.
+```java
+var interceptors = new ArrayList<ClientInterceptor>(2);
+this.interceptors.forEach(interceptors::add);          // your tagged components
+interceptors.add(new GrpcClientTelemetryInterceptor(telemetry));
+interceptors.add(new GrpcClientConfigInterceptor(this.config));
+builder.intercept(interceptors);
+```
+
+Consequences:
+
+- **An untagged `ClientInterceptor` component is never picked up.** `All<T>` under a tag collects
+  only components carrying that tag.
+- Two interceptors for the same service are both collected — `All<T>` is a collection, not a
+  single-component lookup, so there is no "multiple components match" ambiguity here.
+- Kora's own two interceptors are always appended, whether or not you contribute any. They are not
+  components and cannot be removed or reordered from the graph.
+- `GrpcClientConfigInterceptor` is what applies `grpcClient.<Service>.timeout` as a call deadline;
+  `GrpcClientTelemetryInterceptor` is what produces the `rpc.client.duration` metric, the spans and
+  the request/response logs.
+
+---
+
+## 2. Registration — the tag is the generated `<Service>Grpc` class
 
 ===! "Java"
 
@@ -40,11 +60,11 @@ import io.grpc.Channel;
 import io.grpc.ClientCall;
 import io.grpc.ClientInterceptor;
 import io.grpc.MethodDescriptor;
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Tag;
+import io.koraframework.example.grpc.UserServiceGrpc;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.common.Tag;
-import ru.tinkoff.kora.example.grpc.UserServiceGrpc;
 
 @Tag(UserServiceGrpc.class)
 @Component
@@ -64,15 +84,11 @@ public final class LoggingInterceptor implements ClientInterceptor {
 === "Kotlin"
 
 ```kotlin
-import io.grpc.CallOptions
-import io.grpc.Channel
-import io.grpc.ClientCall
-import io.grpc.ClientInterceptor
-import io.grpc.MethodDescriptor
+import io.grpc.*
+import io.koraframework.common.annotation.Component
+import io.koraframework.common.annotation.Tag
+import io.koraframework.example.grpc.UserServiceGrpc
 import org.slf4j.LoggerFactory
-import ru.tinkoff.kora.common.Component
-import ru.tinkoff.kora.common.Tag
-import ru.tinkoff.kora.example.grpc.UserServiceGrpc
 
 @Tag(UserServiceGrpc::class)
 @Component
@@ -80,7 +96,7 @@ class LoggingInterceptor : ClientInterceptor {
 
     private val logger = LoggerFactory.getLogger(LoggingInterceptor::class.java)
 
-    override fun <ReqT, RespT> interceptCall(
+    override fun <ReqT : Any?, RespT : Any?> interceptCall(
         method: MethodDescriptor<ReqT, RespT>,
         callOptions: CallOptions,
         next: Channel
@@ -91,45 +107,46 @@ class LoggingInterceptor : ClientInterceptor {
 }
 ```
 
-## 4. Patterns
+**What the tag must be — and what it must not be:**
 
-### Metadata headers
+| | |
+|---|---|
+| ✅ `@Tag(UserServiceGrpc.class)` | the protoc-generated outer class |
+| ❌ `@Tag(UserServiceGrpc.UserServiceBlockingStub.class)` | the stub, not the service |
+| ❌ `@Tag(GrpcClientModule.class)` | a Kora module class — nothing looks interceptors up by it |
+| ❌ no tag at all | not collected |
 
-Headers must be added before delegating to `super.start()`. Wrap the call with `ForwardingClientCall.SimpleForwardingClientCall`.
+Every wrong form **compiles cleanly and starts cleanly**; the interceptor simply never runs. If the
+interceptor carries auth, calls start failing with `UNAUTHENTICATED` and nothing in the logs points
+at the tag. Cover it with a test that asserts the header arrives, the way the guide app's
+`rejectsStreamingCallsWithoutApiKey…` test does.
+
+Kotlin note: the interceptor's type parameters must be declared as `<ReqT : Any?, RespT : Any?>` to
+match the Java signature; with `<ReqT : Any, RespT : Any>` Kotlin reports
+`'interceptCall' overrides nothing`.
+
+---
+
+## 3. Metadata patterns
+
+gRPC metadata is the **only** authentication mechanism for a Kora gRPC client. There is no
+`@HttpClient`-style auth annotation, no security module, no `Principal` plumbing on the client side.
+
+Headers must be written inside `start()`, before `super.start()` — the call has not been sent yet
+at `interceptCall` time.
+
+### Static or config-backed credential
 
 ```java
-private static final Metadata.Key<String> REQUEST_ID_KEY =
-    Metadata.Key.of("x-request-id", Metadata.ASCII_STRING_MARSHALLER);
+import io.koraframework.config.common.annotation.ConfigSource;
 
-@Override
-public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
-        MethodDescriptor<ReqT, RespT> method, CallOptions callOptions, Channel next) {
-    return new ForwardingClientCall.SimpleForwardingClientCall<>(next.newCall(method, callOptions)) {
-        @Override
-        public void start(Listener<RespT> responseListener, Metadata headers) {
-            headers.put(REQUEST_ID_KEY, UUID.randomUUID().toString());
-            super.start(responseListener, headers);
-        }
-    };
+@ConfigSource("auth.apiKey")
+public interface UserServiceAuthConfig {
+    String value();
 }
 ```
 
-### Auth interceptor with config
-
-Inject a `@ConfigSource` config and attach the credential as an `authorization` metadata header.
-
 ```java
-import io.grpc.CallOptions;
-import io.grpc.Channel;
-import io.grpc.ClientCall;
-import io.grpc.ClientInterceptor;
-import io.grpc.ForwardingClientCall;
-import io.grpc.Metadata;
-import io.grpc.MethodDescriptor;
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.common.Tag;
-import ru.tinkoff.kora.example.grpc.UserServiceGrpc;
-
 @Tag(UserServiceGrpc.class)
 @Component
 public final class AuthInterceptor implements ClientInterceptor {
@@ -137,9 +154,9 @@ public final class AuthInterceptor implements ClientInterceptor {
     private static final Metadata.Key<String> AUTHORIZATION =
         Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER);
 
-    private final AuthConfig authConfig;
+    private final UserServiceAuthConfig authConfig;
 
-    public AuthInterceptor(AuthConfig authConfig) {
+    public AuthInterceptor(UserServiceAuthConfig authConfig) {
         this.authConfig = authConfig;
     }
 
@@ -157,40 +174,157 @@ public final class AuthInterceptor implements ClientInterceptor {
 }
 ```
 
-## 5. Default interceptors
+```hocon
+auth.apiKey.value = "test-api-key"
+auth.apiKey.value = ${?GRPC_API_KEY}
+```
 
-Kora always applies at client startup:
+### Rotating / fetched token
 
-- `GrpcClientConfigInterceptor` — applies the configuration from `grpcClient.<ServiceName>.*`.
-
-## 6. GraphInterceptor alternative
-
-Instead of a tagged `ClientInterceptor`, you can post-process the gRPC `Channel` (or any component) with a `GraphInterceptor`. See `.kora-agent/kora-docs/mkdocs/docs/en/documentation/container.md` (component inspection).
+Inject the token source as an ordinary component and read it per call — the interceptor instance is
+shared for the channel's whole lifetime, so never cache a token in a field.
 
 ```java
-import io.grpc.Channel;
-import io.grpc.ClientInterceptors;
-import ru.tinkoff.kora.application.graph.GraphInterceptor;
-import ru.tinkoff.kora.common.Component;
+@Override
+public void start(Listener<RespT> responseListener, Metadata headers) {
+    headers.put(AUTHORIZATION, "Bearer " + tokenProvider.currentToken());
+    super.start(responseListener, headers);
+}
+```
 
-@Component
-public final class GrpcGraphInterceptor implements GraphInterceptor<Channel> {
+### Binary metadata
+
+`Metadata.Key.of(name, Metadata.BINARY_BYTE_MARSHALLER)` requires the key name to end in `-bin`;
+`ASCII_STRING_MARSHALLER` keys must not. gRPC enforces this at `Key.of` time.
+
+### Reading response headers or trailers
+
+```java
+return new ForwardingClientCall.SimpleForwardingClientCall<>(next.newCall(method, callOptions)) {
     @Override
-    public Channel init(Channel value) {
-        return ClientInterceptors.intercept(value, new MyInterceptor());
+    public void start(Listener<RespT> responseListener, Metadata headers) {
+        super.start(new ForwardingClientCallListener.SimpleForwardingClientCallListener<>(responseListener) {
+            @Override
+            public void onHeaders(Metadata headers) {
+                logger.debug("response headers: {}", headers);
+                super.onHeaders(headers);
+            }
+        }, headers);
+    }
+};
+```
+
+Templates: [`assets/client-interceptor.client.java.template`](../assets/client-interceptor.client.java.template),
+[`assets/client-interceptor.client.kt.template`](../assets/client-interceptor.client.kt.template).
+
+---
+
+## 4. ChannelCredentials — TLS
+
+`ManagedChannelLifecycle`'s second parameter is `@Nullable ChannelCredentials`, tagged with the same
+service tag. When absent, the channel is built with `forAddress(host, port)`; when present, with
+`forAddress(host, port, credentials)`.
+
+```java
+@KoraApp
+public interface Application extends HoconConfigModule, LogbackModule, GrpcClientModule {
+
+    @Tag(UserServiceGrpc.class)
+    default ChannelCredentials userServiceCredentials(UserServiceTlsConfig config) throws IOException {
+        return TlsChannelCredentials.newBuilder()
+            .trustManager(new File(config.trustStorePath()))
+            .keyManager(new File(config.certPath()), new File(config.keyPath()))
+            .build();
     }
 
-    @Override
-    public Channel release(Channel value) {
-        return value;
+    static void main(String[] args) {
+        KoraApplication.run(ApplicationGraph::graph);
     }
 }
 ```
 
-## 7. Troubleshooting
+Remember that credentials alone do not switch the transport to TLS-by-URL logic: the `url` scheme
+still decides whether `usePlaintext()` is called. Use `https://` with credentials.
 
-| Problem | Solution |
-|---------|----------|
-| Interceptor never runs | Ensure `@Tag(ServiceGrpc.class)` matches the generated class exactly |
-| `start` not called | Wrap the call in `ForwardingClientCall.SimpleForwardingClientCall` |
-| Headers not sent | Add headers before calling `super.start()` |
+---
+
+## 5. Configurer — everything else on the builder
+
+`io.koraframework.common.Configurer<T>` is a single-method `T configure(T)`. Two slots exist:
+
+| Component | Tag | When it runs |
+|---|---|---|
+| `Configurer<ManagedChannelBuilder<?>>` | `@Tag(<Service>Grpc.class)` | in `ManagedChannelLifecycle.init()`, **after** interceptors, keep-alive, load balancing and `defaultServiceConfig` |
+| `Configurer<ManagedChannelBuilder<?>>` | untagged | inside `GrpcOkHttpClientChannelFactory`, for every channel it creates |
+
+```java
+@Tag(UserServiceGrpc.class)
+@Component
+public final class UserServiceChannelConfigurer implements Configurer<ManagedChannelBuilder<?>> {
+
+    @Override
+    public ManagedChannelBuilder<?> configure(ManagedChannelBuilder<?> builder) {
+        return builder
+            .maxInboundMessageSize(16 * 1024 * 1024)
+            .userAgent("user-service-client/1.0");
+    }
+}
+```
+
+Because it runs last, a configurer can override anything the config set. That is the intended escape
+hatch: `grpcClient.*` deliberately exposes a small key set, and everything else on
+`ManagedChannelBuilder` is reached this way rather than through invented config keys.
+
+To replace the transport wholesale, supply your own `GrpcClientChannelFactory` component — it
+overrides the module's `@DefaultComponent` OkHttp factory.
+
+---
+
+## 6. Replacing telemetry
+
+`GrpcClientModule.defaultGrpcClientTelemetryFactory(...)` is a `@DefaultComponent`, so declaring a
+plain `@Component GrpcClientTelemetryFactory` replaces it globally (it is requested **untagged**, so
+one implementation covers every gRPC client). Subclassing `DefaultGrpcClientTelemetryFactory` and
+overriding `build(...)` keeps the config-driven enable/disable behaviour while swapping in custom
+metrics or logging.
+
+The finer-grained hooks are the `@Nullable DefaultGrpcClientLoggerFactory` and
+`@Nullable DefaultGrpcClientMetricsFactory` parameters: contribute a subclass of either as a
+`@Component` and the default telemetry factory uses it instead of its `INSTANCE` singleton.
+
+---
+
+## 7. Kora Context does not exist; io.grpc.Context does
+
+`Context` was removed from the whole Kora framework in 2.0 — there is no
+`io.koraframework.common.Context`. Any ported code with a Kora `Context` parameter, a
+`Context.current()` call against Kora's class, or a context-propagating interceptor built on it must
+be rewritten.
+
+`io.grpc.Context` is a **different, unrelated** class that gRPC still ships, and it remains the
+correct tool for gRPC-scoped propagation inside interceptors:
+
+```java
+private static final Context.Key<String> TENANT = Context.key("tenant");
+```
+
+Be explicit about which one you mean in any code comment or explanation — the names are identical
+and the confusion is the point of failure. For cross-cutting values that used to ride Kora's
+`Context`, prefer passing them as method parameters: contracts are synchronous on virtual threads,
+so there is no async boundary forcing an ambient carrier.
+
+---
+
+## 8. Troubleshooting
+
+| Problem | Cause / fix |
+|---|---|
+| Interceptor never runs | wrong tag or no tag — must be `@Tag(<Service>Grpc.class)` on a `@Component` |
+| Interceptor runs for the wrong service | the tag names a different `*Grpc` class than the stub being injected |
+| `UNAUTHENTICATED` although the interceptor exists | it is not tagged, or the header is written outside `start()` |
+| Headers never arrive | `super.start(responseListener, headers)` called before `headers.put(...)` |
+| Kotlin `'interceptCall' overrides nothing` | declare `<ReqT : Any?, RespT : Any?>` |
+| `IllegalArgumentException` from `Metadata.Key.of` | binary keys must end in `-bin`, ASCII keys must not |
+| TLS still not used with credentials present | `url` scheme is `http` — `usePlaintext()` wins |
+| Cannot set `maxInboundMessageSize` | no such config key — use a tagged `Configurer<ManagedChannelBuilder<?>>` |
+| Kora `Context` will not compile | it was removed in 2.0; `io.grpc.Context` is a different class |

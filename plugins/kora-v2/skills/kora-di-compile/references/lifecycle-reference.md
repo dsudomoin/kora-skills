@@ -1,576 +1,355 @@
-# Kora Lifecycle and GraphInterceptor Reference
+# Graph Roots and Lifecycle Reference
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/container.md`
-**Examples:** `.kora-agent/kora-examples/guides/java/kora-java-guide-dependency-injection/`
+**Applies to:** Kora 2.x (`io.koraframework`)
+
+This reference covers how you **declare** roots and lifecycle at compile time, and what the
+processor does with those declarations. Runtime semantics — the exact `init`/`release` ordering, the
+refresh protocol, `GraphInterceptor` — belong to **kora-di-runtime**.
 
 ## Contents
 
-- [Lifecycle Interface](#lifecycle-interface)
-- [LifecycleWrapper for Factory Methods](#lifecyclewrapper-for-factory-methods)
-- [@Root — Startup Initialization](#root--startup-initialization)
+- [@Root — What Gets Built at All](#root--what-gets-built-at-all)
+- [Where to Put @Root](#where-to-put-root)
+- [Lifecycle on a Class You Own](#lifecycle-on-a-class-you-own)
+- [Wrapped&lt;T&gt; and LifecycleWrapper for Types You Do Not Own](#wrappedt-and-lifecyclewrapper-for-types-you-do-not-own)
+- [Breaking Cycles with ValueOf and PromiseOf](#breaking-cycles-with-valueof-and-promiseof)
 - [GraphInterceptor](#graphinterceptor)
-- [ValueOf<T> — Indirect Dependencies](#valueoft--indirect-dependencies)
+- [@Root Across a @KoraSubmodule](#root-across-a-korasubmodule)
 - [Common Mistakes](#common-mistakes)
-- [Quick Reference](#quick-reference)
+- [Related References](#related-references)
 
-Kora provides lifecycle management for components with initialization and cleanup logic: the `Lifecycle` interface for resource management, `LifecycleWrapper`/`Wrapped<T>` for factory methods, `GraphInterceptor<T>` for component modification during graph construction, and `@Root` for startup initialization.
+## `@Root` — What Gets Built at All
 
----
+Graph resolution starts from the `@Root` declarations and nothing else. The processor seeds its
+stack with every declaration annotated `@Root` — on the class, or on the provider method — and
+resolves outward from there. **A component that is not a `@Root` and not a transitive dependency of
+one is never in the graph.**
 
-## Lifecycle Interface
-
-### Basic Usage
-
-Components implement `Lifecycle` for resource management:
-
-```java
-@Component
-public final class DatabasePool implements Lifecycle {
-    private final DataSource dataSource;
-    
-    public DatabasePool(DataSource dataSource) {
-        this.dataSource = dataSource;
-    }
-    
-    @Override
-    public void init() throws Exception {
-        // Called after component creation
-        // Pool initialization, cache warm-up, connection test
-        System.out.println("Database pool initialized");
-    }
-    
-    @Override
-    public void release() throws Exception {
-        // Called during shutdown
-        // Close connections, cleanup resources
-        if (dataSource instanceof AutoCloseable) {
-            ((AutoCloseable) dataSource).close();
-        }
-    }
-}
-```
-### Lifecycle Methods
-
-| Method | When Called | Purpose |
-|--------|-------------|---------|
-| `init()` | After component creation | Initialize resources, warm caches, test connections |
-| `release()` | During shutdown (SIGTERM) | Cleanup resources, close connections |
-
-Kora calls `release()` methods in **reverse order** of component creation.
-
----
-
-## LifecycleWrapper for Factory Methods
-
-### Purpose
-
-Use `LifecycleWrapper` when you need lifecycle hooks for a component created via a
-factory method in a `@Module`. The factory returns `Wrapped<T>` and constructs a
-`LifecycleWrapper<>` with the instance, an init callback, and a release callback.
-The container unwraps `Wrapped<T>` and injects the underlying `T` into dependents.
+That is not laziness at runtime: the component is simply absent from the generated code.
 
 ```java
-public final class LifecycleWrapper<T> implements Wrapped<T>, Lifecycle {
-    // new LifecycleWrapper<>(value, initConsumer, releaseConsumer)
-}
-```
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Root;
 
-### Basic Example
-
-```java
-import ru.tinkoff.kora.application.graph.LifecycleWrapper;
-import ru.tinkoff.kora.application.graph.Wrapped;
-
-@Module
-public interface CacheModule {
-
-    default Wrapped<Cache> cache(Config config) {
-        var cacheConfig = config.get("cache");
-
-        return new LifecycleWrapper<>(
-            new CaffeineCache(cacheConfig),  // Component instance
-            cache -> cache.warmup(),         // init logic
-            cache -> cache.invalidateAll()   // release logic
-        );
-    }
-}
-```
-
-### With Exception Handling
-
-```java
-@Module
-public interface DatabaseModule {
-
-    default Wrapped<DataSource> dataSource(Config config) {
-        return new LifecycleWrapper<>(
-            new DriverManagerDataSource(
-                config.get("database").get("url").asString(),
-                config.get("database").get("username").asString(),
-                config.get("database").get("password").asString()
-            ),
-            ds -> {
-                // init: test connection
-                try (Connection conn = ds.getConnection()) {
-                    System.out.println("Database connection OK");
-                }
-            },
-            ds -> {
-                // release: close connections
-                if (ds instanceof AutoCloseable c) {
-                    c.close();
-                }
-            }
-        );
-    }
-}
-```
-
-### Scheduler Lifecycle
-
-```java
-@Module
-public interface SchedulerModule {
-
-    default Wrapped<ScheduledExecutorService> scheduler() {
-        return new LifecycleWrapper<>(
-            Executors.newSingleThreadScheduledExecutor(),
-            scheduler -> scheduler.scheduleAtFixedRate(
-                this::cleanupTask, 0, 1, TimeUnit.HOURS
-            ),
-            scheduler -> {
-                // release: graceful shutdown
-                scheduler.shutdown();
-                if (!scheduler.awaitTermination(30, TimeUnit.SECONDS)) {
-                    scheduler.shutdownNow();
-                }
-            }
-        );
-    }
-
-    private void cleanupTask() {
-        // Periodic cleanup logic
-    }
-}
-```
-
----
-
-## @Root — Startup Initialization
-
-### Purpose
-
-Components marked with `@Root` are **always initialized** at application startup, even if not directly referenced.
-### Use Cases
-
-| Use Case | Example |
-|----------|---------|
-| Cache warm-up | Pre-loading data into cache |
-| Connection check | Database health check at startup |
-| Background tasks | Scheduler for periodic tasks |
-| Event listeners | Event subscription at startup |
-| Health checks | Registering health check endpoints |
-
-### Examples
-
-**Cache Warmer:**
-
-```java
 @Root
 @Component
-public final class CacheWarmer {
-    public CacheWarmer(CacheService cache) {
-        cache.warm();  // Called at startup
-    }
-}
-```
+public final class NotifyRunner implements Lifecycle {
 
-**Database Health Checker:**
+    private final All<Notifier> notifiers;
 
-```java
-@Root
-@Component
-public final class DatabaseHealthChecker {
-    public DatabaseHealthChecker(DataSource dataSource) {
-        try {
-            dataSource.getConnection().close();
-            System.out.println("Database connection OK");
-        } catch (SQLException e) {
-            throw new RuntimeException("Database connection failed", e);
-        }
-    }
-}
-```
-
-**Background Scheduler:**
-
-```java
-@Root
-@Component
-public final class BackgroundScheduler {
-    private final ScheduledExecutorService scheduler;
-    
-    public BackgroundScheduler(TaskProcessor processor) {
-        this.scheduler = Executors.newSingleThreadScheduledExecutor();
-        scheduler.scheduleAtFixedRate(
-            processor::process, 
-            0, 1, TimeUnit.MINUTES
-        );
-    }
-}
-```
-
-**Event Listener:**
-
-```java
-@Root
-@Component
-public final class EventListener {
-    public EventListener(EventBus eventBus) {
-        eventBus.subscribe(MyEvent.class, this::handleEvent);
-    }
-
-    private void handleEvent(MyEvent event) {
-        // Handle event
-    }
-}
-```
-
----
-
-## GraphInterceptor
-
-### Purpose
-
-`GraphInterceptor<T>` lets you inspect, initialize, or replace a specific component
-of type `T` after it is created but before any other component starts using it.
-Place a component implementing `GraphInterceptor<T>` into the container. Its contract
-mirrors `Lifecycle` except that `init`/`release` receive and return the value, so the
-returned instance is what other components depend on.
-
-```java
-public interface GraphInterceptor<T> {
-
-    T init(T value);
-
-    T release(T value);
-}
-```
-
-### Basic Example
-
-This interceptor warms a cache built on top of `JdbcDatabase` before the rest of the
-graph can use it:
-
-```java
-import ru.tinkoff.kora.application.graph.GraphInterceptor;
-
-@Component
-public final class CacheWarmupInterceptor implements GraphInterceptor<JdbcDatabase> {
-
-    @Override
-    public JdbcDatabase init(JdbcDatabase value) {
-        // warm up cache from the database, then expose the same instance
-        return value;
-    }
-
-    @Override
-    public JdbcDatabase release(JdbcDatabase value) {
-        return value;
-    }
-}
-```
-
-### Returning a Different Instance
-
-`init` may return a modified or wrapped instance of `T`, which then becomes the
-dependency seen by other components:
-
-```java
-@Component
-public final class LoggingDataSourceInterceptor implements GraphInterceptor<DataSource> {
-
-    @Override
-    public DataSource init(DataSource value) {
-        return new LoggingDataSource(value);  // dependents receive the wrapper
-    }
-
-    @Override
-    public DataSource release(DataSource value) {
-        return value;
-    }
-}
-```
-
-### Use Cases
-
-| Use Case | Example |
-|----------|---------|
-| Cache warm-up | Pre-load data into a cache built on a `JdbcDatabase` |
-| Logging proxy | Wrap a component to log calls |
-| Validation | Wrap a component with parameter validation |
-| Tracing | Wrap a component with tracing instrumentation |
-
----
-
-## Combining Lifecycle and @Root
-
-### Full Example
-
-```java
-@Root
-@Component
-public final class CacheManager implements Lifecycle {
-    private final Cache cache;
-    private final ScheduledExecutorService scheduler;
-
-    public CacheManager(CacheConfig config) {
-        this.cache = new CaffeineCache(config);
-        this.scheduler = Executors.newSingleThreadScheduledExecutor();
+    public NotifyRunner(@Tag(Tag.Any.class) All<Notifier> notifiers) {
+        this.notifiers = notifiers;
     }
 
     @Override
     public void init() {
-        // Warm cache at startup
-        cache.warmup();
+        notifiers.forEach(n -> n.notifyUser("started"));
+    }
 
-        // Schedule periodic cleanup
-        scheduler.scheduleAtFixedRate(
-            cache::evictExpired,
-            5, 5, TimeUnit.MINUTES
-        );
+    @Override
+    public void release() { }
+}
+```
 
-        System.out.println("Cache manager initialized");
+`@Root` lives in `io.koraframework.common.annotation` — the same package as everything else in 2.0.
+Under 1.x it was already in `…common.annotation` while its neighbours were in `…common`, so it is
+the one annotation whose *sub*package did not change.
+
+Most applications never write `@Root` explicitly: framework modules provide their own roots. The
+Undertow server, for example, is declared `@Root` inside `UndertowHttpServerFactoryModule`, which is
+why extending `UndertowPublicHttpServerModule` is enough to make a service listen. You need `@Root`
+for **your own** components whose only purpose is a side effect.
+
+## Where to Put `@Root`
+
+`@Root` targets `TYPE` and `METHOD`, so both forms work:
+
+```java
+// on a @Component class
+@Root @Component
+public final class CacheWarmer { }
+
+// on a provider method
+@KoraApp
+public interface Application extends HoconConfigModule {
+
+    static void main(String[] args) { KoraApplication.run(ApplicationGraph::graph); }
+
+    @Root
+    default MigrationRunner migrations(DataSource dataSource) {
+        return new MigrationRunner(dataSource);
+    }
+}
+```
+
+```kotlin
+@Root
+@Component
+class CacheWarmer(private val cache: CacheService) : Lifecycle {
+    override fun init() = cache.warm()
+    override fun release() { }
+}
+```
+
+A `@Root` can also be `@Conditional`, which is the clean way to make a startup task optional — see
+[Conditional Components Reference](conditional-components-reference.md).
+
+## Lifecycle on a Class You Own
+
+`io.koraframework.application.graph.Lifecycle` is two methods, both allowed to throw:
+
+```java
+public interface Lifecycle {
+    void init() throws Exception;
+    void release() throws Exception;
+}
+```
+
+Implement it directly on a `@Component` when the class is yours:
+
+```java
+@Component
+public final class ConnectionPool implements Lifecycle {
+
+    private final PoolConfig config;
+    private HikariDataSource dataSource;
+
+    public ConnectionPool(PoolConfig config) {
+        this.config = config;
+    }
+
+    @Override
+    public void init() {
+        this.dataSource = new HikariDataSource(config.toHikari());
     }
 
     @Override
     public void release() {
-        // Stop scheduler
-        scheduler.shutdown();
-
-        // Clear cache
-        cache.invalidateAll();
-
-        System.out.println("Cache manager released");
-    }
-}
-```
-### Multiple Lifecycle Components
-
-```java
-// Components are released in reverse order of creation:
-// 1. DatabasePool created → 2. CacheManager created → 3. Scheduler created
-// Shutdown order:
-// 1. Scheduler released → 2. CacheManager released → 3. DatabasePool released
-```
-
----
-
-## ValueOf<T> — Indirect Dependencies
-
-### Purpose
-
-`ValueOf<T>` provides indirect access to a dependency via `get()`. Kora treats it as an
-indirect link: when the wrapped component is refreshed, the holder is **not** refreshed,
-which decouples lifecycles and breaks direct dependency cycles. `ValueOf<T>` also exposes
-`refresh()` to trigger a component refresh (for example, on config file change).
-
-```java
-public interface ValueOf<T> {
-    T get();
-    void refresh();
-}
-```
-
-### Basic Example
-
-```java
-@Component
-public final class ActivityRecorder {
-    private final ValueOf<ActivityLog> log;
-
-    public ActivityRecorder(ValueOf<ActivityLog> log) {
-        this.log = log;
-    }
-
-    public void record(String activity) {
-        log.get().log(activity);  // Lazy access
-    }
-}
-```
-### When to Use
-
-| Situation | Use ValueOf |
-|-----------|-------------|
-| Configuration may change | Yes |
-| Preventing cascading refresh | Yes |
-| Lazy initialization | Yes |
-| Circular dependency | Alternative |
-
-### Circular Dependency Resolution
-
-```java
-// Without ValueOf — circular dependency error
-@Component
-public final class ServiceA {
-    public ServiceA(ServiceB b) {}  // Circular!
-}
-
-@Component
-public final class ServiceB {
-    public ServiceB(ServiceA a) {}  // Circular!
-}
-
-// With ValueOf — resolves circular dependency
-@Component
-public final class ServiceA {
-    private final ValueOf<ServiceB> b;
-    
-    public ServiceA(ValueOf<ServiceB> b) {
-        this.b = b;  // Lazy reference
-    }
-    
-    public void doSomething() {
-        b.get().doOther();  // Access when needed
-    }
-}
-```
-
----
-
-## Common Mistakes
-
-### Not Implementing Lifecycle for Resources
-
-```java
-// BAD — connections never closed
-@Component
-public final class DatabasePool {
-    private final DataSource dataSource;
-
-    public DatabasePool(DataSource dataSource) {
-        this.dataSource = dataSource;
-    }
-}
-
-// GOOD
-@Component
-public final class DatabasePool implements Lifecycle {
-    private final DataSource dataSource;
-
-    public DatabasePool(DataSource dataSource) {
-        this.dataSource = dataSource;
-    }
-
-    @Override
-    public void release() throws Exception {
-        if (dataSource instanceof AutoCloseable) {
-            ((AutoCloseable) dataSource).close();
+        if (this.dataSource != null) {
+            this.dataSource.close();
         }
     }
 }
 ```
-### Missing @Root for Startup Tasks
+
+Prefer `init()` over constructor side effects. The constructor runs while the graph is still being
+assembled; `init()` runs when the graph starts, in dependency order, and its failure is reported as
+an initialisation failure rather than a construction failure.
+
+Implementing `Lifecycle` does **not** make a component a root. A `Lifecycle` component that nothing
+depends on still needs `@Root`.
+
+## `Wrapped<T>` and `LifecycleWrapper` for Types You Do Not Own
+
+When the instance is a third-party type you cannot make implement `Lifecycle`, return a `Wrapped<T>`
+from the provider. The processor unwraps it: consumers keep asking for plain `T`.
 
 ```java
-// BAD — never initialized
-@Component
-public final class CacheWarmer {
-    public CacheWarmer(CacheService cache) {
-        cache.warm();  // Never called!
+public interface Wrapped<T> {
+    T value();
+}
+
+public class LifecycleWrapper<T> implements Lifecycle, Wrapped<T> {
+
+    public interface ThrowingConsumer<T> {
+        void accept(T t) throws Exception;
     }
+
+    public LifecycleWrapper(T value, ThrowingConsumer<T> init, ThrowingConsumer<T> release) { … }
+}
+```
+
+```java
+import io.koraframework.application.graph.LifecycleWrapper;
+import io.koraframework.application.graph.Wrapped;
+import io.koraframework.common.annotation.Module;
+
+@Module
+public interface ActivityModule {
+
+    default Wrapped<ActivityRecorder> activityRecorder() {
+        var recorder = new RemoteActivityRecorder();
+        return new LifecycleWrapper<>(recorder, r -> { }, ActivityRecorder::disconnect);
+    }
+}
+```
+
+```kotlin
+@Module
+interface ActivityModule {
+
+    fun activityRecorder(): Wrapped<ActivityRecorder> {
+        val recorder = RemoteActivityRecorder()
+        return LifecycleWrapper(recorder, {}, ActivityRecorder::disconnect)
+    }
+}
+```
+
+Consumers inject `ActivityRecorder`, not `Wrapped<ActivityRecorder>`:
+
+```java
+@Component
+public final class ActivityService {
+    public ActivityService(ValueOf<ActivityRecorder> recorder) { }
+}
+```
+
+Both callbacks are required — pass a no-op lambda (`r -> { }` / `{}`) for the half you do not need.
+Unwrapping applies to `All<T>` too: a provider returning `Wrapped<T>` contributes its `T`.
+
+## Breaking Cycles with `ValueOf` and `PromiseOf`
+
+A direct cycle is a compile error:
+
+```
+Circular dependency found:
+  com.example.ServiceA (no tags)
+
+  Dependency cycle:
+    @--- component  com.example.ServiceA
+    ^--- component  com.example.ServiceB [CYCLE]
+
+Fix:
+  - Break the cycle with ValueOf<T> or PromiseOf<T> where lazy access is valid.
+  - Move shared state into a separate component.
+  - Do not create dependency cycles in io.koraframework.application.graph.Lifecycle.
+```
+
+Take an indirect reference on one side:
+
+```java
+@Component
+public final class ServiceA {
+    public ServiceA(ServiceB b) { }
+}
+
+@Component
+public final class ServiceB {
+    private final ValueOf<ServiceA> a;
+
+    public ServiceB(ValueOf<ServiceA> a) {
+        this.a = a;               // not resolved yet
+    }
+
+    public void work() {
+        a.get().doSomething();    // resolved on demand
+    }
+}
+```
+
+`ValueOf<T>` in 2.0 declares `get()`, plus the default methods `map(Function)` and `optional()`.
+There is **no `refresh()`** — refresh is driven by the graph. `PromiseOf<T>` is the same idea with
+`Optional<T> get()`, for a value that may not exist yet at the moment you look.
+
+Do not reach for `ValueOf` first. A cycle usually means shared state wants its own component; the
+error's `Fix:` list says so for a reason.
+
+## GraphInterceptor
+
+`io.koraframework.application.graph.GraphInterceptor<T>` wraps or inspects a component as the graph
+starts and stops. **The 2.0 method names are `afterInit` and `beforeRelease`** — not `init`/`release`:
+
+```java
+public interface GraphInterceptor<T> {
+    T afterInit(T value);
+    T beforeRelease(T value);
+}
+```
+
+Declare an implementation as a component and the processor wires it into the resolution of every
+matching node. Its runtime contract — when it runs, what returning a different instance means for
+dependents — is covered by **kora-di-runtime**.
+
+## `@Root` Across a `@KoraSubmodule`
+
+The submodule processor copies `@Root` (along with `@Tag` and `@DefaultComponent`) onto the provider
+it generates in `…SubmoduleImpl`. A `@Root` component in a domain subproject stays a root once the
+assembly project's `@KoraApp` extends that submodule — nothing extra to declare.
+
+## Common Mistakes
+
+### A startup task without `@Root`
+
+```java
+// BAD — nothing depends on CacheWarmer, so it is not in the graph at all
+@Component
+public final class CacheWarmer implements Lifecycle {
+    public void init() { cache.warm(); }
+    public void release() { }
 }
 
 // GOOD
 @Root
 @Component
-public final class CacheWarmer {
-    public CacheWarmer(CacheService cache) {
-        cache.warm();  // Called at startup
-    }
+public final class CacheWarmer implements Lifecycle {
+    public void init() { cache.warm(); }
+    public void release() { }
 }
 ```
-### Wrong LifecycleWrapper Usage
+
+There is no error to read here — the component silently does not exist. If a startup side effect is
+not happening, check `@Root` first.
+
+### Expecting `Lifecycle` to imply `@Root`
+
+It does not. The two are independent: `@Root` decides whether the component exists, `Lifecycle`
+decides what happens to it once it does.
+
+### Work in the constructor instead of `init()`
 
 ```java
-// BAD — lifecycle not wrapped
-@Module
-public interface CacheModule {
-    default Cache cache(Config config) {
-        return new CaffeineCache(config);  // No lifecycle!
-    }
+// BAD — runs during graph assembly, before dependencies are initialised
+@Root @Component
+public final class CacheWarmer {
+    public CacheWarmer(CacheService cache) { cache.warm(); }
 }
 
 // GOOD
-@Module
-public interface CacheModule {
-    default Wrapped<Cache> cache(Config config) {
-        return new LifecycleWrapper<>(
-            new CaffeineCache(config),
-            cache -> cache.warmup(),
-            cache -> cache.invalidateAll()
-        );
-    }
+@Root @Component
+public final class CacheWarmer implements Lifecycle {
+    private final CacheService cache;
+    public CacheWarmer(CacheService cache) { this.cache = cache; }
+    public void init() { cache.warm(); }
+    public void release() { }
 }
 ```
 
----
+### Injecting `Wrapped<T>` instead of `T`
 
-## Quick Reference
+```java
+// BAD — the graph unwraps it; nothing provides Wrapped<ActivityRecorder> to consumers
+public ActivityService(Wrapped<ActivityRecorder> recorder) { }
 
-### Lifecycle Component
-```java
-@Component
-public final class MyComponent implements Lifecycle {
-    @Override
-    public void init() { /* init logic */ }
-    
-    @Override
-    public void release() { /* cleanup logic */ }
-}
+// GOOD
+public ActivityService(ActivityRecorder recorder) { }
 ```
-### LifecycleWrapper
-```java
-default Wrapped<MyComponent> component(Config config) {
-    return new LifecycleWrapper<>(
-        new MyComponent(config),
-        c -> c.init(),
-        c -> c.cleanup()
-    );
-}
-```
-### @Root Component
-```java
-@Root
-@Component
-public final class StartupTask {
-    public StartupTask(Service service) {
-        service.initialize();  // Called at startup
-    }
-}
-```
-### GraphInterceptor
-```java
-@Component
-public final class MyInterceptor implements GraphInterceptor<DataSource> {
-    @Override
-    public DataSource init(DataSource value) {
-        // Inspect, initialize, or wrap the instance
-        return value;
-    }
 
-    @Override
-    public DataSource release(DataSource value) {
-        return value;
-    }
-}
-```
-### ValueOf
+### `GraphInterceptor` with 1.x method names
+
 ```java
-@Component
-public final class MyService {
-    public MyService(ValueOf<OtherService> other) {
-        // Lazy access via other.get()
-    }
-}
+// BAD — does not override anything in Kora 2.0
+public DataSource init(DataSource value) { return value; }
+public DataSource release(DataSource value) { return value; }
+
+// GOOD
+@Override public DataSource afterInit(DataSource value) { return value; }
+@Override public DataSource beforeRelease(DataSource value) { return value; }
 ```
+
+### `@PostConstruct` / `@PreDestroy`
+
+Kora does not read JSR-250 annotations. Implement `Lifecycle`, or wrap with `LifecycleWrapper`.
+
+### Asynchronous lifecycle
+
+`init()` and `release()` are synchronous and may throw `Exception`. There is no `Mono<Void>` or
+`suspend` form in Kora 2.0.
+
+## Related References
+
+- [Component Registration Reference](component-registration-reference.md) — how types enter the graph
+- [Component Factories Reference](component-factories-reference.md) — providers that return `Wrapped<T>`
+- [Conditional Components Reference](conditional-components-reference.md) — making a `@Root` optional
+- [Tags & Collections Reference](tags-collections-reference.md) — `ValueOf<T>`, `PromiseOf<T>`, `All<T>`
+- [@KoraSubmodule Reference](kora-submodule-reference.md) — `@Root` across subprojects
+- **kora-di-runtime** — `init`/`release` ordering, refresh, `GraphInterceptor` semantics

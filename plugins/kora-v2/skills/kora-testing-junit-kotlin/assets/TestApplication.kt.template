@@ -1,20 +1,39 @@
 package ${package}
 
-import ru.tinkoff.kora.common.KoraApp
-import ru.tinkoff.kora.common.Tag
-import ru.tinkoff.kora.common.annotation.Root
-import ru.tinkoff.kora.database.common.annotation.Query
-import ru.tinkoff.kora.database.common.annotation.Repository
-import ru.tinkoff.kora.database.jdbc.JdbcRepository
+import io.koraframework.common.annotation.KoraApp
+import io.koraframework.common.annotation.Root
+import io.koraframework.common.annotation.Tag
+import io.koraframework.database.common.annotation.Query
+import io.koraframework.database.common.annotation.Repository
+import io.koraframework.database.jdbc.JdbcRepository
 
-// TestApplication extends the production @KoraApp and adds test-only components
-// (e.g. cleanup/inspection repositories) that the production graph does not declare.
-// Point @KoraAppTest(TestApplication::class) at this interface.
+// TestApplication extends the production @KoraApp and adds test-only components — for example a
+// cleanup/inspection repository the production graph has no reason to declare. Point the test at it
+// with @KoraAppTest(TestApplication::class).
 //
-// Build requirements (build.gradle.kts):
-//   ksp { arg("kora.app.submodule.enabled", "true") }
-//   dependencies { kspTest("ru.tinkoff.kora:symbol-processors") }
-//   tasks.test { exclude("**/\$*") }
+// Kora prunes the graph at COMPILE time, so anything nothing else depends on must be reachable from
+// a @Root or @TestComponent will not find it. Two equivalent shapes are in use upstream: a @Root
+// anchor method (below), or @Root + @Component directly on each test-only component.
+//
+// Build wiring — two independent settings, often in two different modules:
+//
+//   this module (its src/test declares a @KoraApp):
+//     dependencies { kspTest("io.koraframework:symbol-processors:${property("koraVersion")}") }
+//
+//   the module that compiles the production @KoraApp — only when that is a DIFFERENT Gradle module:
+//     ksp { arg("kora.app.submodule.enabled", "true") }
+//
+//   tasks.test {
+//       exclude("**/\$*")          // generated classes start with $ and confuse JUnit discovery
+//       failOnNoDiscoveredTests = false
+//   }
+//
+// Missing either one produces:
+//   Cannot find generated Kora application graph for: ...TestApplication
+//
+// kspTest is required ONLY because src/test declares its own @KoraApp. An ordinary
+// @KoraAppTest(Application::class) test that points at a graph compiled in src/main does NOT need
+// it — never add or remove kspTest by blanket replacement.
 @KoraApp
 interface TestApplication : Application {
 
@@ -28,7 +47,7 @@ interface TestApplication : Application {
         fun deleteAll()
     }
 
-    // A @Root anchor so the test-only repository is not pruned from the Graph.
+    // @Root anchor so the test-only repository is not pruned from the graph.
     @Tag(TestApplication::class)
     @Root
     fun testRoot(ignored: Test${entityName}Repository): String = "test-root"

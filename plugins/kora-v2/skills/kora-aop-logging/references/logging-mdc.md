@@ -1,195 +1,238 @@
-# Kora MDC reference — `@Mdc` and the imperative API
+# `@Mdc` and the Kora MDC — Kora 2.0
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/logging-aspect.md`
-**Annotation source of truth:** `ru.tinkoff.kora.logging.common.annotation.Mdc`, `ru.tinkoff.kora.logging.common.MDC`
+Annotation: **`io.koraframework.logging.common.annotation.Mdc`**
+Runtime store: **`io.koraframework.logging.common.MDC`**
+Artifact: `io.koraframework:logging-common` (transitive through `logging-logback`).
 
 ## Contents
 
-- [Import warning](#import-warning)
-- [`@Mdc` attributes](#mdc-attributes)
+- [Annotation shape](#annotation-shape)
+- [Method-level `@Mdc`](#method-level-mdc)
 - [Parameter-level `@Mdc`](#parameter-level-mdc)
-- [Method-level `@Mdc` and interpolation](#method-level-mdc-and-interpolation)
-- [Global MDC](#global-mdc)
-- [Imperative `MDC` API](#imperative-mdc-api)
-- [Combined `@Log` + `@Mdc`](#combined-log--mdc)
+- [How values are typed](#how-values-are-typed)
+- [Scoping and `global`](#scoping-and-global)
+- [The runtime model: `ScopedValue`, not `Context`, not a thread-local](#the-runtime-model-scopedvalue-not-context-not-a-thread-local)
+- [Where the MDC scope is bound](#where-the-mdc-scope-is-bound)
+- [Imperative API](#imperative-api)
+- [Kora MDC vs `org.slf4j.MDC`](#kora-mdc-vs-orgslf4jmdc)
+- [Return types `@Mdc` rejects](#return-types-mdc-rejects)
 - [Pitfalls](#pitfalls)
 
-## Import warning
-
-Always use Kora's MDC, never SLF4J's:
+## Annotation shape
 
 ```java
-import ru.tinkoff.kora.logging.common.annotation.Mdc; // annotation — CORRECT
-import ru.tinkoff.kora.logging.common.MDC;            // imperative API — CORRECT
-// import org.slf4j.MDC;                               // WRONG — values are lost
+@AopAnnotation
+@Repeatable(Mdc.MdcContainer.class)
+@Target({METHOD, PARAMETER})
+@Retention(RUNTIME)
+public @interface Mdc {
+    String key() default "";
+    String value() default "";
+    boolean global() default false;
+}
 ```
 
-SLF4J's `org.slf4j.MDC` writes into a different thread-local that `KoraAsyncAppender` does not propagate and Kora's `ConsoleTextRecordEncoder` does not render — values silently disappear from output. IDE auto-import picks the SLF4J one by default; verify the import every time you reference `MDC`.
+`@Mdc` is an `@AopAnnotation`: on its own it weaves the aspect, so a method with only `@Mdc` and no
+`@Log` still gets a proxy that maintains the MDC around the call.
 
-## `@Mdc` attributes
+## Method-level `@Mdc`
 
-`@Mdc` is `@Repeatable` (multiple annotations allowed on a method or parameter).
+On a method **both `key` and `value` are mandatory**. A blank one is a compile error:
 
-| Attribute | Default | Meaning |
-|-----------|---------|---------|
-| `key` | annotated parameter / method name | MDC key |
-| `value` | annotated parameter's runtime value | MDC value; supports `${expr}` interpolation |
-| `global` | `false` | If `true`, the value stays on the thread after the method returns |
+```
+@Mdc annotation must have 'key' attribute
+@Mdc annotation must have 'value' attribute
+```
+
+`value` is either a literal or `${…}`. The text between `${` and `}` is **inlined verbatim into the
+generated code** — it is not a config placeholder and not restricted to parameter names. Any
+expression legal at that point in the method compiles:
+
+```java
+@Mdc(key = "operation", value = "create-order")                              // literal
+@Mdc(key = "tenant",    value = "${tenantId}")                               // a parameter
+@Mdc(key = "requestId", value = "${java.util.UUID.randomUUID().toString()}") // any expression
+public Order create(String tenantId, CreateOrderDto body) { ... }
+```
+
+In Kotlin the `$` must be escaped so Kotlin's own string templates do not consume it:
+
+```kotlin
+@Mdc(key = "tenant", value = "\${tenantId}")
+open fun create(tenantId: String, body: CreateOrderDto): Order { ... }
+```
+
+Repeat the annotation for several keys — it is `@Repeatable`.
 
 ## Parameter-level `@Mdc`
 
-### Default key (parameter name)
+On a parameter the **argument** is the value; the attributes only name the key, resolved in order:
+
+1. `key` if non-blank,
+2. otherwise `value` if non-blank,
+3. otherwise the parameter name.
 
 ```java
-@Log
-public Order create(@Mdc String orderId) {
-    // MDC: "orderId" -> orderId
-    return repository.save(orderId);
-}
-```
-
-### Custom key
-
-```java
-@Log
-public Order create(@Mdc(key = "order_id") String orderId) {
-    // MDC: "order_id" -> orderId
-}
-```
-
-### Multiple parameters
-
-```java
-@Log
 public Order create(
-    @Mdc(key = "orderId") String orderId,
-    @Mdc(key = "userId") String userId,
-    @Mdc(key = "amount") BigDecimal amount
-) {
-    // MDC: orderId, userId, amount
-}
+    @Mdc UUID orderId,                 // key "orderId"
+    @Mdc("order_id") UUID id,          // key "order_id"  (value used as the key)
+    @Mdc(key = "user_id") String user  // key "user_id"
+) { ... }
 ```
 
-### Whole object
+## How values are typed
 
-```java
-@Log
-public void process(@Mdc User user) {
-    // MDC: "user" -> user.toString()
-}
-```
+The MDC stores `StructuredArgumentWriter`s, so values keep their JSON type instead of becoming
+strings.
 
-## Method-level `@Mdc` and interpolation
+| Parameter type | Written as |
+|---|---|
+| `String`, `Integer`, `Long`, `Boolean` (and `int`, `long`, `boolean`) | dedicated `MDC.put` overload — JSON string / number / boolean |
+| `StructuredArgumentWriter` | written by the writer itself |
+| any other primitive (e.g. `double`) | `String.valueOf(v)` → JSON string |
+| any other reference type | `v.toString()` → JSON string, guarded by a null check |
+| `null` reference | **nothing is put** — the key is absent, not `null` |
 
-### Static value
+`MDC.put(key, (String) null)` called by hand writes a JSON `null`; the aspect's null guard means an
+absent argument simply produces no key.
 
-```java
-@Mdc(key = "operation", value = "create-order")
-@Log
-public Order create(CreateOrderDto request) { ... }
-```
+## Scoping and `global`
 
-### Parameter interpolation
+For every non-`global` key the aspect captures the previous value **before** the call and restores it
+in a `finally` block — putting the old value back, or removing the key if there was none. So a method
+with `@Mdc` cannot leak a key to its caller, and nesting two methods that use the same key works.
 
-`${expression}` references method parameters by name.
-
-```java
-@Mdc(key = "tenant", value = "${tenantId}")
-@Log
-public Order create(String tenantId, CreateOrderDto request) {
-    // MDC: tenant=<value of tenantId>
-}
-```
-
-### Generated values
-
-The expression may call methods, including static factories:
-
-```java
-@Mdc(key = "requestId", value = "${java.util.UUID.randomUUID().toString()}")
-@Log
-public Response process(Request request) {
-    // MDC: requestId=<random UUID>
-}
-```
-
-### Multiple method annotations
-
-```java
-@Mdc(key = "tenant", value = "${tenantId}")
-@Mdc(key = "operation", value = "create-order")
-@Mdc(key = "service", value = "order-service")
-@Log
-public Order create(String tenantId, CreateOrderDto request) {
-    // MDC: tenant, operation, service
-}
-```
-
-Example log line combining `@Log` and `@Mdc` (DEBUG logger level):
-
-```
-INFO [main] r.t.e.e.Example.test: > {data: {s: "testValue"}} key=some-uuid-value key1=value2 123=testValue
-```
-
-## Global MDC
+`global = true` skips both the capture and the restore: the key stays in the MDC after the method
+returns, for the remainder of the surrounding scope (the request, the Kafka record, the scheduled
+run). It does **not** persist beyond that scope — a `ScopedValue` binding ends with its scope — but it
+is visible to everything the caller does afterwards inside the same request.
 
 ```java
 @Mdc(key = "tenant", value = "${tenantId}", global = true)
-@Log
-public void enterTenantContext(String tenantId) {
-    // tenant persists on the thread after this method returns
-}
+public void enterTenant(String tenantId) { ... }
 ```
 
-`global = true` keeps the key on the thread beyond the method call. On pooled threads (HTTP, Kafka), an uncleared global key leaks into the next unrelated unit of work. Prefer method-scoped `@Mdc` (auto-removed when the method returns). When you do need a global key, remove it imperatively at the end of the unit of work:
+Remove it yourself when done — there is no `clear()`:
 
 ```java
 MDC.remove("tenant");
 ```
 
-## Imperative `MDC` API
+Kotlin restriction: `global = true` on a `suspend` function is rejected by KSP —
+`@Mdc annotation with 'global' attribute is not supported for this function`. Kora 2.0 contracts are
+synchronous anyway.
 
-`ru.tinkoff.kora.logging.common.MDC` exposes static helpers:
-
-```java
-import ru.tinkoff.kora.logging.common.MDC;
-
-MDC.put("userId", "42");      // overloads: String, Integer, Long, Boolean, StructuredArgumentWriter
-MDC.remove("userId");         // static remove
-MDC mdc = MDC.get();          // current MDC instance (for reading values())
-```
-
-There is **no `MDC.wrap(...)`, `MDC.clear()`, or `MDC.getContext()`** in Kora's API — do not write them. To propagate MDC into a manually-spawned thread, capture the values you need before the hop and re-`put` them inside, or rely on Kora's own context propagation in the supported async signatures (`CompletionStage`, `Mono`/`Flux`, `suspend`/`Flow`).
-
-## Combined `@Log` + `@Mdc`
+## The runtime model: `ScopedValue`, not `Context`, not a thread-local
 
 ```java
-@Log
-@Mdc(key = "tenant", value = "${tenantId}")
-@Mdc(key = "operation", value = "create")
-public Order create(
-    @Mdc String tenantId,
-    @Mdc(key = "request_id") String requestId,
-    @Log.off CreateOrderDto request   // suppressed from log output
-) {
-    // MDC: tenant, operation, request_id, tenantId
-    // Log: tenantId + requestId on entry, return on exit; request body not logged
-    return repository.save(request.toEntity());
+public class MDC {
+    public static final ScopedValue<MDC> VALUE = ScopedValue.newInstance();
+    public static MDC get() { return VALUE.get(); }
+    // put(String, String|Integer|Long|Boolean|StructuredArgumentWriter), remove(String)
+    public MDC fork();
+    public Map<String, StructuredArgumentWriter> values();
 }
 ```
+
+**Kora's 1.x `Context` type no longer exists anywhere in the framework.** Any 1.x pattern that read
+or wrote MDC through `Context`, or copied a `Context` to another thread, has no 2.0 equivalent —
+delete it rather than translate it. The 2.0 store is a JDK `ScopedValue<MDC>`, which means:
+
+- The binding is **immutable and scope-bounded**: it is visible for the dynamic extent of the
+  `ScopedValue.where(...).run/call(...)` that established it, then gone.
+- It is **not inherited** by a thread you start yourself, nor by tasks you submit to an
+  `ExecutorService`. Values are visible to a `StructuredTaskScope` fork of the current scope, and
+  Kora re-binds explicitly where it hands work to another thread (Kafka calls `mdc.fork()` per
+  record).
+- Reading it **outside a binding throws `NoSuchElementException`**. `LoggingModule`'s Logback
+  appender guards this with `MDC.VALUE.isBound()`; the `@Mdc` aspect does not — its first generated
+  statement is `MDC.get().values()`.
+
+To use `@Mdc` (or `MDC.put`) outside a Kora entry point — `main`, a plain unit test, a worker thread
+you started — bind the scope yourself:
+
+```java
+ScopedValue.where(MDC.VALUE, new MDC()).run(() -> service.create(tenantId, body));
+```
+
+```kotlin
+ScopedValue.where(MDC.VALUE, MDC()).call<Unit, RuntimeException> { service.create(tenantId, body) }
+```
+
+## Where the MDC scope is bound
+
+Kora binds `MDC.VALUE` at every entry point that starts a unit of work, so ordinary application code
+never has to:
+
+| Entry point | Binder |
+|---|---|
+| HTTP server (Undertow) | `KoraRequestProcessingHttpHandler.handleRequest` |
+| Kafka consumers | `RecordHandler` / `RecordsHandler` (one `MDC` per poll, `mdc.fork()` per record) |
+| gRPC server | `VirtualThreadExecutorTransportFilter` |
+| JMS | `JmsMessageListenerContainer` |
+| JDK scheduler | `AbstractJob`, `CronJob` |
+| Quartz scheduler | `KoraQuartzJob` |
+
+## Imperative API
+
+```java
+import io.koraframework.logging.common.MDC;
+
+MDC.put("userId", "42");        // String | Integer | Long | Boolean | StructuredArgumentWriter
+MDC.remove("userId");
+Map<String, StructuredArgumentWriter> current = MDC.get().values();
+```
+
+There is **no `MDC.clear()`, no `MDC.wrap(...)`, no `MDC.getContext()`** — do not write them.
+`MDC.get()` returns the bound `MDC` instance; `fork()` produces an independent copy for a nested
+scope.
+
+## Kora MDC vs `org.slf4j.MDC`
+
+They are two different stores, and `@Mdc` writes only to Kora's.
+
+- Read a `@Mdc` key back with `io.koraframework.logging.common.MDC` — `org.slf4j.MDC.get(...)` will
+  not see it.
+- `KoraRequestProcessingHttpHandler` calls `org.slf4j.MDC.clear()` at the start of every request, so
+  anything put into the SLF4J MDC before routing does not reach the handler.
+- Kora's `ConsoleTextRecordEncoder` prints both maps, so an SLF4J MDC value is not invisible — it
+  simply is not what `@Mdc` manages, gets no restore-on-exit, and carries no JSON type.
+- IDE auto-import offers `org.slf4j.MDC` first. Check the import on every `MDC` reference.
+
+Rendering MDC into log output is the backend's job: `KoraAsyncAppender` snapshots
+`MDC.get().values()` into the event, and `ConsoleTextRecordEncoder` (or the `KoraMdcConverter`
+conversion rule in a pattern layout) writes it. See
+[kora-telemetry-logging](../../kora-telemetry-logging/SKILL.md) — without that Logback wiring the
+Kora MDC is maintained correctly and printed nowhere.
+
+## Return types `@Mdc` rejects
+
+The aspect fails the build when the annotated method returns a Reactive Streams `Publisher`
+(Reactor `Mono` / `Flux`), a `Future`, or a `CompletionStage`:
+
+```
+@Mdc can't be applied for type java.util.concurrent.CompletionStage
+```
+
+This is deliberate: the MDC binding is scope-bounded, and a value returned for completion elsewhere
+would leave the scope. Kora 2.0 contracts are synchronous — annotate synchronous methods.
 
 ## Pitfalls
 
 | Symptom | Cause | Fix |
-|---------|-------|-----|
-| MDC keys never appear | `org.slf4j.MDC` imported | Use `ru.tinkoff.kora.logging.common.MDC` |
-| MDC value from a previous request | Global key not removed | Avoid `global = true`, or static `MDC.remove(key)` when done |
-| `MDC.wrap` / `MDC.clear` does not resolve | Those methods do not exist in Kora | Use `put` / `remove` / `get` |
-| Null MDC value | Parameter was null | Kora skips null MDC values |
-| Sensitive data in MDC | `@Mdc` on a secret parameter | Do not annotate secrets; use `@Log.off` for the log line |
+|---|---|---|
+| `NoSuchElementException` at `MDC.get()` | No `ScopedValue` binding — called from `main`, a plain test, or a thread you started | Call through a Kora entry point, or wrap in `ScopedValue.where(MDC.VALUE, new MDC())` |
+| `@Mdc annotation must have 'key'/'value' attribute` | Method-level `@Mdc` missing an attribute | Method form needs both; only the parameter form may omit them |
+| Kotlin `${tenantId}` resolves at compile time to the parameter's value or fails | Kotlin string template consumed the `$` | Escape it: `"\${tenantId}"` |
+| Key missing for a nullable argument | The aspect skips null non-native values | Expected; pass a default or use a method-level `@Mdc` |
+| Key from the previous request appears | `global = true` and never removed | Drop `global`, or `MDC.remove(key)` at the end of the unit of work |
+| `MDC.clear()` does not resolve | Not part of Kora's API | Remove keys individually |
+| Values never printed | Logback not wired with `KoraAsyncAppender` + a Kora encoder | See [kora-telemetry-logging](../../kora-telemetry-logging/SKILL.md) |
+| Migrating 1.x code that put values on `Context` | `Context` is removed from the whole framework | Rewrite against `MDC` / `ScopedValue`; there is no drop-in replacement |
 
 ## See also
 
 - [logging-aspect.md](logging-aspect.md) — `@Log` reference
-- [logging-performance.md](logging-performance.md) — production tuning
+- [logging-masking.md](logging-masking.md) — redacting fields inside logged objects
+- [logging-performance.md](logging-performance.md) — cost model and volume control
 - Parent [SKILL.md](../SKILL.md)

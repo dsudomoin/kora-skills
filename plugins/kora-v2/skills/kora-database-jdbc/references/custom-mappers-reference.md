@@ -1,264 +1,357 @@
 # Custom Mappers Reference
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/database-jdbc.md` ("Mapping")
-**Examples:** `.kora-agent/kora-examples/examples/java/kora-java-database-jdbc/` (`JdbcMapper*Repository.java`, `JdbcJsonbMapperModule.java`)
-**Module:** `ru.tinkoff.kora:database-jdbc`
+**Applies to:** Kora 2.x (`io.koraframework:database-jdbc`)
 
 ## Contents
 
-- [Types of JDBC mappers](#types-of-jdbc-mappers)
-- [Enum mapper](#enum-mapper-example)
+- [The four mapper contracts](#the-four-mapper-contracts)
+- [Selecting a mapper](#selecting-a-mapper)
+- [Kotlin: parameters must be nullable](#kotlin-parameters-must-be-nullable)
+- [Enum mapper](#enum-mapper)
 - [PostgreSQL array mapper](#postgresql-array-mapper)
-- [JSONB mapping](#jsonb-mapping-postgresql)
+- [JSONB mapping](#jsonb-mapping)
 - [Mappers with dependencies](#mappers-with-dependencies)
 - [Best practices](#best-practices)
 
 ---
 
-## Types of JDBC Mappers
+## The four mapper contracts
 
-Kora supports four mapper interfaces, all from `ru.tinkoff.kora.database.jdbc.mapper.*`. Select a mapper with `@Mapping(MapperClass.class)` on the method (result mappers) or on the field/parameter (column mappers).
+All four extend `Mapping.MappingFunction` (`io.koraframework.common.annotation.Mapping`).
 
-### 1. JdbcResultSetMapper<T>
+| Contract | Package | Method | Applied to |
+|----------|---------|--------|-----------|
+| `JdbcResultSetMapper<T>` | `io.koraframework.database.jdbc.mapper.result` | `@Nullable T apply(ResultSet rows) throws SQLException` | the repository **method** |
+| `JdbcRowMapper<T>` | `io.koraframework.database.jdbc.mapper.result` | `@Nullable T apply(ResultSet row) throws SQLException` | the repository **method** |
+| `JdbcResultColumnMapper<T>` | `io.koraframework.database.jdbc.mapper.result` | `@Nullable T apply(ResultSet row, int index) throws SQLException` | an entity **field** |
+| `JdbcParameterColumnMapper<T>` | `io.koraframework.database.jdbc.mapper.parameter` | `void set(PreparedStatement stmt, int index, @Nullable T value) throws SQLException` | a method **parameter** or entity field |
 
-Maps the entire `ResultSet` to one value; the mapper itself iterates with `rs.next()`. Use for grouping rows or assembling custom result structures. Selected with `@Mapping` on the method.
+There is no row-number argument on `JdbcRowMapper`, and the parameter mapper's method is `set`,
+not `apply`.
+
+### 1. `JdbcResultSetMapper<T>` — the whole result
+
+The mapper drives the cursor itself with `rs.next()`. Use it to group rows or build a structure the
+generated code cannot.
 
 ```java
-public class UserResultSetMapper implements JdbcResultSetMapper<User> {
+public final class EntityPartResultSetMapper
+        implements JdbcResultSetMapper<Map<Integer, List<EntityPart>>> {
+
     @Override
-    public User apply(ResultSet rs) throws SQLException {
-        return new User(
-            rs.getLong("id"),
-            rs.getString("email"),
-            rs.getString("name")
-        );
+    public Map<Integer, List<EntityPart>> apply(ResultSet rs) throws SQLException {
+        var result = new LinkedHashMap<Integer, List<EntityPart>>();
+        while (rs.next()) {
+            var part = new EntityPart(rs.getString(1), rs.getInt(2));
+            result.computeIfAbsent(part.field1(), k -> new ArrayList<>()).add(part);
+        }
+        return result;
     }
 }
 
-// Usage in repository
-@Repository
-public interface UserRepository extends JdbcRepository {
-    @Query("SELECT * FROM users WHERE id = :id")
-    @Mapping(UserResultSetMapper.class)
-    @Nullable
-    User findById(String id);
-}
+@Mapping(EntityPartResultSetMapper.class)
+@Query("SELECT id, value1 FROM entities")
+Map<Integer, List<EntityPart>> findAllParts();
 ```
 
-### 2. JdbcRowMapper<T>
+`JdbcResultSetMapper` also offers static adapters over a row mapper — `singleResultSetMapper`,
+`optionalResultSetMapper`, `listResultSetMapper` — which is how the generated code turns a
+`JdbcRowMapper` into `T` / `Optional<T>` / `List<T>`.
 
-Maps the current row to an object; invoked once per row (cursor already positioned, no `next()` call). Signature is `apply(ResultSet rs)` — there is no row-number argument.
+### 2. `JdbcRowMapper<T>` — one row
+
+The cursor is already positioned; do not call `next()`. Cardinality (`T`, `Optional<T>`,
+`List<T>`) comes from the method's return type.
 
 ```java
-public class UserRowMapper implements JdbcRowMapper<User> {
+public final class EntityPartRowMapper implements JdbcRowMapper<EntityPart> {
+
     @Override
-    public User apply(ResultSet rs) throws SQLException {
-        return new User(
-            rs.getLong("id"),
-            rs.getString("email"),
-            rs.getTimestamp("created_at").toLocalDateTime()
-        );
+    public EntityPart apply(ResultSet rs) throws SQLException {
+        return new EntityPart(rs.getString(1), rs.getInt(2));
     }
 }
 
-// Usage
-@Query("SELECT * FROM users")
-@Mapping(UserRowMapper.class)
-List<User> findAll();
+@Mapping(EntityPartRowMapper.class)
+@Query("SELECT id, value1 FROM entities")
+List<EntityPart> findAllParts();
 ```
 
-### 3. JdbcResultColumnMapper<T>
-
-Maps a single column value to a Java type. Use for custom types like enums, JSONB, encrypted values.
+### 3. `JdbcResultColumnMapper<T>` — one column, reading
 
 ```java
-public class LowercaseEmailMapper implements JdbcResultColumnMapper<String> {
+public final class EntityFieldTypeResultMapper implements JdbcResultColumnMapper<Entity.FieldType> {
+
+    private static final Entity.FieldType[] ALL = Entity.FieldType.values();
+
     @Override
-    public String apply(ResultSet rs, int index) throws SQLException {
-        return rs.getString(index).toLowerCase();
+    public Entity.FieldType apply(ResultSet rs, int index) throws SQLException {
+        var code = rs.getInt(index);
+        for (var type : ALL) {
+            if (type.code() == code) {
+                return type;
+            }
+        }
+        return Entity.FieldType.UNKNOWN;
     }
 }
-
-// Usage on entity field
-@EntityJdbc
-@Table("users")
-public record User(
-    @Id Long id,
-    @Mapping(LowercaseEmailMapper.class) String email,
-    String name
-) {}
 ```
 
-### 4. JdbcParameterColumnMapper<T>
-
-Maps Java objects to SQL parameters. Use for custom types in INSERT/UPDATE statements.
+### 4. `JdbcParameterColumnMapper<T>` — one value, writing
 
 ```java
-public class UuidParameterMapper implements JdbcParameterColumnMapper<UUID> {
+public final class EntityFieldTypeParameterMapper
+        implements JdbcParameterColumnMapper<Entity.FieldType> {
+
     @Override
-    public void set(PreparedStatement stmt, int index, @Nullable UUID value) throws SQLException {
-        if (value != null) {
-            stmt.setString(index, value.toString());
+    public void set(PreparedStatement stmt, int index, Entity.@Nullable FieldType value)
+            throws SQLException {
+        if (value == null) {
+            stmt.setNull(index, Types.INTEGER);
         } else {
-            stmt.setNull(index, Types.OTHER);
+            stmt.setInt(index, value.code());
+        }
+    }
+}
+```
+
+Note `Entity.@Nullable FieldType`: JSpecify annotations are type-use, so on a qualified nested type
+they sit before the simple name. `@Nullable Entity.FieldType` is a compile error.
+
+---
+
+## Selecting a mapper
+
+Two ways, and they behave differently:
+
+**Explicitly, with `@Mapping(X.class)`** — on the method for result/row mappers, on the entity
+field or the method parameter for column mappers. Repeat `@Mapping` to attach both directions to
+one field (`@Mapping` is `@Repeatable`).
+
+```java
+@EntityJdbc
+record Entity(String id,
+              @Mapping(EntityFieldTypeResultMapper.class)
+              @Mapping(EntityFieldTypeParameterMapper.class)
+              @Column("value1") FieldType field1,
+              String value2) {}
+
+@Query("SELECT * FROM entities WHERE status = :status")
+List<Entity> findByStatus(@Mapping(EntityFieldTypeParameterMapper.class) FieldType status);
+```
+
+**Implicitly, by type** — a field or parameter whose type is not natively supported and has no
+`@Mapping` makes the generated code request a `JdbcResultColumnMapper<T>` / `JdbcParameterColumnMapper<T>`
+from the graph. Register one as a `@Component` and every entity field of that type is mapped
+without further annotation:
+
+```java
+@Component
+public final class TaskStatusResultMapper implements JdbcResultColumnMapper<TaskStatus> {
+    @Override
+    public TaskStatus apply(ResultSet row, int index) throws SQLException {
+        var value = row.getString(index);
+        return value == null ? null : TaskStatus.valueOf(value);
+    }
+}
+
+@Component
+public final class TaskStatusParameterMapper implements JdbcParameterColumnMapper<TaskStatus> {
+    @Override
+    public void set(PreparedStatement stmt, int index, TaskStatus value) throws SQLException {
+        if (value == null) {
+            stmt.setNull(index, Types.VARCHAR);
+        } else {
+            stmt.setString(index, value.name());
         }
     }
 }
 
-// Usage
-@Repository
-public interface UserRepository extends JdbcRepository {
-    @Query("SELECT * FROM users WHERE session_id = :sessionId")
-    List<User> findBySessionId(@Mapping(UuidParameterMapper.class) UUID sessionId);
-}
+// no @Mapping anywhere — the mappers are found by type
+@EntityJdbc @Table("tasks")
+record TaskDAO(@Column("title") String title, @Column("status") TaskStatus status) {}
 ```
+
+Whether a `@Mapping`-named mapper is constructed by the generated code or injected from the graph —
+and therefore whether it needs `@Component` — is decided by the mapper's own shape. That rule, and
+the errors you get when it is broken, are in
+[custom-mappers-advanced-reference.md](custom-mappers-advanced-reference.md).
 
 ---
 
-## Enum Mapper Example
+## Kotlin: parameters must be nullable
 
-Map database integer codes to Java enums:
+The 2.0 mapper contracts are JSpecify-marked, so a Kotlin override has to match exactly:
+
+```kotlin
+class ListOfStringJdbcParameterMapper : JdbcParameterColumnMapper<List<String>> {
+    // the contract declares the value @Nullable, which Kotlin enforces on the override
+    override fun set(stmt: PreparedStatement, index: Int, value: List<String>?) {
+        if (value == null) {
+            stmt.setNull(index, Types.ARRAY)
+            return
+        }
+        stmt.setArray(index, stmt.connection.createArrayOf("VARCHAR", value.toTypedArray()))
+    }
+}
+```
+
+Declaring `value: List<String>` (non-null) makes Kotlin report **`'set' overrides nothing`** — an
+error that never mentions nullability. The same applies to `JdbcResultColumnMapper.apply(rs, index)`
+and `JdbcRowMapper.apply(row)`.
+
+Return types may be narrowed to non-null, so `override fun apply(rs: ResultSet, index: Int): TaskStatus`
+is fine. The Java twin of the same mapper compiles either way, which is why this only bites Kotlin.
+
+Kotlin classes are final by default — relevant to the construct-vs-inject rule linked above.
+
+---
+
+## Enum mapper
+
+Store the enum as an integer code and map both directions:
 
 ```java
 public enum Status {
     UNKNOWN(-10), ACTIVE(0), PENDING(1), CLOSED(2);
-    public final int code;
+
+    private final int code;
     Status(int code) { this.code = code; }
+    public int code() { return code; }
 }
 
-@Component
-public class StatusResultMapper implements JdbcResultColumnMapper<Status> {
+public final class StatusResultMapper implements JdbcResultColumnMapper<Status> {
     private static final Status[] ALL = Status.values();
-    
+
     @Override
     public Status apply(ResultSet rs, int index) throws SQLException {
-        int code = rs.getInt(index);
-        for (Status s : ALL) {
-            if (s.code == code) return s;
+        var code = rs.getInt(index);
+        for (var s : ALL) {
+            if (s.code() == code) {
+                return s;
+            }
         }
         return Status.UNKNOWN;
     }
 }
 
-@Component
-public class StatusParameterMapper implements JdbcParameterColumnMapper<Status> {
+public final class StatusParameterMapper implements JdbcParameterColumnMapper<Status> {
     @Override
     public void set(PreparedStatement stmt, int index, @Nullable Status value) throws SQLException {
-        if (value != null) {
-            stmt.setInt(index, value.code);
-        } else {
+        if (value == null) {
             stmt.setNull(index, Types.INTEGER);
+        } else {
+            stmt.setInt(index, value.code());
         }
     }
 }
 
 @EntityJdbc
 public record Task(
-    @Id Long id,
-    @Mapping(StatusResultMapper.class)     // repeat @Mapping for each direction
-    @Mapping(StatusParameterMapper.class)
-    @Column("status") Status status
-) {}
+        @Id Long id,
+        @Mapping(StatusResultMapper.class)
+        @Mapping(StatusParameterMapper.class)
+        @Column("status") Status status) {}
 ```
 
-Apply both a result mapper and a parameter mapper by repeating `@Mapping` on the field (as in `JdbcMapperColumnRepository` in the examples).
+An enum used as a **query parameter** needs its own `@Mapping` on that parameter — the field-level
+mappers only cover the entity — unless the parameter mapper is a `@Component` and therefore
+discoverable by type.
+
+Kotlin:
+
+```kotlin
+class TaskStatusResultMapper : JdbcResultColumnMapper<TaskStatus> {
+    override fun apply(rs: ResultSet, index: Int): TaskStatus =
+        TaskStatus.entries.firstOrNull { it.code == rs.getInt(index) } ?: TaskStatus.UNKNOWN
+}
+
+class TaskStatusParameterMapper : JdbcParameterColumnMapper<TaskStatus> {
+    override fun set(stmt: PreparedStatement, index: Int, value: TaskStatus?) {
+        if (value == null) stmt.setNull(index, Types.INTEGER) else stmt.setInt(index, value.code)
+    }
+}
+
+@EntityJdbc
+@Table("tasks")
+data class Task(
+    @field:Id val id: Long?,
+    @Mapping(TaskStatusResultMapper::class)
+    @Mapping(TaskStatusParameterMapper::class)
+    @field:Column("status") val status: TaskStatus
+)
+```
 
 ---
 
-## PostgreSQL Array Mapper
+## PostgreSQL array mapper
+
+`List<T>` has no built-in column mapping — supply the mappers yourself.
 
 ```java
 @Component
-public class ListOfLongJdbcParameterMapper implements JdbcParameterColumnMapper<List<Long>> {
+public final class ListOfLongJdbcParameterMapper implements JdbcParameterColumnMapper<List<Long>> {
+
     @Override
     public void set(PreparedStatement stmt, int index, List<Long> value) throws SQLException {
         if (value == null) {
             stmt.setNull(index, Types.ARRAY);
             return;
         }
-        Long[] typedArray = value.toArray(Long[]::new);
-        Array sqlArray = stmt.getConnection().createArrayOf("BIGINT", typedArray);
+        var sqlArray = stmt.getConnection().createArrayOf("BIGINT", value.toArray(Long[]::new));
         stmt.setArray(index, sqlArray);
     }
 }
 
 @Repository
-public interface UserRepository extends JdbcRepository {
-    @Query("SELECT * FROM users WHERE id = ANY(:ids)")
-    List<User> findAllByIds(@Mapping(ListOfLongJdbcParameterMapper.class) List<Long> ids);
+public interface TaskRepository extends JdbcRepository {
+
+    // no @Mapping needed: the mapper is a @Component and matches List<Long> by type
+    @Query("SELECT id FROM users WHERE id = ANY(:assigneeIds)")
+    List<Long> findExistingAssigneeId(List<Long> assigneeIds);
+}
+```
+
+For the read direction:
+
+```java
+public final class LongListResultMapper implements JdbcResultColumnMapper<List<Long>> {
+
+    @Override
+    public List<Long> apply(ResultSet rs, int index) throws SQLException {
+        var array = rs.getArray(index);
+        if (array == null) {
+            return List.of();
+        }
+        return List.of((Long[]) array.getArray());
+    }
 }
 ```
 
 ---
 
-## JSONB Mapping (PostgreSQL)
+## JSONB mapping
 
-Use built-in `@Json` annotation with `JdbcJsonbMapperModule`:
+Declare a generic `@Module` once, tagged `@Json`, and annotate the payload types with `@Json`. The
+canonical module and the `::jsonb` cast are in
+[entity-mapping-reference.md](entity-mapping-reference.md#jsonb-mapping-postgresql).
 
-```java
-// Required module
-@KoraApp
-public interface Application extends JdbcDatabaseModule, JdbcJsonbMapperModule {}
-
-// Usage in entity
-@EntityJdbc
-@Table("users")
-public record User(
-    @Id UUID id,
-    String email,
-    @Json Profile profile  // Automatically serialized to JSONB
-) {
-    @Json
-    public record Profile(String firstName, String lastName) {}
-}
-```
-
-The `JdbcJsonbMapperModule` shown above is not built into Kora — it is a small `@Module` you define once that produces generic `@Json` JDBC column mappers (it depends on `JsonModule`/`JsonCommonModule`). The canonical implementation from the examples (`JdbcJsonbMapperModule.java`):
-
-```java
-@Module
-public interface JdbcJsonbMapperModule {
-
-    @Json
-    default <T> JdbcParameterColumnMapper<T> jdbcJsonParameterColumnMapper(JsonWriter<T> writer) {
-        return (stmt, index, value) -> {
-            if (value != null) {
-                var jsonb = new PGobject();
-                jsonb.setType("jsonb");
-                jsonb.setValue(writer.toStringUnchecked(value));
-                stmt.setObject(index, jsonb);
-            } else {
-                stmt.setNull(index, Types.NULL);
-            }
-        };
-    }
-
-    @Json
-    default <T> JdbcResultColumnMapper<T> jdbcJsonResultColumnMapper(JsonReader<T> reader) {
-        return (row, index) -> {
-            var value = row.getString(index);
-            return value == null ? null : reader.readUnchecked(value);
-        };
-    }
-}
-```
-
-Insert with an explicit cast so PostgreSQL accepts the value as `jsonb`:
-
-```java
-@Query("INSERT INTO entities_jsonb(id, value) VALUES (:entity.id, :entity.value::jsonb)")
-void insert(Entity entity);
-```
+The one 2.0 detail worth repeating: `JsonWriter.toString(value)` and `JsonReader.read(value)` no
+longer declare checked exceptions and the `*Unchecked` variants were removed, so a `try/catch
+(IOException)` carried over from 1.x becomes `exception IOException is never thrown in the
+corresponding try block`.
 
 ---
 
 ## Mappers with dependencies
 
-A mapper used via `@Mapping` is instantiated by the annotation processor automatically. If the mapper needs injected collaborators (a service, config), declare it as a `@Component` and Kora supplies the same instance to the generated repository — still selected by `@Mapping`, not `@Tag`:
+A mapper that needs collaborators declares them on its constructor and becomes a `@Component`; the
+generated repository takes it as a constructor parameter.
 
 ```java
 @Component
 public final class EncryptedStringMapper implements JdbcResultColumnMapper<String> {
+
     private final EncryptionService encryption;
 
     public EncryptedStringMapper(EncryptionService encryption) {
@@ -268,7 +361,7 @@ public final class EncryptedStringMapper implements JdbcResultColumnMapper<Strin
     @Override
     public String apply(ResultSet rs, int index) throws SQLException {
         var encrypted = rs.getString(index);
-        return encrypted != null ? encryption.decrypt(encrypted) : null;
+        return encrypted == null ? null : encryption.decrypt(encrypted);
     }
 }
 
@@ -278,19 +371,26 @@ public final class EncryptedStringMapper implements JdbcResultColumnMapper<Strin
 String findSecret(String id);
 ```
 
+Omitting `@Component` here fails the graph build with
+`No component found for dependency: EncryptedStringMapper`.
+
 ---
 
 ## Best practices
 
-1. **Keep mappers stateless** — no mutable state.
-2. **Handle nulls explicitly** — column mappers receive null values.
-3. **Prefer `@Nullable`** over `Optional` for nullable single-row returns.
-4. **Prefer the `@Json` module** for JSONB over hand-written column mappers.
-5. **Select mappers with `@Mapping`** — on the method for result/row mappers, on the field/parameter for column mappers.
+1. **Keep mappers stateless.** They are shared across every query that uses them.
+2. **Handle `null` explicitly** in both directions — column mappers receive and must produce nulls.
+3. **Prefer `@Nullable T` over `Optional<T>`** for single-row returns.
+4. **Prefer the generic `@Json` module** to a hand-written mapper per JSONB type.
+5. **Pick one selection style per type.** `@Mapping` overrides by-type discovery; having both a
+   `@Component` mapper and a `@Mapping` on every use is redundant and invites ambiguity.
+6. **Repeat `@Mapping`** rather than looking for an array attribute — the annotation is
+   `@Repeatable`, there is no `value = {...}` form.
 
 ---
 
 ## See also
 
-- [entity-mapping-reference.md](entity-mapping-reference.md) — `@Table`, `@Column`, type mapping
-- [repository-pattern-reference.md](repository-pattern-reference.md) — `@Repository`, `@Query` usage
+- [custom-mappers-advanced-reference.md](custom-mappers-advanced-reference.md) — construct vs inject, `@Component` rules, generic mapper modules
+- [entity-mapping-reference.md](entity-mapping-reference.md) — supported types, JSONB module
+- [repository-pattern-reference.md](repository-pattern-reference.md) — `@Repository`, `@Query`, macros

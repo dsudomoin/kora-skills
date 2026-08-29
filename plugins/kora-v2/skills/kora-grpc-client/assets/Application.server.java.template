@@ -1,13 +1,24 @@
 package ${package};
 
-import ru.tinkoff.kora.application.graph.KoraApplication;
-import ru.tinkoff.kora.common.KoraApp;
-import ru.tinkoff.kora.config.hocon.HoconConfigModule;
-import ru.tinkoff.kora.grpc.server.GrpcServerModule;
-import ru.tinkoff.kora.logging.logback.LogbackModule;
+import io.koraframework.application.graph.KoraApplication;
+import io.koraframework.common.annotation.KoraApp;
+import io.koraframework.config.hocon.HoconConfigModule;
+import io.koraframework.grpc.server.GrpcServerModule;
+import io.koraframework.logging.logback.LogbackModule;
 
+/**
+ * Counterpart gRPC server for exercising the client locally (Kora 2.0).
+ *
+ * For anything beyond a local stand-in, follow the kora-grpc-server skill — it owns the server
+ * contract. Every @Component that extends a generated *ImplBase is picked up as a BindableService,
+ * and every @Component ServerInterceptor is applied to the whole server.
+ */
 @KoraApp
-public interface Application extends HoconConfigModule, LogbackModule, GrpcServerModule {
+public interface Application extends
+        HoconConfigModule,
+        LogbackModule,
+        GrpcServerModule {
+
     static void main(String[] args) {
         KoraApplication.run(ApplicationGraph::graph);
     }

@@ -1,483 +1,246 @@
-# gRPC Error Handling Reference
+# gRPC Error Handling Reference — Kora 2.0
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/grpc-server.md`
-**Examples:** `kora-examples/guides/java/kora-java-guide-grpc-server-advanced-app/.../grpc/UserServiceGrpcHandler.java`
+**Framework source (authority):** [`TelemetryInterceptor`](https://github.com/kora-projects/kora/blob/2.0.0.RC1/grpc/grpc-server/src/main/java/io/koraframework/grpc/server/interceptor/TelemetryInterceptor.java) · [`DefaultGrpcServerLoggerFactory`](https://github.com/kora-projects/kora/blob/2.0.0.RC1/grpc/grpc-server/src/main/java/io/koraframework/grpc/server/telemetry/impl/DefaultGrpcServerLoggerFactory.java)
+**Migrated example:** [`UserServiceGrpcHandler.java`](https://github.com/kora-projects/kora-examples/blob/migration/2.0/guides/java/kora-java-guide-grpc-server-advanced-app/src/main/java/io/koraframework/guide/grpcserver/advanced/grpc/UserServiceGrpcHandler.java)
+
+Error handling on a Kora gRPC server is plain grpc-java: `io.grpc.Status`, `StatusRuntimeException`,
+`StreamObserver.onError`. Kora adds no exception-mapping layer of its own — there is no gRPC
+equivalent of `HttpServerResponseException`, and nothing analogous to an HTTP error mapper.
 
 ## Contents
 
-1. Status Codes
-2. Throwing Errors in Handlers
-3. Complete Error Handling Example
-4. Centralized Exception Interceptor
-5. Error Metadata
-6. Error Handling in Streaming
-7. Mapping Domain Exceptions to Status Codes
-8. Common Pitfalls
+1. Status codes
+2. Signalling an error from a handler
+3. How Kora observes an error
+4. Error metadata
+5. Errors in streaming
+6. Mapping domain exceptions
+7. Common pitfalls
 
-## 1. Status Codes
+---
 
-gRPC uses standard status codes for error handling:
+## 1. Status codes
 
-| Code | Name | HTTP Equivalent | Description |
-|------|------|-----------------|-------------|
-| 0 | `OK` | 200 | Success |
-| 1 | `CANCELLED` | 499 | Client cancelled request |
-| 2 | `UNKNOWN` | 500 | Unknown error |
-| 3 | `INVALID_ARGUMENT` | 400 | Invalid input |
-| 4 | `DEADLINE_EXCEEDED` | 504 | Timeout |
-| 5 | `NOT_FOUND` | 404 | Resource not found |
-| 6 | `ALREADY_EXISTS` | 409 | Resource exists |
-| 7 | `PERMISSION_DENIED` | 403 | AuthZ failure |
-| 8 | `RESOURCE_EXHAUSTED` | 429 | Rate limited |
-| 9 | `FAILED_PRECONDITION` | 400 | Precondition failed |
-| 10 | `ABORTED` | 409 | Transaction aborted |
-| 11 | `OUT_OF_RANGE` | 400 | Range error |
-| 12 | `UNIMPLEMENTED` | 501 | Not implemented |
-| 13 | `INTERNAL` | 500 | Internal error |
-| 14 | `UNAVAILABLE` | 503 | Service unavailable |
-| 15 | `DATA_LOSS` | 500 | Data loss |
-| 16 | `UNAUTHENTICATED` | 401 | AuthN failure |
+| Code | Name | Typical HTTP analogue | Use for |
+|---|---|---|---|
+| 1 | `CANCELLED` | 499 | client cancelled |
+| 2 | `UNKNOWN` | 500 | unclassified |
+| 3 | `INVALID_ARGUMENT` | 400 | request is malformed regardless of state |
+| 4 | `DEADLINE_EXCEEDED` | 504 | the call's deadline elapsed |
+| 5 | `NOT_FOUND` | 404 | entity does not exist |
+| 6 | `ALREADY_EXISTS` | 409 | entity already exists |
+| 7 | `PERMISSION_DENIED` | 403 | authenticated but not allowed |
+| 8 | `RESOURCE_EXHAUSTED` | 429 | quota / rate limit |
+| 9 | `FAILED_PRECONDITION` | 400 | request invalid *for the current state* |
+| 10 | `ABORTED` | 409 | concurrency conflict; retryable at a higher level |
+| 11 | `OUT_OF_RANGE` | 400 | past the end of a range |
+| 12 | `UNIMPLEMENTED` | 501 | method not implemented — **also what an uncollected handler returns** |
+| 13 | `INTERNAL` | 500 | invariant broken on the server |
+| 14 | `UNAVAILABLE` | 503 | transient; safe to retry with backoff |
+| 16 | `UNAUTHENTICATED` | 401 | missing or invalid credentials |
 
-## 2. Throwing Errors in Handlers
+`INVALID_ARGUMENT` vs `FAILED_PRECONDITION`: the first means the request would be wrong in any
+state; the second means it is wrong right now.
 
-### StatusException Pattern
+> `UNIMPLEMENTED` from a method you *did* implement almost always means the handler was not
+> collected — see [grpc-server-reference.md](grpc-server-reference.md) §4.
+
+## 2. Signalling an error from a handler
+
+Two equivalent forms.
 
 ```java
-import io.grpc.Status;
-import io.grpc.StatusRuntimeException;
+// throw — the generated stub catches it and closes the call
+throw Status.NOT_FOUND
+    .withDescription("User not found: " + id)
+    .asRuntimeException();
+```
 
+```java
+// explicit — required inside a StreamObserver callback, where throwing has nowhere to go
+responseObserver.onError(Status.NOT_FOUND
+    .withDescription("User not found: " + id)
+    .asRuntimeException());
+```
+
+Rules that hold for both:
+
+- **Exactly one terminal signal per call** — `onCompleted()` **or** `onError(...)`, never both,
+  never twice, and never an `onNext` after either.
+- `withCause(e)` attaches the cause **server-side only**. It is not serialised to the client; it
+  reaches Kora's response log and your own logging. Put anything the client needs into
+  `withDescription(...)` or trailers (§4).
+- `withDescription(...)` crosses the wire. Do not put stack traces, SQL, or internal identifiers
+  into it.
+- A `StatusRuntimeException` raised by a *downstream* gRPC client carries that server's status.
+  Re-throwing it verbatim leaks the downstream's `NOT_FOUND` as if it were yours — translate it.
+
+```java
 @Override
-public void getUser(GetUserRequest request, 
-                   StreamObserver<UserResponse> responseObserver) {
+public void getUser(GetUserRequest request, StreamObserver<UserResponse> responseObserver) {
     try {
-        var user = userService.findById(request.getId());
-        
-        if (user == null) {
-            throw Status.NOT_FOUND
-                .withDescription("User not found: " + request.getId())
-                .asRuntimeException();
-        }
-        
+        var user = userService.getUser(request.getUserId())
+            .orElseThrow(() -> Status.NOT_FOUND
+                .withDescription("User not found: " + request.getUserId())
+                .asRuntimeException());
         responseObserver.onNext(toGrpcUser(user));
         responseObserver.onCompleted();
-        
     } catch (StatusRuntimeException e) {
-        // Already a gRPC status - pass through
         responseObserver.onError(e);
     } catch (Exception e) {
-        // Unexpected error
-        responseObserver.onError(
-            Status.INTERNAL
-                .withDescription("Failed to get user")
-                .withCause(e)
-                .asRuntimeException()
-        );
-    }
-}
-```
-
-### Direct onError Call
-
-```java
-@Override
-public void createUser(CreateUserRequest request, 
-                      StreamObserver<UserResponse> responseObserver) {
-    try {
-        var user = userService.create(request.getName());
-        responseObserver.onNext(toGrpcUser(user));
-        responseObserver.onCompleted();
-    } catch (UserAlreadyExistsException e) {
-        responseObserver.onError(
-            Status.ALREADY_EXISTS
-                .withDescription(e.getMessage())
-                .asRuntimeException()
-        );
-    } catch (InvalidUserException e) {
-        responseObserver.onError(
-            Status.INVALID_ARGUMENT
-                .withDescription(e.getMessage())
-                .asRuntimeException()
-        );
-    } catch (Exception e) {
-        responseObserver.onError(
-            Status.INTERNAL
-                .withDescription("Internal server error")
-                .withCause(e)
-                .asRuntimeException()
-        );
-    }
-}
-```
-
-## 3. Complete Error Handling Example
-
-```java
-package ru.tinkoff.kora.guide.grpcserver.advanced.grpc;
-
-import com.google.protobuf.Empty;
-import io.grpc.Status;
-import io.grpc.StatusRuntimeException;
-import io.grpc.stub.StreamObserver;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.guide.grpcserver.advanced.*;
-import ru.tinkoff.kora.guide.grpcserver.advanced.service.UserNotFoundException;
-import ru.tinkoff.kora.guide.grpcserver.advanced.service.UserService;
-
-@Component
-public final class UserServiceGrpcHandler extends UserServiceGrpc.UserServiceImplBase {
-
-    private final Logger logger = LoggerFactory.getLogger(getClass());
-    private final UserService userService;
-
-    public UserServiceGrpcHandler(UserService userService) {
-        this.userService = userService;
-    }
-
-    @Override
-    public void createUser(CreateUserRequest request, 
-                          StreamObserver<UserResponse> responseObserver) {
-        try {
-            var user = userService.createUser(request.getName(), request.getEmail());
-            responseObserver.onNext(toGrpcUser(user));
-            responseObserver.onCompleted();
-        } catch (UserAlreadyExistsException e) {
-            logger.warn("User already exists: {}", request.getEmail());
-            responseObserver.onError(
-                Status.ALREADY_EXISTS
-                    .withDescription(e.getMessage())
-                    .asRuntimeException()
-            );
-        } catch (IllegalArgumentException e) {
-            logger.warn("Invalid argument: {}", e.getMessage());
-            responseObserver.onError(
-                Status.INVALID_ARGUMENT
-                    .withDescription(e.getMessage())
-                    .asRuntimeException()
-            );
-        } catch (Exception e) {
-            logger.error("Failed to create user", e);
-            responseObserver.onError(
-                Status.INTERNAL
-                    .withDescription("Failed to create user")
-                    .withCause(e)
-                    .asRuntimeException()
-            );
-        }
-    }
-
-    @Override
-    public void getUser(GetUserRequest request, 
-                       StreamObserver<UserResponse> responseObserver) {
-        try {
-            var user = userService.getUser(request.getUserId())
-                .orElseThrow(() -> Status.NOT_FOUND
-                    .withDescription("User not found: " + request.getUserId())
-                    .asRuntimeException());
-            responseObserver.onNext(toGrpcUser(user));
-            responseObserver.onCompleted();
-        } catch (StatusRuntimeException e) {
-            responseObserver.onError(e);
-        } catch (Exception e) {
-            logger.error("Failed to get user", e);
-            responseObserver.onError(
-                Status.INTERNAL
-                    .withDescription("Failed to get user")
-                    .withCause(e)
-                    .asRuntimeException()
-            );
-        }
-    }
-
-    @Override
-    public void updateUser(UpdateUserRequestUnary request, 
-                          StreamObserver<UserResponse> responseObserver) {
-        try {
-            var user = userService.updateUser(
-                request.getUserId(), 
-                request.getName(), 
-                request.getEmail()
-            );
-            responseObserver.onNext(toGrpcUser(user));
-            responseObserver.onCompleted();
-        } catch (UserNotFoundException e) {
-            responseObserver.onError(
-                Status.NOT_FOUND
-                    .withDescription(e.getMessage())
-                    .asRuntimeException()
-            );
-        } catch (Exception e) {
-            logger.error("Failed to update user", e);
-            responseObserver.onError(
-                Status.INTERNAL
-                    .withDescription("Failed to update user")
-                    .withCause(e)
-                    .asRuntimeException()
-            );
-        }
-    }
-
-    @Override
-    public void deleteUser(DeleteUserRequest request, 
-                          StreamObserver<Empty> responseObserver) {
-        try {
-            userService.deleteUser(request.getUserId());
-            responseObserver.onNext(Empty.getDefaultInstance());
-            responseObserver.onCompleted();
-        } catch (UserNotFoundException e) {
-            responseObserver.onError(
-                Status.NOT_FOUND
-                    .withDescription(e.getMessage())
-                    .asRuntimeException()
-            );
-        } catch (Exception e) {
-            logger.error("Failed to delete user", e);
-            responseObserver.onError(
-                Status.INTERNAL
-                    .withDescription("Failed to delete user")
-                    .withCause(e)
-                    .asRuntimeException()
-            );
-        }
-    }
-
-    private UserResponse toGrpcUser(ru.tinkoff.kora.guide.grpcserver.advanced.dto.UserResponse user) {
-        return UserResponse.newBuilder()
-            .setId(user.id())
-            .setName(user.name())
-            .setEmail(user.email())
-            .build();
-    }
-}
-```
-
-## 4. Centralized Exception Interceptor
-
-For cross-cutting error handling:
-
-```java
-package ru.tinkoff.kora.example.grpc.server;
-
-import io.grpc.*;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import ru.tinkoff.kora.common.Component;
-
-@Component
-public final class GrpcExceptionHandlerServerInterceptor implements ServerInterceptor {
-    
-    private final Logger logger = LoggerFactory.getLogger(getClass());
-
-    @Override
-    public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
-        ServerCall<ReqT, RespT> call,
-        Metadata metadata,
-        ServerCallHandler<ReqT, RespT> next) {
-        
-        try {
-            return next.startCall(call, metadata);
-        } catch (StatusRuntimeException e) {
-            // Already a gRPC status exception
-            logger.error("gRPC call failed: {} - {}", 
-                call.getMethodDescriptor().getFullMethodName(),
-                e.getStatus().getCode(), e);
-            
-            call.close(e.getStatus(), new Metadata());
-            return new ServerCall.Listener<ReqT>() {};
-            
-        } catch (IllegalArgumentException e) {
-            // Client error
-            var status = Status.INVALID_ARGUMENT.withDescription(e.getMessage());
-            logger.warn("Invalid argument: {}", e.getMessage());
-            
-            call.close(status, new Metadata());
-            return new ServerCall.Listener<ReqT>() {};
-            
-        } catch (SecurityException e) {
-            // AuthZ error
-            var status = Status.PERMISSION_DENIED.withDescription(e.getMessage());
-            logger.warn("Permission denied: {}", e.getMessage());
-            
-            call.close(status, new Metadata());
-            return new ServerCall.Listener<ReqT>() {};
-            
-        } catch (Exception e) {
-            // Unexpected server error
-            var status = Status.INTERNAL
-                .withDescription("Internal server error")
-                .withCause(e);
-            logger.error("Internal error", e);
-            
-            call.close(status, new Metadata());
-            return new ServerCall.Listener<ReqT>() {};
-        }
-    }
-}
-```
-
-## 5. Error Metadata
-
-Add additional error details using Metadata:
-
-```java
-@Override
-public void getUser(GetUserRequest request, 
-                   StreamObserver<UserResponse> responseObserver) {
-    try {
-        var user = userService.findById(request.getId())
-            .orElseThrow(() -> new UserNotFoundException(request.getId()));
-        
-        responseObserver.onNext(toGrpcUser(user));
-        responseObserver.onCompleted();
-        
-    } catch (UserNotFoundException e) {
-        var metadata = new Metadata();
-        metadata.put(Metadata.Key.of("user-id", Metadata.ASCII_STRING_MARSHALLER), 
-                    request.getId());
-        metadata.put(Metadata.Key.of("error-code", Metadata.ASCII_STRING_MARSHALLER), 
-                    "USER_NOT_FOUND");
-        
-        responseObserver.onError(
-            Status.NOT_FOUND
-                .withDescription(e.getMessage())
-                .asRuntimeException(metadata)
-        );
-    }
-}
-```
-
-## 6. Error Handling in Streaming
-
-### Server Streaming
-
-```java
-@Override
-public void listUsers(ListUsersRequest request, 
-                     StreamObserver<User> responseObserver) {
-    try {
-        var users = userService.findAll(request.getPage(), request.getSize());
-        
-        for (var user : users) {
-            responseObserver.onNext(toGrpcUser(user));
-        }
-        
-        responseObserver.onCompleted();
-        
-    } catch (Exception e) {
-        // Send error and terminate stream
-        responseObserver.onError(
-            Status.INTERNAL
-                .withDescription("Failed to list users")
-                .withCause(e)
-                .asRuntimeException()
-        );
-    }
-}
-```
-
-### Client Streaming
-
-```java
-@Override
-public StreamObserver<CreateUserRequest> createUsers(
-    StreamObserver<CreateUsersResponse> responseObserver) {
-    
-    return new StreamObserver<CreateUserRequest>() {
-        private final List<UserRequest> batch = new ArrayList<>();
-
-        @Override
-        public void onNext(CreateUserRequest request) {
-            try {
-                // Validate each request
-                if (request.getName().isEmpty()) {
-                    throw Status.INVALID_ARGUMENT
-                        .withDescription("Name is required")
-                        .asRuntimeException();
-                }
-                batch.add(toDomainRequest(request));
-            } catch (StatusRuntimeException e) {
-                responseObserver.onError(e);
-            }
-        }
-
-        @Override
-        public void onError(Throwable t) {
-            logger.error("Client streaming failed", t);
-            // Error already sent to client
-        }
-
-        @Override
-        public void onCompleted() {
-            try {
-                var createdIds = userService.createAll(batch);
-                
-                var response = CreateUsersResponse.newBuilder()
-                    .addAllUserIds(createdIds)
-                    .setCreatedCount(createdIds.size())
-                    .build();
-                
-                responseObserver.onNext(response);
-                responseObserver.onCompleted();
-                
-            } catch (Exception e) {
-                responseObserver.onError(
-                    Status.INTERNAL
-                        .withDescription("Failed to create users")
-                        .withCause(e)
-                        .asRuntimeException()
-                );
-            }
-        }
-    };
-}
-```
-
-## 7. Mapping Domain Exceptions to Status Codes
-
-```java
-public class GrpcExceptionMapper {
-    
-    public static StatusRuntimeException mapToGrpcException(Exception e) {
-        if (e instanceof UserNotFoundException ex) {
-            return Status.NOT_FOUND.withDescription(ex.getMessage()).asRuntimeException();
-        }
-        if (e instanceof UserAlreadyExistsException ex) {
-            return Status.ALREADY_EXISTS.withDescription(ex.getMessage()).asRuntimeException();
-        }
-        if (e instanceof IllegalArgumentException ex) {
-            return Status.INVALID_ARGUMENT.withDescription(ex.getMessage()).asRuntimeException();
-        }
-        if (e instanceof SecurityException ex) {
-            return Status.PERMISSION_DENIED.withDescription(ex.getMessage()).asRuntimeException();
-        }
-        // Default to internal error
-        return Status.INTERNAL
-            .withDescription("Internal server error")
+        logger.error("Failed to get user", e);
+        responseObserver.onError(Status.INTERNAL
+            .withDescription("Failed to get user")
             .withCause(e)
-            .asRuntimeException();
+            .asRuntimeException());
     }
 }
+```
 
-// Usage in handler:
+An exception that escapes a handler entirely still terminates the call, but as `UNKNOWN` with no
+description — always map deliberately.
+
+## 3. How Kora observes an error
+
+`TelemetryInterceptor` wraps every call, so errors are recorded whether you throw or call `onError`:
+
+- the span gets `StatusCode.ERROR` and the `rpc.grpc.status_code` attribute;
+- `rpc.server.duration` is timed with `rpc.grpc.status_code` set to the numeric code;
+- the response logger emits at **`WARN`** with `status`, `exceptionType` and the throwable attached,
+  instead of the `INFO` used for a successful call.
+
+Those three require `grpcServer.telemetry.{tracing,metrics,logging}` to be enabled — and metrics and
+logging default to **`false`** ([grpc-config-reference.md](grpc-config-reference.md) §3). A service
+whose gRPC errors are "invisible" is usually just a service with telemetry left at its defaults.
+
+## 4. Error metadata
+
+Machine-readable detail goes into trailers, not the description:
+
+```java
+var trailers = new Metadata();
+trailers.put(Metadata.Key.of("error-code", Metadata.ASCII_STRING_MARSHALLER), "USER_NOT_FOUND");
+trailers.put(Metadata.Key.of("user-id", Metadata.ASCII_STRING_MARSHALLER), request.getUserId());
+
+responseObserver.onError(Status.NOT_FOUND
+    .withDescription("User not found")
+    .asRuntimeException(trailers));
+```
+
+The client reads them from `StatusRuntimeException.getTrailers()`. Keys must be lower-case ASCII;
+a key ending in `-bin` uses `Metadata.BINARY_BYTE_MARSHALLER` and carries raw bytes — that is how
+`google.rpc.Status` details are conventionally attached.
+
+## 5. Errors in streaming
+
+### Server streaming
+
+Once you have sent `onNext` messages, an error mid-stream is still a single terminal `onError`. The
+client keeps whatever it already received.
+
+```java
 @Override
-public void deleteUser(DeleteUserRequest request, 
-                      StreamObserver<Empty> responseObserver) {
+public void getAllUsers(Empty request, StreamObserver<UserResponse> responseObserver) {
+    try {
+        for (var user : userStreamingService.getAllUsers()) {
+            responseObserver.onNext(toGrpcUser(user));
+        }
+        responseObserver.onCompleted();
+    } catch (Exception e) {
+        responseObserver.onError(Status.INTERNAL
+            .withDescription("Failed to stream users").withCause(e).asRuntimeException());
+    }
+}
+```
+
+### Client and bidirectional streaming
+
+`StreamObserver.onError(Throwable)` on the **request** observer is an inbound notification — the
+client failed or the call was cancelled. It is not a place to send an error; the call is already
+over. Log it and release resources.
+
+```java
+return new StreamObserver<CreateUserRequest>() {
+    private final List<UserRequest> requests = new ArrayList<>();
+
+    @Override
+    public void onNext(CreateUserRequest value) {
+        requests.add(new UserRequest(value.getName(), value.getEmail()));
+    }
+
+    @Override
+    public void onError(Throwable t) {
+        logger.error("Client streaming failed", t);   // inbound: call already terminated
+    }
+
+    @Override
+    public void onCompleted() {
+        try {
+            var created = userStreamingService.createUsers(requests);
+            responseObserver.onNext(CreateUsersResponse.newBuilder()
+                .setCreatedCount(created.size()).build());
+            responseObserver.onCompleted();
+        } catch (Exception e) {
+            responseObserver.onError(Status.INTERNAL
+                .withDescription("Failed to create users").withCause(e).asRuntimeException());
+        }
+    }
+};
+```
+
+Validating a single message inside `onNext` and calling `responseObserver.onError(...)` ends the
+whole call. If later messages should still be processed, collect the failure and report it in the
+response instead.
+
+## 6. Mapping domain exceptions
+
+Keep the mapping in one place so every handler agrees:
+
+```java
+public final class GrpcStatusMapper {
+
+    private GrpcStatusMapper() {}
+
+    public static StatusRuntimeException toStatus(Exception e) {
+        return switch (e) {
+            case StatusRuntimeException sre -> sre;
+            case UserNotFoundException ex -> Status.NOT_FOUND.withDescription(ex.getMessage()).asRuntimeException();
+            case UserAlreadyExistsException ex -> Status.ALREADY_EXISTS.withDescription(ex.getMessage()).asRuntimeException();
+            case IllegalArgumentException ex -> Status.INVALID_ARGUMENT.withDescription(ex.getMessage()).asRuntimeException();
+            case SecurityException ex -> Status.PERMISSION_DENIED.withDescription(ex.getMessage()).asRuntimeException();
+            default -> Status.INTERNAL.withDescription("Internal server error").withCause(e).asRuntimeException();
+        };
+    }
+}
+```
+
+```java
+@Override
+public void deleteUser(DeleteUserRequest request, StreamObserver<Empty> responseObserver) {
     try {
         userService.deleteUser(request.getUserId());
         responseObserver.onNext(Empty.getDefaultInstance());
         responseObserver.onCompleted();
     } catch (Exception e) {
-        responseObserver.onError(GrpcExceptionMapper.mapToGrpcException(e));
+        responseObserver.onError(GrpcStatusMapper.toStatus(e));
     }
 }
 ```
 
-## 8. Common Pitfalls
+To apply the mapping without a `try/catch` in every method, wrap the call listener in an interceptor
+— see [grpc-interceptors-reference.md](grpc-interceptors-reference.md) §8. Wrapping only
+`startCall` does not catch handler exceptions.
 
-| Problem | Solution |
-|---------|----------|
-| **Calling onNext after onError** | Always ensure only one terminal call (onError/onCompleted) |
-| **Swallowing exceptions** | Log errors before converting to StatusException |
-| **Generic INTERNAL for all errors** | Use specific status codes (NOT_FOUND, INVALID_ARGUMENT) |
-| **Not handling streaming errors** | Implement onError() in StreamObserver |
+## 7. Common pitfalls
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `UNIMPLEMENTED` from an implemented method | handler not collected (missing `@Component`, wrong base class, or a `@Tag`) | [grpc-server-reference.md](grpc-server-reference.md) §4 |
+| `UNKNOWN` with no description | an exception escaped the handler unmapped | map every path to a `Status` |
+| Client hangs to its deadline | some path returns without a terminal signal | exactly one `onCompleted`/`onError` per call |
+| `IllegalStateException: call already closed` | a second terminal signal, or `onNext` after one | send one terminal signal |
+| Cause not visible to the client | `withCause` is server-side only | put client-facing detail in the description or trailers |
+| Stack trace leaked to callers | it was put into `withDescription` | log it; send a short description |
+| A downstream `NOT_FOUND` surfaces as yours | a `StatusRuntimeException` re-thrown verbatim | translate downstream statuses |
+| Errors invisible in metrics/logs | telemetry off | `telemetry.metrics.enabled` / `telemetry.logging.enabled` default to `false` |
+| `onError` on the request observer never fires a response | inbound notification, call already over | reply from `onCompleted` |

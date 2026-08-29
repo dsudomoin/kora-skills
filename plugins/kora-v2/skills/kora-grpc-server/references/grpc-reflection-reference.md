@@ -1,224 +1,156 @@
-# gRPC Server Reflection Reference
+# gRPC Server Reflection Reference — Kora 2.0
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/grpc-server.md`
+**Framework source (authority):** [`GrpcServerFactoryModule`](https://github.com/kora-projects/kora/blob/2.0.0.RC1/grpc/grpc-server/src/main/java/io/koraframework/grpc/server/GrpcServerFactoryModule.java) · [`GrpcServerConfig`](https://github.com/kora-projects/kora/blob/2.0.0.RC1/grpc/grpc-server/src/main/java/io/koraframework/grpc/server/GrpcServerConfig.java)
+**Migrated example:** [`kora-java-guide-grpc-server-advanced-app`](https://github.com/kora-projects/kora-examples/tree/migration/2.0/guides/java/kora-java-guide-grpc-server-advanced-app) (`reflectionEnabled = true`)
 
 ## Contents
 
-1. Overview
-2. Dependency
-3. Configuration
-4. Using grpcurl
-5. Using BloomRPC
+1. What Kora registers
+2. Both halves are required
+3. Dependency
+4. Configuration
+5. Using grpcurl
 6. Using Postman
-7. Production Considerations
+7. Production considerations
 8. Troubleshooting
-9. Complete Example
 
-## 1. Overview
+---
 
-gRPC Server Reflection provides information about publicly available gRPC services on the server and helps clients at runtime build RPC requests and responses without pre-compiled service information.
+## 1. What Kora registers
 
-**Use cases:**
-- `grpcurl` CLI tool for testing
-- BloomRPC, Postman gRPC debugging
-- Dynamic client generation
-- Service discovery
+```java
+if (grpcServerConfig.reflectionEnabled()
+        && isClassPresent("io.grpc.protobuf.services.ProtoReflectionServiceV1")) {
+    builder.addService(ProtoReflectionServiceV1.newInstance());
+}
+```
 
-## 2. Dependency
+Kora 2.0 registers the **v1** reflection service, `io.grpc.protobuf.services.ProtoReflectionServiceV1`
+— the `grpc.reflection.v1.ServerReflection` protocol. Modern `grpcurl` and Postman negotiate v1 and
+fall back to `v1alpha`; a very old client that only speaks `v1alpha` will not discover this server.
 
-=== ":fontawesome-brands-java: `Java`"
+## 2. Both halves are required
+
+Reflection turns on only when **both** conditions hold:
+
+1. `grpcServer.reflectionEnabled = true`, and
+2. `io.grpc.protobuf.services.ProtoReflectionServiceV1` is on the classpath.
+
+The classpath probe is a `try { loadClass } catch (ClassNotFoundException)`. When the class is
+missing the flag is **ignored with no log line and no error** — the server starts perfectly and
+`grpcurl list` answers `UNIMPLEMENTED`. Setting the flag without adding `io.grpc:grpc-services` is
+therefore a silent no-op, and it is the usual explanation for "reflection is enabled but does not
+work".
+
+## 3. Dependency
+
+===! `Java`
+
 ```groovy
-dependencies {
-    implementation "io.grpc:grpc-services:1.74.0"
-}
+implementation "io.grpc:grpc-services:1.83.1"
 ```
 
-=== ":simple-kotlin: `Kotlin`"
+=== `Kotlin`
+
 ```kotlin
-dependencies {
-    implementation("io.grpc:grpc-services:1.74.0")
-}
+implementation("io.grpc:grpc-services:1.83.1")
 ```
 
-## 3. Configuration
+The version must be **`1.83.1`**, matching the `grpc-core` that arrives with
+`io.koraframework:grpc-server`. `kora-bom` does not manage `io.grpc:*`, so nothing pins this for you
+— see [grpc-server-reference.md](grpc-server-reference.md) §2.
 
-Enable reflection in server configuration:
+## 4. Configuration
 
-=== ":material-code-json: `HOCON`"
+===! `HOCON`
+
 ```hocon
 grpcServer {
-  reflectionEnabled = true
+  port = 8090
+  reflectionEnabled = true      # default false
 }
 ```
 
-=== ":simple-yaml: `YAML`"
+=== `YAML`
+
 ```yaml
 grpcServer:
+  port: 8090
   reflectionEnabled: true
 ```
 
-## 4. Using grpcurl
+Gate it per environment rather than hard-coding `true`:
 
-### List Services
-
-```bash
-grpcurl -plaintext localhost:9090 list
-```
-
-Output:
-```
-UserService
-UserStreamingService
-grpc.reflection.v1alpha.ServerReflection
-```
-
-### List Methods
-
-```bash
-grpcurl -plaintext localhost:9090 list UserService
-```
-
-Output:
-```
-UserService.CreateUser
-UserService.GetUser
-UserService.UpdateUser
-UserService.DeleteUser
-```
-
-### Describe Service
-
-```bash
-grpcurl -plaintext localhost:9090 describe UserService
-```
-
-Output:
-```json
-{
-  "name": "UserService",
-  "method": [
-    {
-      "name": "CreateUser",
-      "inputType": ".CreateUserRequest",
-      "outputType": ".UserResponse"
-    },
-    {
-      "name": "GetUser",
-      "inputType": ".GetUserRequest",
-      "outputType": ".UserResponse"
-    }
-  ]
+```hocon
+grpcServer {
+  reflectionEnabled = false
+  reflectionEnabled = ${?GRPC_REFLECTION_ENABLED}
 }
 ```
 
-### Describe Message
+The literal is the default; the `${?VAR}` line overrides it only when the variable is set.
+
+## 5. Using grpcurl
 
 ```bash
-grpcurl -plaintext localhost:9090 describe CreateUserRequest
+# list services
+grpcurl -plaintext localhost:8090 list
+
+# list a service's methods
+grpcurl -plaintext localhost:8090 list io.koraframework.example.grpc.UserService
+
+# describe a service or a message
+grpcurl -plaintext localhost:8090 describe io.koraframework.example.grpc.UserService
+grpcurl -plaintext localhost:8090 describe .io.koraframework.example.grpc.CreateUserRequest
+
+# invoke — the full method name is <proto package>.<Service>/<Method>
+grpcurl -plaintext -d '{"user_id":"42"}' \
+  localhost:8090 io.koraframework.example.grpc.UserService/GetUser
+
+# with metadata, e.g. for an auth interceptor
+grpcurl -plaintext -H 'authorization: my-api-key' -d '{}' \
+  localhost:8090 io.koraframework.example.grpc.UserStreamingService/GetAllUsers
 ```
 
-Output:
-```json
-{
-  "name": "CreateUserRequest",
-  "field": [
-    {"name": "name", "number": 1, "label": "TYPE_STRING"},
-    {"name": "email", "number": 2, "label": "TYPE_STRING"}
-  ]
-}
-```
+`list` includes `grpc.reflection.v1.ServerReflection` itself — seeing it is the quickest confirmation
+that reflection is actually live.
 
-### Invoke RPC
+Names are fully qualified with the `.proto` `package`, **not** the `java_package`. A service that
+`grpcurl` cannot find under the name you expect is usually being addressed with the Java package.
 
-```bash
-grpcurl -plaintext -d '{"name": "John", "email": "john@example.com"}' \
-    localhost:9090 UserService/CreateUser
-```
-
-Output:
-```json
-{
-  "id": "123e4567-e89b-12d3-a456-426614174000",
-  "name": "John",
-  "email": "john@example.com",
-  "createdAt": "2026-06-15T10:30:00Z"
-}
-```
-
-### List with Filtering
-
-```bash
-# List only services matching pattern
-grpcurl -plaintext localhost:9090 list UserService*
-```
-
-## 5. Using BloomRPC
-
-1. Install BloomRPC: `npm install -g bloomrpc`
-2. Open BloomRPC
-3. Enter server address: `localhost:9090`
-4. Enable reflection (auto-detected)
-5. Services appear in left panel
-6. Fill request JSON and click "Invoke"
+Over TLS, drop `-plaintext`; the server uses TLS only when an untagged `ServerCredentials` component
+is supplied ([grpc-server-reference.md](grpc-server-reference.md) §7.1).
 
 ## 6. Using Postman
 
-1. Create new gRPC request
-2. Enter server address: `localhost:9090`
-3. Click "Use reflection" to auto-discover services
-4. Select service and method
-5. Fill message and send
+1. New → gRPC Request.
+2. Server URL `localhost:8090`.
+3. Choose **Using server reflection** for the method definition.
+4. Pick the service and method, fill the message, Invoke.
 
-## 7. Production Considerations
+Add request metadata under the Metadata tab for interceptor-based auth.
 
-### Security
+## 7. Production considerations
 
-Reflection exposes your service schema. Consider disabling in production:
+Reflection publishes your full service and message schema to anyone who can open a connection. It
+does not expose data, and the runtime cost is limited to the extra service registration — but the
+schema itself is information.
 
-```hocon
-grpcServer {
-  // Enable only in dev/test environments
-  reflectionEnabled = ${REFLECTION_ENABLED:false}
-}
-```
-
-The reflection service is registered automatically once the flag is enabled and the `io.grpc:grpc-services` dependency is on the classpath.
-
-### Performance
-
-Reflection has minimal runtime overhead; it only adds the `io.grpc:grpc-services` dependency to the build.
+- Keep `reflectionEnabled = false` on anything internet-facing.
+- Enable it in dev/test, or in production only when the port is reachable solely from inside the
+  cluster.
+- Reflection is **not** authentication-aware by itself. A `ServerInterceptor` is global, so an
+  auth interceptor that guards only `UserServiceGrpc.SERVICE_NAME` leaves the reflection service
+  open. To protect it, match on `grpc.reflection.v1.ServerReflection` explicitly, or leave the flag
+  off.
 
 ## 8. Troubleshooting
 
-| Problem | Solution |
-|---------|----------|
-| **UNIMPLEMENTED: unknown service** | Ensure `grpc-services` dependency is present |
-| **Reflection not working** | Check `reflectionEnabled = true` in config |
-| **Services not listed** | Verify handlers are `@Component` and extend `*ImplBase` |
-| **grpcurl connection refused** | Check server is running on correct port |
-
-## 9. Complete Example
-
-```hocon
-# application.conf
-grpcServer {
-  port = 8090
-  reflectionEnabled = true
-
-  telemetry {
-    logging {
-      enabled = true
-    }
-  }
-}
-```
-
-```bash
-# List services
-grpcurl -plaintext localhost:8090 list
-
-# Invoke a method (full name is <proto package>.<service>/<Method>)
-grpcurl -plaintext \
-  -d '{"user_id": "123"}' \
-  localhost:8090 ru.tinkoff.kora.example.grpc.UserService/GetUser
-```
+| Symptom | Cause | Fix |
+|---|---|---|
+| `grpcurl list` → `UNIMPLEMENTED` | `grpc-services` absent (flag silently ignored) or `reflectionEnabled` not set | add `io.grpc:grpc-services:1.83.1` **and** set the flag |
+| Reflection works, one service missing | that handler is not collected | untagged `@Component` extending `*Grpc.*ImplBase` |
+| `Failed to dial target host` | wrong port, or TLS expected | default port is `8090`; drop/add `-plaintext` |
+| Service name not found | addressed with the `java_package` | use the `.proto` `package` |
+| Only some clients discover the service | an old client that speaks only `v1alpha` | Kora registers `ProtoReflectionServiceV1`; upgrade the client |
+| `AbstractMethodError` after adding `grpc-services` | it was pinned below `1.83.1` | pin `1.83.1` |

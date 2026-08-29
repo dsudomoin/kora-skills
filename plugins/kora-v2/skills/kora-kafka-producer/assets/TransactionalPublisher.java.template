@@ -1,22 +1,18 @@
 package ${packagePath}.publisher;
 
-import ru.tinkoff.kora.kafka.common.annotation.KafkaPublisher;
-import ru.tinkoff.kora.kafka.common.annotation.KafkaPublisher.Topic;
-import ru.tinkoff.kora.kafka.common.producer.TransactionalPublisher;
+import io.koraframework.kafka.common.annotation.KafkaPublisher;
+import io.koraframework.kafka.common.annotation.KafkaPublisher.Topic;
+import io.koraframework.kafka.common.producer.TransactionalPublisher;
 
-/**
- * Transactional publisher.
- *
- * Extends TransactionalPublisher<P> where P is the base publisher (declared here
- * as a nested @KafkaPublisher interface so both fit in one file). All messages
- * sent within inTx() commit atomically, or all abort if the lambda throws.
- */
-@KafkaPublisher("kafka.producer.myTransactionalPublisher")
-public interface MyTransactionalPublisher extends TransactionalPublisher<MyTransactionalPublisher.TopicPublisher> {
+// Transactional publisher: everything sent inside inTx(...) commits together, or the
+// whole batch aborts when the lambda throws.
+//
+// The payload publisher is nested so both interfaces fit in one file; two side-by-side
+// top-level interfaces work exactly the same.
+@KafkaPublisher("kafka.producer.myTransactional")
+public interface MyTransactionalPublisher
+        extends TransactionalPublisher<MyTransactionalPublisher.TopicPublisher> {
 
-    /**
-     * Base publisher used inside the transaction.
-     */
     @KafkaPublisher("kafka.producer.myPublisher")
     interface TopicPublisher {
 
@@ -25,31 +21,41 @@ public interface MyTransactionalPublisher extends TransactionalPublisher<MyTrans
     }
 }
 
-/**
- * Example usage of the transactional publisher.
- */
+// Usage:
+//
 // @Component
 // public final class MyService {
-//     private final MyTransactionalPublisher transactionalPublisher;
 //
-//     public MyService(MyTransactionalPublisher transactionalPublisher) {
-//         this.transactionalPublisher = transactionalPublisher;
+//     private final MyTransactionalPublisher publisher;
+//
+//     public MyService(MyTransactionalPublisher publisher) {
+//         this.publisher = publisher;
 //     }
 //
-//     // Lambda style: commit on success, abort if an exception propagates.
-//     public void sendInTransaction() {
-//         transactionalPublisher.inTx(producer -> {
+//     // Commit on return, abort on throw.
+//     public void sendBoth() {
+//         publisher.inTx(producer -> {
 //             producer.send("key1", "value1");
 //             producer.send("key2", "value2");
 //         });
 //     }
 //
-//     // Manual style: commit on close(), or abort() explicitly.
+//     // withTx hands over the Transaction itself — needed for producer(), flush()
+//     // and sendOffsetsToTransaction(...).
+//     public void sendAndCommitOffsets(Map<TopicPartition, OffsetAndMetadata> offsets,
+//                                      ConsumerGroupMetadata groupMetadata) {
+//         publisher.withTx(tx -> {
+//             tx.publisher().send("key", "value");
+//             tx.sendOffsetsToTransaction(offsets, groupMetadata);
+//         });
+//     }
+//
+//     // Manual: close() commits, abort() opts out and makes close() a no-op.
 //     public void sendManual(boolean somethingBad) {
-//         try (var transaction = transactionalPublisher.begin()) {
-//             transaction.publisher().send("key", "value");
+//         try (var tx = publisher.begin()) {
+//             tx.publisher().send("key", "value");
 //             if (somethingBad) {
-//                 transaction.abort();  // rollback; close() will not commit
+//                 tx.abort();
 //             }
 //         }
 //     }

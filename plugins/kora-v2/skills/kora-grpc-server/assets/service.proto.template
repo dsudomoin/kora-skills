@@ -1,26 +1,60 @@
-// Example proto file for gRPC service
+// gRPC contract for ${service_name}.
 // Save as: src/main/proto/${service_name}.proto
+//
+// Generated with com.google.protobuf:protoc:3.25.3 + io.grpc:protoc-gen-grpc-java:1.83.1
+// (see the build.gradle template — those two versions are load-bearing).
+//
+// Names on the wire come from the proto `package` below, NOT from java_package:
+//   grpcurl -plaintext localhost:8090 ${proto_package}.${service_name}/${method_name}
+//
+// METHOD CASING: protoc lower-cases the first letter of an rpc name when it generates the Java
+// method. `rpc CreateUser` produces `void createUser(...)` on the *ImplBase. Give ${method_name}
+// in lower-camel so the name here and the @Override in the handler template agree — that is also
+// what the migrated Kora 2.0 example protos do.
 
 syntax = "proto3";
 
+package ${proto_package};
+
 option java_multiple_files = true;
-option java_package = "${proto_package}";
-option java_outer_classname = "${service_name}Proto";
+option java_package = "${package}";
 
-package ${package};
+import "google/protobuf/timestamp.proto";
+// Uncomment together with the server-streaming rpc below — protoc warns about unused imports.
+// import "google/protobuf/empty.proto";
 
-// The greeting service definition.
 service ${service_name} {
-  // Sends a greeting
+  // Unary: one request, one response.
   rpc ${method_name} (${request_class}) returns (${response_class}) {}
+
+  // Server streaming: one request, many responses.
+  // Handler: void listAll(Empty, StreamObserver<${response_class}>)
+  // rpc listAll (google.protobuf.Empty) returns (stream ${response_class}) {}
+
+  // Client streaming: many requests, one response.
+  // Handler: StreamObserver<${request_class}> createAll(StreamObserver<${response_class}>)
+  // rpc createAll (stream ${request_class}) returns (${response_class}) {}
+
+  // Bidirectional streaming: many requests, many responses.
+  // Handler: StreamObserver<${request_class}> updateAll(StreamObserver<${response_class}>)
+  // rpc updateAll (stream ${request_class}) returns (stream ${response_class}) {}
 }
 
-// The request message
 message ${request_class} {
   string name = 1;
+  string email = 2;
 }
 
-// The response message
 message ${response_class} {
-  string message = 1;
+  string id = 1;
+  string name = 2;
+  string email = 3;
+  google.protobuf.Timestamp created_at = 4;
 }
+
+// proto3 has no null: every scalar has a zero value ("" / 0 / false) and getX() never returns null.
+// Use `optional` when "absent" must be distinguishable from "empty" — it generates hasX().
+// message PatchRequest {
+//   string id = 1;
+//   optional string name = 2;
+// }

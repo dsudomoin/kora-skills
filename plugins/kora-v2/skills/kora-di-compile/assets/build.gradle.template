@@ -1,6 +1,13 @@
+// Kora 2.x — single-module Java service.
+// Kora 2.0 artifacts are built for Java 25; the toolchain below is the minimum, not a preference.
+
 plugins {
     id "java"
     id "application"
+}
+
+repositories {
+    mavenCentral()
 }
 
 configurations {
@@ -8,26 +15,38 @@ configurations {
     annotationProcessor.extendsFrom(koraBom)
     compileOnly.extendsFrom(koraBom)
     implementation.extendsFrom(koraBom)
-    api.extendsFrom(koraBom)
+    testImplementation.extendsFrom(koraBom)
+    testAnnotationProcessor.extendsFrom(koraBom)
 }
 
 dependencies {
-    koraBom platform("ru.tinkoff.kora:kora-parent:1.2.19")
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
+    // koraVersion lives in gradle.properties
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
 
-    // Basic dependencies
-    implementation "ru.tinkoff.kora:logging-logback"
-    implementation "ru.tinkoff.kora:config-hocon"
+    // Mandatory: without it nothing is generated and the only symptom is
+    // "cannot find symbol: ApplicationGraph"
+    annotationProcessor "io.koraframework:annotation-processors"
 
-    // Add more dependencies as needed:
-    // implementation "ru.tinkoff.kora:database-jdbc"
-    // implementation "ru.tinkoff.kora:validation-module"
-    // implementation "ru.tinkoff.kora:micrometer-module"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
+
+    // Add as needed — every one of these also needs its module in the @KoraApp extends clause:
+    // implementation "io.koraframework:json-common"              // JsonModule
+    // implementation "io.koraframework:database-jdbc"            // JdbcDatabaseModule
+    // implementation "io.koraframework:validation-module"        // ValidationModule
+    // implementation "io.koraframework:micrometer-module"        // MetricsModule
+    // implementation "io.koraframework:http-server-undertow"     // UndertowPublicHttpServerModule
+
+    // Test sources that declare Kora annotations need their own processor
+    testAnnotationProcessor "io.koraframework:annotation-processors"
+    testImplementation "io.koraframework:test-junit5"
 }
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_25
-    targetCompatibility = JavaVersion.VERSION_25
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+        vendor = JvmVendorSpec.ADOPTIUM
+    }
 }
 
 application {
@@ -36,21 +55,19 @@ application {
     applicationDefaultJvmArgs = ["-Dfile.encoding=UTF-8"]
 }
 
-run {
-    environment([
-            // Add environment variables here
-            // "DATABASE_URL": "postgres://localhost/myapp"
-    ])
-}
-
 distTar {
     archiveFileName = "application.tar"
 }
 
-compileJava {
-    options.encoding("UTF-8")
-    options.incremental(true)
-    options.fork = false
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = "UTF-8"
+
+    // Uncomment to see how the processor resolved the graph; it also writes build/kora/log/
+    // options.compilerArgs += ["-AkoraLogLevel=DEBUG"]
+
+    // Only for the "test @KoraApp extends the production @KoraApp" pattern. Set it on the MAIN
+    // compilation; without it the test graph silently loses the production @Component classes.
+    // options.compilerArgs += ["-Akora.app.submodule.enabled=true"]
 }
 
 test {
@@ -58,5 +75,6 @@ test {
     testLogging {
         events "passed", "skipped", "failed"
         showStandardStreams = true
+        exceptionFormat = "full"
     }
 }

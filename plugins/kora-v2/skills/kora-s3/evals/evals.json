@@ -1,82 +1,175 @@
 {
   "evals": [
     {
-      "id": "kora-s3-declarative-client",
+      "id": "kora-s3-declarative-client-java",
       "skills": ["kora-s3"],
-      "query": "Create a Kora declarative S3 client DocumentsClient over the AWS SDK implementation with get, put, list-by-prefix and delete operations for a documents bucket.",
+      "query": "Create a Kora 2.0 declarative S3 client in Java for an uploads bucket with upload, download, metadata lookup, prefix listing and delete.",
       "expected_behavior": [
-        "Annotates an interface with @S3.Client(\"s3client.documents\") and lets Kora generate and register the implementation",
-        "Declares methods with @S3.Get, @S3.Put, @S3.List and @S3.Delete, using S3Object/S3ObjectList returns and S3Body for the put payload",
-        "Adds ru.tinkoff.kora.experimental:s3-client-aws plus a kora-client HTTP module and plugs AwsS3ClientModule into @KoraApp",
-        "Sets s3client.url/accessKey/secretKey/region and the required s3client.documents.bucket config key",
-        "Does not pin a version on the ru.tinkoff.kora artifacts and does not use the AWS SDK S3Client builder by hand for these operations"
+        "Adds io.koraframework.experimental:s3-client-kora (note the .experimental group) plus a Kora HTTP client module such as io.koraframework:http-client-ok, both without an explicit version under platform(\"io.koraframework:kora-bom:$koraVersion\")",
+        "Plugs KoraS3ClientModule from io.koraframework.s3.client.kora and the HTTP client module into @KoraApp",
+        "Annotates the interface with @S3.Client(\"<config path>\") from io.koraframework.s3.client.kora.annotation and supplies the bucket with @S3.Bucket, using a leading dot for a path relative to the @S3.Client path",
+        "Uses @S3.Put returning String (the ETag) or void, @S3.Get returning GetObjectResult or byte[], @S3.Head returning HeadObjectResult, @S3.List returning ListBucketResult or List<String>, and @S3.Delete returning void",
+        "Configures endpoint plus nested credentials { accessKey, secretKey } under the @S3.Client path, with values from environment variables",
+        "Does not use ru.tinkoff.kora packages, S3Object, S3ObjectMeta, S3Body, S3KoraClient, or a bucket key read by the client itself"
       ],
-      "tags": ["s3", "declarative", "basic"]
+      "tags": ["s3", "declarative", "java", "basic"]
     },
     {
-      "id": "kora-s3-aws-vs-minio",
+      "id": "kora-s3-declarative-client-kotlin",
       "skills": ["kora-s3"],
-      "query": "I'm targeting a self-hosted MinIO server, not AWS. Which Kora S3 implementation do I use and what changes versus the AWS one?",
+      "query": "Same thing in Kotlin — a Kora 2.0 declarative S3 client interface plus the KSP and Gradle wiring.",
       "expected_behavior": [
-        "Recommends ru.tinkoff.kora.experimental:s3-client-minio with MinioS3ClientModule",
-        "Explains declarative @S3.Client interfaces are portable, so only the module on @KoraApp and a few config keys change",
-        "Notes MinIO typically needs addressStyle = \"PATH\" and that MinIO auto-creates an OkHttp transport",
-        "Keeps the common s3client.* config (url/accessKey/secretKey) and uses the minio-specific s3client.minio.* block for tuning",
-        "Does not mix both AwsS3ClientModule and MinioS3ClientModule into the same @KoraApp"
+        "Adds ksp(\"io.koraframework:symbol-processors\") and implementation(\"io.koraframework.experimental:s3-client-kora\") plus a Kora HTTP client module such as io.koraframework:http-client-jdk",
+        "Declares @S3.Client / @S3.Bucket on a Kotlin interface with plain (non-suspend) functions",
+        "Uses ByteArray for byte[] bodies and returns String for @S3.Put, GetObjectResult or ByteArray for @S3.Get, HeadObjectResult for @S3.Head",
+        "Expresses optionality with a nullable Kotlin return type (HeadObjectResult?) rather than a JSpecify @Nullable annotation",
+        "Does not declare suspend functions, Flow, Mono or Deferred on the client — Kora 2.0 contracts are synchronous on virtual threads"
       ],
-      "tags": ["s3", "decision", "minio", "basic"]
+      "tags": ["s3", "declarative", "kotlin", "basic"]
     },
     {
-      "id": "kora-s3-multipart-upload",
+      "id": "kora-s3-minio-artifact-removed",
       "skills": ["kora-s3"],
-      "query": "I need to stream a large file of unknown length up to S3 from a Kora service without buffering it all in memory.",
+      "query": "We store files on a self-hosted MinIO server. Add the Kora s3-client-minio module and MinioS3ClientModule to our Kora 2.0 service.",
       "expected_behavior": [
-        "Uses S3Body.ofInputStreamUnbound(is) or S3Body.ofPublisher(pub) with no size argument for the unknown-length payload",
-        "Explains that unbound bodies automatically engage S3 multipart upload with concurrent parts",
-        "Mentions the upload.partSize tuning (default 8MiB, S3 minimum 5MiB) under s3client.aws.upload",
-        "Passes the S3Body to an @S3.Put method or the imperative S3KoraClient",
-        "Does not read the whole stream into a byte[] with S3Body.ofBytes for a large unknown-length file"
+        "States that s3-client-minio does not exist in Kora 2.0 — it is absent from the framework settings.gradle and there is no MinioS3ClientModule",
+        "Recommends io.koraframework.experimental:s3-client-kora, which speaks S3 over Kora's own HTTP client and works against any S3-compatible server including MinIO",
+        "Keeps MinIO as the S3-compatible server, including MinIO in a Testcontainer for tests, and explains only the Kora artifact changed, not the storage",
+        "Keeps addressStyle = PATH (the default) because MinIO normally has no virtual-hosted-style DNS",
+        "Does not offer io.koraframework:s3-client-minio, io.koraframework.experimental:s3-client-minio, MinioS3ClientModule, MinioClient or MinioAsyncClient as Kora components"
       ],
-      "tags": ["s3", "multipart", "streaming", "intermediate"]
+      "tags": ["s3", "removed-artifact", "minio", "regression"]
     },
     {
-      "id": "kora-s3-key-templates",
+      "id": "kora-s3-artifact-groups",
       "skills": ["kora-s3"],
-      "query": "On my Kora @S3.Client I want per-tenant object keys like docs/{tenantId}/{docId}.pdf for get, put and delete.",
+      "query": "My Kora 2.0 build has implementation \"io.koraframework:s3-client-kora\" and my @S3.Client interface fails to compile with 'package S3 does not exist'. What is wrong?",
       "expected_behavior": [
-        "Uses templated keys such as @S3.Put(\"docs/{tenantId}/{docId}.pdf\") with {argName} placeholders",
-        "Ensures every method argument appears in the template with no extra unused args",
-        "Interpolates arguments via toString(), so UUID/String args substitute directly",
-        "Notes that multi-key operations taking List<String> cannot use a key template",
-        "Does not concatenate the bucket name into the key or hand-build the key inside the interface method"
+        "Identifies the wrong group: the declarative client is io.koraframework.experimental:s3-client-kora, because everything under experimental/ publishes under io.koraframework.experimental",
+        "Points out the mirror-image trap: s3-client-aws is NOT under experimental, so it is plain io.koraframework:s3-client-aws",
+        "Explains that s3-client-aws contains no @S3 annotation and no Kora S3 models — it only publishes software.amazon.awssdk.services.s3.S3Client, so adding it does not fix the missing package",
+        "Confirms the annotations live in io.koraframework.s3.client.kora.annotation.S3 and the models in io.koraframework.s3.client.kora.model.{request,response}",
+        "Does not suggest adding a separate s3-client-annotation-processor or s3-client-symbol-processor dependency — the S3 processor is already inside io.koraframework:annotation-processors and io.koraframework:symbol-processors"
       ],
-      "tags": ["s3", "key-template", "intermediate"]
+      "tags": ["s3", "dependencies", "regression"]
     },
     {
-      "id": "kora-s3-metadata-only-head",
+      "id": "kora-s3-head-for-metadata",
       "skills": ["kora-s3"],
-      "query": "I only need to check an object exists and read its size/content-type in Kora S3, not download the body. What's the efficient way?",
+      "query": "In Kora 2.0 I only need an object's size and ETag, not the body. Add an @S3.Get method returning S3ObjectMeta to my client.",
       "expected_behavior": [
-        "Declares an @S3.Get method returning S3ObjectMeta so Kora issues a HEAD request with no body transfer",
-        "For listings, uses S3ObjectMetaList / an @S3.List method returning meta to skip body fetching",
-        "Explains S3ObjectMeta is faster because no object data is transferred",
-        "Notes deletes are best-effort so a meta get is the way to assert existence",
-        "Does not fetch a full S3Object body just to read metadata"
+        "Corrects the premise: @S3.Get serves the body in Kora 2.0 and there is no S3ObjectMeta type; metadata is @S3.Head returning HeadObjectResult",
+        "Shows @S3.Head(\"...\") HeadObjectResult meta(String key) and notes HeadObjectResult exposes bucket(), key(), size(), headers(), etag(), versionId() and lastModified()",
+        "Explains a non-nullable @S3.Head throws S3ClientNoSuchKeyException when the object is missing, while a @Nullable (Java) or nullable (Kotlin) return yields null",
+        "Notes @S3.Get accepts only GetObjectResult or byte[] as return types, so returning a metadata type from it is a compile error",
+        "Does not use S3ObjectMeta, S3ObjectMetaList or any ru.tinkoff.kora S3 model"
       ],
-      "tags": ["s3", "metadata", "intermediate"]
+      "tags": ["s3", "metadata", "regression"]
     },
     {
-      "id": "kora-s3-imperative-presigned",
+      "id": "kora-s3-batch-delete",
       "skills": ["kora-s3"],
-      "query": "The declarative annotations don't cover what I need in Kora S3 - I want dynamic buckets and presigned URLs. What do I inject?",
+      "query": "Add void deleteObjects(List<String> keys) to my Kora 2.0 @S3.Client so I can delete a page of keys in one request.",
       "expected_behavior": [
-        "Injects the portable S3KoraClient or S3KoraAsyncClient by constructor for imperative operations",
-        "Explains the imperative client covers cases declarative @S3.* annotations don't (dynamic buckets, batch delete reporting, presigned URLs, ACL, versioning)",
-        "Mentions the native clients (S3Client/S3AsyncClient for AWS, MinioClient for MinIO) are also injectable for implementation-specific features",
-        "Keeps a single S3 module on @KoraApp and uses constructor injection",
-        "Does not instantiate the AWS or MinIO SDK client manually outside the Kora graph"
+        "States that the declarative client cannot express batch delete: @S3.Delete generates deleteObject only, and a collection parameter is rejected as a key with 'expects one object key, but parameter ... is a collection'",
+        "Offers the AWS SDK route — io.koraframework:s3-client-aws plus AwsS3ClientModule, then s3Client.deleteObjects(r -> r.bucket(b).delete(d -> d.objects(identifiers)))",
+        "Or offers the runtime client route — S3Client#deleteObjects(credentials, bucket, keys) from io.koraframework.s3.client.kora, obtained through the untagged S3ClientFactory",
+        "Mentions S3ClientDeleteException, whose getErrors() carries the per-key failures, and the 1000-key-per-request S3 limit",
+        "Does not claim @S3.Delete supports a List<String> parameter or a batch overload"
       ],
-      "tags": ["s3", "imperative", "advanced"]
+      "tags": ["s3", "delete", "regression"]
+    },
+    {
+      "id": "kora-s3-bucket-source",
+      "skills": ["kora-s3"],
+      "query": "Compiling my Kora 2.0 client fails with \"S3 operation ... has no bucket source\". I already set s3client.uploads.bucket in application.conf and my interface is @S3.Client(\"s3client.uploads\").",
+      "expected_behavior": [
+        "Explains that in Kora 2.0 the bucket is never read from the client config automatically — it must come from @S3.Bucket",
+        "Shows @S3.Bucket(\".bucket\") on the interface, where the leading dot makes the path relative to the @S3.Client path and resolves to s3client.uploads.bucket",
+        "Lists the three sources and their precedence: a @S3.Bucket-annotated method parameter, then @S3.Bucket on the method, then @S3.Bucket on the interface",
+        "Notes that a path without a leading dot is an absolute config path, so different methods can target different buckets",
+        "Does not claim the client config has a bucket key or that S3ClientConfig exposes one"
+      ],
+      "tags": ["s3", "bucket", "configuration", "regression"]
+    },
+    {
+      "id": "kora-s3-bucket-initializer-root",
+      "skills": ["kora-s3"],
+      "query": "My Kora 2.0 app has a Lifecycle component that creates the S3 bucket at startup, but the build fails with \"interface software.amazon.awssdk.services.s3.S3Client wasn't found in graph\" even though AwsS3ClientModule is on @KoraApp.",
+      "expected_behavior": [
+        "Diagnoses graph pruning: nothing depends on the initialiser, so it is dropped and the S3Client it required is dropped with it — the error names the SDK type rather than the initialiser",
+        "Fixes it by annotating the component @Root (io.koraframework.common.annotation.Root) alongside @Component",
+        "Confirms S3Client injects untagged, because @Tag(Tag.Factory.class) inside a @FactoryModule resolves to the tag of the factory-module provider method and AwsS3ClientModule#awsS3ClientFactoryModule() has none",
+        "Notes bucket administration is outside the declarative @S3 contract, so an app that also uses @S3.Client pulls in both s3-client-aws and s3-client-kora and extends both modules",
+        "Does not suggest adding @Tag(Tag.Factory.class) at the injection point or hand-building an S3Client outside the graph"
+      ],
+      "tags": ["s3", "graph", "lifecycle", "regression"]
+    },
+    {
+      "id": "kora-s3-not-found-exception",
+      "skills": ["kora-s3"],
+      "query": "Map a missing S3 object to HTTP 404 in my Kora 2.0 controller — catch S3NotFoundException around the @S3.Client call.",
+      "expected_behavior": [
+        "Corrects the type: it is io.koraframework.s3.client.kora.exception.S3ClientNoSuchKeyException in Kora 2.0, not S3NotFoundException",
+        "Shows the hierarchy S3ClientException -> S3ClientResponseException -> S3ClientErrorException -> S3ClientNoSuchKeyException, with getHttpCode() and getErrorCode() available",
+        "Explains it is thrown only when the @S3.Get / @S3.Head method is non-nullable; a @Nullable (Java) or nullable (Kotlin) return gives null instead, which may be the simpler mapping",
+        "Throws HttpServerResponseException.of(404, ...) or an equivalent Kora 2.0 HTTP error from the catch block",
+        "Does not reference ru.tinkoff.kora.s3.client exceptions, S3Exception or S3DeleteException as 2.0 type names"
+      ],
+      "tags": ["s3", "exceptions", "regression"]
+    },
+    {
+      "id": "kora-s3-config-keys",
+      "skills": ["kora-s3"],
+      "query": "Port this Kora 1.x config to 2.0: s3client { url = ${S3_URL}, accessKey = ${S3_KEY}, secretKey = ${S3_SECRET}, aws { checksumValidationEnabled = false, upload { partSize = \"8MiB\" } }, documents { bucket = ${BUCKET} } }",
+      "expected_behavior": [
+        "Splits the config into the two independent sections: the path named by @S3.Client(...) for the declarative client and the fixed s3client.aws path for the AWS SDK wrapper",
+        "Renames url to endpoint under the @S3.Client path, while the AWS wrapper keeps url",
+        "Nests the keys as credentials { accessKey, secretKey } — the flat 1.x keys are gone",
+        "Replaces checksumValidationEnabled with checksumCalculationRequest / checksumValidationResponse (WHEN_REQUIRED default, or WHEN_SUPPORTED), and notes the AWS wrapper has no upload section — partSize/chunkSize/singlePartUploadLimit belong to the declarative client's upload block",
+        "Keeps the bucket key but wires it through @S3.Bucket rather than expecting the client to read it, and flags that telemetry.logging.enabled and telemetry.metrics.enabled default to false",
+        "Does not keep flat accessKey/secretKey, a client-level bucket lookup, or a s3client.minio section"
+      ],
+      "tags": ["s3", "configuration", "migration", "regression"]
+    },
+    {
+      "id": "kora-s3-streaming-upload",
+      "skills": ["kora-s3"],
+      "query": "Upload a large file of unknown length to S3 from a Kora 2.0 service without buffering it all in memory, using the declarative client.",
+      "expected_behavior": [
+        "Declares an @S3.Put method whose body parameter is java.io.InputStream (Kotlin: InputStream), returning String for the ETag or void",
+        "Explains the generated code performs a multipart upload — createMultipartUpload, uploadPart per chunk, completeMultipartUpload — and falls back to a single putObject when the stream ends inside the first part",
+        "Tunes upload.partSize under the @S3.Client config path (default 5MiB; S3 allows 5MiB to 5GiB with the last part exempt) and mentions upload.chunkSize applies to a ContentWriter body",
+        "Mentions S3Client.ContentWriter as the alternative when the length is known up front and the data is generated rather than streamed",
+        "Does not use S3Body, S3Body.ofInputStreamUnbound, S3Body.ofPublisher, Flow.Publisher or any reactive body type"
+      ],
+      "tags": ["s3", "upload", "streaming", "intermediate"]
+    },
+    {
+      "id": "kora-s3-list-pagination",
+      "skills": ["kora-s3"],
+      "query": "My Kora 1.x client had @S3.List(limit = 50, delimiter = \"/\") returning S3ObjectList. What is the 2.0 equivalent, and how do I page through more than one response?",
+      "expected_behavior": [
+        "States @S3.List in 2.0 has only a value attribute — limit and delimiter were removed and now live on ListObjectsArgs (setMaxKeys, setDelimiter)",
+        "Adds a ListObjectsArgs parameter to the method and notes that when one is present the annotation's prefix template is not applied, so prefix must be set on the args",
+        "Returns ListBucketResult (replacing S3ObjectList) and pages with nextContinuationToken() fed back through setContinuationToken(...)",
+        "Offers Iterator<ListBucketResult.ListBucketItem> or Iterator<String> as the lazily paging alternative, alongside List<String> and List<ListBucketResult.ListBucketItem>",
+        "Does not use S3ObjectList, S3ObjectMetaList, or a limit/delimiter attribute on @S3.List"
+      ],
+      "tags": ["s3", "list", "migration", "intermediate"]
+    },
+    {
+      "id": "kora-s3-testing-minio",
+      "skills": ["kora-s3"],
+      "query": "Write an integration test for my Kora 2.0 @S3.Client against a real S3-compatible server.",
+      "expected_behavior": [
+        "Uses @KoraAppTest(Application.class) with io.koraframework:test-junit5 and injects the @S3.Client interface with @TestComponent",
+        "Runs MinIO as the S3-compatible server in a Testcontainer and feeds its URI and credentials into the graph via KoraAppTestConfigModifier / KoraConfigModification",
+        "Reads the body with try-with-resources over both GetObjectResult and body().asInputStream(), or asserts on a byte[] return",
+        "Asserts the missing-object case with S3ClientNoSuchKeyException from a non-nullable method",
+        "Does not treat MinIO as a Kora module or reference s3-client-minio, and does not mock the S3 protocol by hand where a container is available"
+      ],
+      "tags": ["s3", "testing", "intermediate"]
     }
   ]
 }

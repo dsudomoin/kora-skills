@@ -1,27 +1,33 @@
 package ${package};
 
-import java.util.concurrent.CompletableFuture;
-import ru.tinkoff.kora.common.Module;
-import ru.tinkoff.kora.common.Principal;
-import ru.tinkoff.kora.common.Tag;
-import ru.tinkoff.kora.config.common.annotation.ConfigSource;
-import ru.tinkoff.kora.http.server.common.auth.HttpServerPrincipalExtractor;
+import io.koraframework.common.Principal;
+import io.koraframework.common.annotation.Module;
+import io.koraframework.common.annotation.Tag;
+import io.koraframework.config.common.annotation.ConfigSource;
+import io.koraframework.http.server.common.auth.HttpServerPrincipalExtractor;
 
 /**
- * API-key authentication wired to an OpenAPI security scheme.
+ * API-key authentication for an OpenAPI-generated Kora 2.0 HTTP server.
  *
- * <p>The generated controller invokes this extractor before the delegate, passing the
- * value of the header named in the OpenAPI {@code apiKey} scheme as {@code value}.</p>
+ * <p>Wire-up: for a scheme named {@code apiKeyAuth} in {@code components.securitySchemes} the
+ * generator emits {@code ApiSecurity.ApiKeyAuth} and an interceptor whose only dependency is the
+ * extractor below. Replace {@code ApiSecurity} with the generated class from your api package
+ * (e.g. {@code com.example.api.ApiSecurity}) and match the tag to your scheme's name, PascalCased.
+ * Open the generated {@code ApiSecurity} and copy the factory parameter type verbatim — it is the
+ * specification for this method's return type.</p>
  *
- * <p>Replace {@code ApiSecurity} with the class generated from your OpenAPI contract
- * (it lives in your generated api package, e.g. {@code com.example.api.ApiSecurity}).
- * Throw {@link SecurityException} to reject; map it to 401/403 in an error
- * {@code HttpServerInterceptor}.</p>
+ * <p>Kora discovers {@code @Module} interfaces automatically; do not add this one — or the
+ * generated {@code ApiSecurity} — to the {@code @KoraApp} interface list.</p>
+ *
+ * <p>Rejection protocol: return {@code null}. The generated interceptor then throws
+ * {@code HttpServerResponseException.of(401, "Unauthorized")}. Do <b>not</b> throw
+ * {@code SecurityException} — Kora 2.0 gives it no meaning and it surfaces as HTTP 500 with your
+ * message in the response body.</p>
  */
 @Module
 public interface ApiKeyExtractor {
 
-    /** API-key principal. Must implement {@link Principal}. */
+    /** API-key principal. Must implement {@link Principal}; read it back with {@code Principal.current()}. */
     record ApiKeyPrincipal(String clientId) implements Principal {}
 
     /** Externalized expected key: {@code auth.apiKey.value = ${API_KEY}}. */
@@ -30,13 +36,17 @@ public interface ApiKeyExtractor {
         String value();
     }
 
+    /**
+     * The credential is the raw value of the header/query/cookie named in the {@code apiKey}
+     * scheme — no prefix to strip.
+     */
     @Tag(ApiSecurity.ApiKeyAuth.class)
-    default HttpServerPrincipalExtractor<Principal> apiKeyHttpServerPrincipalExtractor(ApiKeyConfig config) {
+    default HttpServerPrincipalExtractor<String, Principal> apiKeyHttpServerPrincipalExtractor(ApiKeyConfig config) {
         return (request, value) -> {
             if (value == null || !config.value().equals(value)) {
-                throw new SecurityException("Invalid API key");
+                return null;
             }
-            return CompletableFuture.completedFuture(new ApiKeyPrincipal("api-client"));
+            return new ApiKeyPrincipal("api-client");
         };
     }
 }

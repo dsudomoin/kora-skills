@@ -1,524 +1,201 @@
-# Kora GraphInterceptor Reference
+# `GraphInterceptor` Reference — wrapping components during graph build
 
-**Source:** [Kora Container Documentation](../../../.kora-agent/kora-docs/mkdocs/docs/en/documentation/container.md)
-
-Complete reference for component wrapping and modification using `GraphInterceptor` in Kora applications.
+**Kora 2.0** · `io.koraframework.application.graph.GraphInterceptor`
 
 ---
 
-## Table of Contents
-
-1. [GraphInterceptor Interface](#graphinterceptor-interface)
-2. [Basic Usage](#basic-usage)
-3. [Common Patterns](#common-patterns)
-4. [Lifecycle vs GraphInterceptor](#lifecycle-vs-graphinterceptor)
-5. [Troubleshooting](#troubleshooting)
-
----
-
-## GraphInterceptor Interface
-
-### Purpose
-
-`GraphInterceptor<T>` wraps/modifies components during graph construction.
+## 1. The contract
 
 ```java
+package io.koraframework.application.graph;
+
 public interface GraphInterceptor<T> {
-    T init(T value) throws Exception;      // Called on component init
-    T release(T value) throws Exception;   // Called on component release
+
+    T afterInit(T value);
+
+    T beforeRelease(T value);
 }
 ```
 
-**Key capability:** `init()` may return a **different instance** (proxy, wrapper, decorator).
+The method names are **`afterInit`** and **`beforeRelease`**. They are not `init` / `release` — the
+1.x names — and neither declares `throws Exception`, so an override cannot add one.
 
-### How It Works
-
-```
-Component Created
-       ↓
-GraphInterceptor.init() called
-       ↓
-Interceptor may return:
-  - Same instance (after modification)
-  - Wrapped instance (proxy, decorator)
-  - Completely different instance
-       ↓
-Returned instance used by downstream components
-       ↓
-[Shutdown]
-       ↓
-GraphInterceptor.release() called
-```
+Both return the instance the container should carry on with. Returning `value` unchanged is a
+no-op observer; returning a different object replaces the node's value for everything downstream.
 
 ---
 
-## Basic Usage
+## 2. When each method runs
 
-### Cache Warmup Interceptor
+From `GraphImpl.TmpGraph.createNode` and `GraphImpl.release`:
 
-```java
-@Component
-public final class CacheWarmupInterceptor implements GraphInterceptor<JdbcDatabase> {
+**`afterInit`**
 
-    @Override
-    public JdbcDatabase init(JdbcDatabase db) {
-        // Warm cache on init
-        warmupCache(db);
-        return db;  // Return same instance
-    }
+1. the node's factory produces the instance;
+2. if it implements `Lifecycle`, its own `init()` runs;
+3. **then** each interceptor's `afterInit` runs, in declaration order, each receiving the previous
+   one's return value;
+4. the final value is stored on the node and handed to dependents.
 
-    @Override
-    public JdbcDatabase release(JdbcDatabase db) {
-        // Cleanup on release
-        return db;
-    }
+The framework's own test (`interceptorCalledAfterInitAndBeforeDependentObjectCreated`) asserts both
+halves: the intercepted object is initialised after the interceptor exists, and dependents are
+created after interception completed.
 
-    private void warmupCache(JdbcDatabase db) {
-        // Pre-load frequently used data
-        var热门数据 = db.query("SELECT * FROM popular_items LIMIT 100");
-        // Cache the results...
-    }
-}
-```
+**`beforeRelease`**
+
+1. everything depending on the node has already been released;
+2. interceptors run in **reverse** order;
+3. **then** the node's own `Lifecycle.release()` runs;
+4. then `AutoCloseable.close()` if applicable.
+
+**Errors.** A `RuntimeException` or `Error` from `afterInit` propagates and fails graph
+initialisation. A checked exception is wrapped as
+`IllegalStateException: Graph interceptor failed with checked exception for node <type> and interceptor <type>`.
+Failures in `beforeRelease` are collected and rethrown after the rest of the release completed.
 
 ---
 
-## Common Patterns
+## 3. Matching — exact type and tag
 
-### Pattern 1: Metrics Wrapper
-
-Wrap component with timing/metrics:
+`ComponentInterceptors.interceptorsFor` selects interceptors for a resolved component with two
+filters:
 
 ```java
+.filter(interceptor -> this.ctx.types.isSameType(interceptor.interceptType(), type))
+.filter(interceptor -> TagUtils.tagsMatch(interceptor.component().tag(), component.tag()))
+```
+
+- **`isSameType`, not `isAssignable`.** `GraphInterceptor<Cache>` intercepts components whose
+  *declared* type is exactly `Cache`. It does not intercept a `@Component RedisCache implements Cache`
+  registered under its own class. Interceptors of an interface catch module methods declared to
+  return that interface; interceptors of a class catch that class.
+- **Tag matching, with the interceptor as the "required" side.** An untagged interceptor intercepts
+  only untagged components; `@Tag(X.class)` on the interceptor limits it to components tagged `X`;
+  `@Tag(Tag.Any.class)` on the interceptor intercepts every tag.
+
+A generic `GraphInterceptor<T>` component therefore matches nothing — the intercepted type resolves
+to a type variable, which is never `isSameType` with a concrete component type. Declare interceptors
+for a concrete type.
+
+An interceptor does **not** need `@Root` and does not need a dependent: `GraphBuilder.findInterceptors`
+adds it to the resolution stack as soon as the component it intercepts is resolved.
+
+---
+
+## 4. Java
+
+```java
+package com.example.telemetry;
+
+import io.koraframework.application.graph.GraphInterceptor;
+import io.koraframework.common.annotation.Component;
+
 @Component
-public final class MetricsInterceptor implements GraphInterceptor<HttpClient> {
-    private final MeterRegistry meterRegistry;
+public final class PaymentGatewayMetrics implements GraphInterceptor<PaymentGateway> {
 
-    public MetricsInterceptor(MeterRegistry meterRegistry) {
-        this.meterRegistry = meterRegistry;
-    }
-
-    @Override
-    public HttpClient init(HttpClient client) {
-        // Return wrapped client with metrics
-        return new MetricsHttpClient(client, meterRegistry);
-    }
-
-    @Override
-    public HttpClient release(HttpClient client) {
-        return client;
-    }
-}
-
-// Wrapper implementation
-public final class MetricsHttpClient implements HttpClient {
-    private final HttpClient delegate;
     private final MeterRegistry registry;
 
-    public MetricsHttpClient(HttpClient delegate, MeterRegistry registry) {
-        this.delegate = delegate;
+    public PaymentGatewayMetrics(MeterRegistry registry) {
         this.registry = registry;
     }
 
     @Override
-    public Response get(String url) {
-        var timer = registry.timer("http.client.get");
-        return timer.record(() -> delegate.get(url));
+    public PaymentGateway afterInit(PaymentGateway gateway) {
+        return new MeteredPaymentGateway(gateway, registry);
     }
 
     @Override
-    public Response post(String url, String body) {
-        var timer = registry.timer("http.client.post");
-        return timer.record(() -> delegate.post(url, body));
+    public PaymentGateway beforeRelease(PaymentGateway gateway) {
+        return gateway;
     }
 }
 ```
 
-### Pattern 2: Circuit Breaker
+Everything that injects `PaymentGateway` now receives `MeteredPaymentGateway`. Note what
+`beforeRelease` gets: the value currently on the node — the wrapper, not the original.
 
-Add fault tolerance wrapper:
+## 5. Kotlin
 
-```java
+```kotlin
+package com.example.telemetry
+
+import io.koraframework.application.graph.GraphInterceptor
+import io.koraframework.common.annotation.Component
+
 @Component
-public final class CircuitBreakerInterceptor implements GraphInterceptor<ExternalService> {
-    private final ResilienceRegistry registry;
+class PaymentGatewayMetrics(
+    private val registry: MeterRegistry
+) : GraphInterceptor<PaymentGateway> {
 
-    public CircuitBreakerInterceptor(ResilienceRegistry registry) {
-        this.registry = registry;
-    }
+    override fun afterInit(value: PaymentGateway): PaymentGateway =
+        MeteredPaymentGateway(value, registry)
 
-    @Override
-    public ExternalService init(ExternalService service) {
-        // Wrap with circuit breaker
-        return registry.circuitBreaker(service, "external-service");
-    }
-
-    @Override
-    public ExternalService release(ExternalService service) {
-        return service;
-    }
+    override fun beforeRelease(value: PaymentGateway): PaymentGateway = value
 }
 ```
 
-### Pattern 3: Logging Proxy
-
-Add method call logging:
-
-```java
-@Component
-public final class LoggingInterceptor implements GraphInterceptor<PaymentService> {
-    private static final Logger log = LoggerFactory.getLogger(PaymentService.class);
-
-    @Override
-    public PaymentService init(PaymentService service) {
-        return new PaymentServiceProxy(service);
-    }
-
-    @Override
-    public PaymentService release(PaymentService service) {
-        return service;
-    }
-
-    // Proxy implementation
-    private static class PaymentServiceProxy implements PaymentService {
-        private final PaymentService delegate;
-
-        PaymentServiceProxy(PaymentService delegate) {
-            this.delegate = delegate;
-        }
-
-        @Override
-        public PaymentResult process(PaymentRequest request) {
-            log.info("Processing payment: {}", request.getId());
-            try {
-                var result = delegate.process(request);
-                log.info("Payment processed: {}", request.getId());
-                return result;
-            } catch (Exception e) {
-                log.error("Payment failed: {}", request.getId(), e);
-                throw e;
-            }
-        }
-    }
-}
-```
-
-### Pattern 4: Distributed Tracing
-
-Add tracing to all components:
-
-```java
-@Component
-public final class TracingInterceptor implements GraphInterceptor<EventHandler> {
-    private final Tracer tracer;
-
-    public TracingInterceptor(Tracer tracer) {
-        this.tracer = tracer;
-    }
-
-    @Override
-    public EventHandler init(EventHandler handler) {
-        return new TracingEventHandler(handler, tracer);
-    }
-
-    @Override
-    public EventHandler release(EventHandler handler) {
-        return handler;
-    }
-
-    // Tracing wrapper
-    private static final class TracingEventHandler implements EventHandler {
-        private final EventHandler delegate;
-        private final Tracer tracer;
-
-        TracingEventHandler(EventHandler delegate, Tracer tracer) {
-            this.delegate = delegate;
-            this.tracer = tracer;
-        }
-
-        @Override
-        public void handle(Event event) {
-            var span = tracer.startSpan("event.handle");
-            span.setTag("event.type", event.getType());
-            try {
-                delegate.handle(event);
-            } finally {
-                span.end();
-            }
-        }
-    }
-}
-```
-
-### Pattern 5: Validation Wrapper
-
-Add pre/post validation:
-
-```java
-@Component
-public final class ValidationInterceptor implements GraphInterceptor<UserService> {
-    private final Validator validator;
-
-    public ValidationInterceptor(Validator validator) {
-        this.validator = validator;
-    }
-
-    @Override
-    public UserService init(UserService service) {
-        return new ValidatingUserService(service, validator);
-    }
-
-    @Override
-    public UserService release(UserService service) {
-        return service;
-    }
-
-    // Validation wrapper
-    private static final class ValidatingUserService implements UserService {
-        private final UserService delegate;
-        private final Validator validator;
-
-        ValidatingUserService(UserService delegate, Validator validator) {
-            this.delegate = delegate;
-            this.validator = validator;
-        }
-
-        @Override
-        public User create(CreateUserRequest request) {
-            // Validate request
-            validator.validate(request);
-            return delegate.create(request);
-        }
-
-        @Override
-        public User update(UpdateUserRequest request) {
-            // Validate request
-            validator.validate(request);
-            return delegate.update(request);
-        }
-    }
-}
-```
-
-### Pattern 6: Retry Wrapper
-
-Add retry logic:
-
-```java
-@Component
-public final class RetryInterceptor implements GraphInterceptor<DatabaseService> {
-    private final int maxRetries;
-    private final Duration delay;
-
-    public RetryInterceptor(RetryConfig config) { // a @ConfigSource("retry") interface
-        this.maxRetries = config.maxAttempts();
-        this.delay = Duration.ofMillis(config.delayMs());
-    }
-
-    @Override
-    public DatabaseService init(DatabaseService service) {
-        return new RetryDatabaseService(service, maxRetries, delay);
-    }
-
-    @Override
-    public DatabaseService release(DatabaseService service) {
-        return service;
-    }
-
-    // Retry wrapper
-    private static final class RetryDatabaseService implements DatabaseService {
-        private final DatabaseService delegate;
-        private final int maxRetries;
-        private final Duration delay;
-
-        RetryDatabaseService(DatabaseService delegate, int maxRetries, Duration delay) {
-            this.delegate = delegate;
-            this.maxRetries = maxRetries;
-            this.delay = delay;
-        }
-
-        @Override
-        public <T> T execute(Query<T> query) {
-            int attempts = 0;
-            Exception lastException = null;
-
-            while (attempts < maxRetries) {
-                try {
-                    return delegate.execute(query);
-                } catch (TransientException e) {
-                    lastException = e;
-                    attempts++;
-                    try {
-                        Thread.sleep(delay.toMillis());
-                    } catch (InterruptedException ie) {
-                        Thread.currentThread().interrupt();
-                        throw new RuntimeException("Retry interrupted", ie);
-                    }
-                }
-            }
-
-            throw new RuntimeException("Query failed after " + maxRetries + " attempts", lastException);
-        }
-    }
-}
-```
-
-### Pattern 7: Async Interceptor
-
-Add async behavior:
-
-```java
-@Component
-public final class AsyncInterceptor implements GraphInterceptor<EventHandler> {
-    private final ExecutorService executor;
-
-    public AsyncInterceptor() {
-        this.executor = Executors.newFixedThreadPool(10);
-    }
-
-    @Override
-    public EventHandler init(EventHandler handler) {
-        return new AsyncEventHandler(handler, executor);
-    }
-
-    @Override
-    public EventHandler release(EventHandler handler) {
-        return handler;
-    }
-
-    // Async wrapper
-    private static final class AsyncEventHandler implements EventHandler {
-        private final EventHandler delegate;
-        private final ExecutorService executor;
-
-        AsyncEventHandler(EventHandler delegate, ExecutorService executor) {
-            this.delegate = delegate;
-            this.executor = executor;
-        }
-
-        @Override
-        public void handle(Event event) {
-            executor.submit(() -> delegate.handle(event));
-        }
-    }
-}
-```
-
-### Pattern 8: Composite Interceptor Chain
-
-Multiple interceptors are applied automatically:
-
-```java
-// All interceptors for HttpClient
-@Component
-public class MetricsInterceptor implements GraphInterceptor<HttpClient> { /* ... */ }
-
-@Component
-public class TracingInterceptor implements GraphInterceptor<HttpClient> { /* ... */ }
-
-@Component
-public class CircuitBreakerInterceptor implements GraphInterceptor<HttpClient> { /* ... */ }
-
-// Result: HttpClient is wrapped with metrics → tracing → circuit breaker
-// Order is determined by Kora's graph construction
-```
+Kora contracts are `@NullMarked`, so the Kotlin parameter and return types are non-nullable `T`.
+Writing `value: T?` produces `'afterInit' overrides nothing`, a message that does not mention
+nullability at all.
 
 ---
 
-## Lifecycle vs GraphInterceptor
-
-| Aspect | Lifecycle | GraphInterceptor |
-|--------|-----------|------------------|
-| Purpose | Init/release hooks | Component wrapping/modification |
-| Can modify instance | No | Yes (return different instance) |
-| Use case | Resource management | Cross-cutting concerns |
-| Example | Start/stop server | Add metrics, tracing, circuit breaker |
-| Applied to | Component itself | External interceptor |
-
-### When to Use Which
-
-| Scenario | Use |
-|----------|-----|
-| Component needs init/release logic | `Lifecycle` |
-| Factory method needs lifecycle | `LifecycleWrapper` |
-| Wrap/modify component instance | `GraphInterceptor` |
-| Add cross-cutting concern (metrics, tracing) | `GraphInterceptor` |
-| Component-specific initialization | `Lifecycle` (on component) |
-| External modification of component | `GraphInterceptor` |
-
----
-
-## Troubleshooting
-
-### Interceptor Not Applied
-
-**Problem:** Component not wrapped by interceptor
-
-**Check:**
-1. Is interceptor marked with `@Component`?
-2. Does generic type match component type exactly?
-3. Is interceptor in a scanned package?
-
-### Wrapper Breaking Component
-
-**Problem:** Wrapped component doesn't work correctly
-
-**Check:**
-1. Does wrapper delegate all methods correctly?
-2. Are interfaces properly implemented?
-3. Is state properly transferred?
-
-### Circular Dependency in Interceptor
-
-**Problem:** Interceptor creates circular dependency
-
-**Solution:** Use `ValueOf` for dependencies in interceptor:
+## 6. Observing without replacing
 
 ```java
 @Component
-public final class MetricsInterceptor implements GraphInterceptor<HttpClient> {
-    private final ValueOf<MeterRegistry> meterRegistry;
+public final class ReportingSchemaCheck implements GraphInterceptor<ReportingClient> {
 
-    public MetricsInterceptor(ValueOf<MeterRegistry> meterRegistry) {
-        this.meterRegistry = meterRegistry;
+    @Override
+    public ReportingClient afterInit(ReportingClient client) {
+        client.verifySchema();     // fail fast on a schema mismatch
+        return client;
     }
 
     @Override
-    public HttpClient init(HttpClient client) {
-        return new MetricsHttpClient(client, meterRegistry.get());
-    }
-
-    @Override
-    public HttpClient release(HttpClient client) {
+    public ReportingClient beforeRelease(ReportingClient client) {
+        client.flushPending();
         return client;
     }
 }
 ```
 
-### Performance Overhead
-
-**Problem:** Interceptor causing latency
-
-**Solutions:**
-1. Minimize work in `init()`/`release()`
-2. Use async processing for heavy operations
-3. Consider sampling for high-frequency operations
-
-### Multiple Interceptors Order
-
-**Problem:** Need specific order of interceptor application
-
-**Solution:** Kora applies interceptors in deterministic order, but if you need specific ordering, consider:
-
-1. Combining interceptors into one
-2. Using a single composite interceptor
-3. Documenting expected order in code comments
+Use this shape for a check or a one-off action that must happen after the component's own `init()`
+and before anything uses it — `Lifecycle` on the component itself cannot see that boundary from the
+outside.
 
 ---
 
-## See Also
+## 7. `Lifecycle` vs `GraphInterceptor` vs AOP
 
-- [SKILL.md](../SKILL.md) — Runtime DI overview
-- [Lifecycle Reference](lifecycle-reference.md) — Lifecycle interface patterns
-- [Optional Dependency Reference](optional-dependency-reference.md) — @Nullable and ValueOf lazy dependencies
-- [Container Documentation](../../../.kora-agent/kora-docs/mkdocs/docs/en/documentation/container.md) — Official docs
+| Need | Use |
+|---|---|
+| a component manages its own startup/shutdown | `Lifecycle` on the component |
+| a third-party type needs startup/shutdown | `Wrapped<T>` + `LifecycleWrapper` in a module |
+| something *outside* the component must decorate or replace it | `GraphInterceptor<T>` |
+| per-method cross-cutting behaviour (log, retry, cache, timeout) | the AOP modules — `@Log`, `@Retryable`, `@Cacheable`, `@Timeout` … |
+
+`GraphInterceptor` is graph-build machinery, not a request-path concern. Whatever it returns is
+constructed once, so keep the interception cheap and put per-call work in the wrapper you return.
+
+---
+
+## 8. Pitfalls
+
+| Symptom | Cause |
+|---|---|
+| `method does not override or implement a method from a supertype` (Java) / `'init' overrides nothing` (Kotlin) | 1.x method names; use `afterInit` / `beforeRelease` |
+| `afterInit(T) … cannot implement afterInit(T) in GraphInterceptor` | the override added `throws Exception`; the 2.0 methods declare none |
+| interceptor never fires | intercepted type is not the component's *exact* declared type |
+| interceptor never fires, types look right | tag mismatch — an untagged interceptor skips tagged components |
+| generic `GraphInterceptor<T>` does nothing | matches no concrete type; declare it for a concrete one |
+| `ClassCastException` downstream | the wrapper returned by `afterInit` does not implement the declared type |
+| `'afterInit' overrides nothing` (Kotlin) | `T?` instead of `T`; Kora contracts are `@NullMarked` |
+
+---
+
+## See also
+
+- [`lifecycle-reference.md`](lifecycle-reference.md) — the callbacks `afterInit`/`beforeRelease` bracket
+- [`tag-injection-reference.md`](tag-injection-reference.md) — tag matching rules
+- [`runtime-graph-api-reference.md`](runtime-graph-api-reference.md) — refresh and interceptors

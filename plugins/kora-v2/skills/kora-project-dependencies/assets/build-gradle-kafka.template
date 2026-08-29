@@ -1,15 +1,22 @@
-// Kora Kafka Service - build.gradle template
+// Kora 2.0 Kafka Service - build.gradle template
 // Kafka producers (@KafkaPublisher) and consumers (@KafkaListener) with JSON.
-// A single "kafka" artifact covers both producer and consumer.
+// A single "kafka" artifact covers both - there are no kafka-producer/kafka-consumer artifacts.
 
 plugins {
     id "java"
     id "application"
 }
 
+repositories {
+    mavenCentral()
+    // io.koraframework:kora-bom:2.0.0.RC1 is on Maven Central; nothing else is needed.
+    // Only the 2.0.0-SNAPSHOT development line also needs:
+    // maven { url = "https://central.sonatype.com/repository/maven-snapshots" }
+}
+
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
+        languageVersion = JavaLanguageVersion.of(25)
         vendor = JvmVendorSpec.ADOPTIUM
     }
 }
@@ -24,21 +31,21 @@ configurations {
 
 dependencies {
     // Kora BOM - owns every Kora module version
-    koraBom platform("ru.tinkoff.kora:kora-parent:$koraVersion")
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
 
     // Annotation processor
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
+    annotationProcessor "io.koraframework:annotation-processors"
 
     // Core modules
-    implementation "ru.tinkoff.kora:logging-logback"
-    implementation "ru.tinkoff.kora:config-hocon"
-    implementation "ru.tinkoff.kora:json-module"
+    implementation "io.koraframework:logging-logback"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:json-common"
 
     // Kafka (producer + consumer)
-    implementation "ru.tinkoff.kora:kafka"
+    implementation "io.koraframework:kafka"
 
     // Testing
-    testImplementation "ru.tinkoff.kora:test-junit5"
+    testImplementation "io.koraframework:test-junit5"
     testImplementation "org.testcontainers:junit-jupiter:1.21.4"
 }
 

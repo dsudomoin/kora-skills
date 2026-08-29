@@ -1,28 +1,28 @@
 package ${package};
 
-import jakarta.annotation.Nullable;
-import ru.tinkoff.kora.database.cassandra.annotation.EntityCassandra;
-import ru.tinkoff.kora.database.common.annotation.Column;
-import ru.tinkoff.kora.database.common.annotation.Id;
-import ru.tinkoff.kora.database.common.annotation.Table;
+import io.koraframework.database.cassandra.annotation.EntityCassandra;
+import io.koraframework.database.common.annotation.Column;
+import io.koraframework.database.common.annotation.Id;
+import io.koraframework.database.common.annotation.Table;
+import org.jspecify.annotations.Nullable;
 
-/**
- * Entity with single-field ID.
- * For UUID IDs, use UUID type with import java.util.UUID.
- * For String IDs, change to String type.
- * For numeric IDs, use Long type.
+/*
+ * TEMPLATE NOTES — delete this block after copying.
  *
- * Key annotations:
- * - @EntityCassandra: Generates Cassandra row/result-set mappers at compile time
- * - @Table: Maps to Cassandra table
- * - @Id: Optional in Cassandra; only matters for SQL macros
- * - @Column: Maps field to column name
- * - @Nullable: For nullable fields
+ * @EntityCassandra  generates $<Entity>_CassandraRowMapper and the matching
+ *                   result-set mappers at compile time.
+ * @Table / @Id      consumed only by SQL macros (%{entity#inserts}, %{entity#where = @id}).
+ *                   Hand-written CQL ignores both; keep them if the repository uses macros.
+ * @Column           optional — the default column name is snake_case of the component name.
+ * @Nullable         org.jspecify.annotations.Nullable, a TYPE-USE annotation. Without it a null
+ *                   column throws "Result field x is not nullable but row y has null".
+ *
+ * ${id_type}: String, UUID, Long, ... — must match the CQL partition key type.
  */
 @EntityCassandra
 @Table("${table_name}")
 public record ${entity_name}(
-    @Column("id") @Id ${id_type} id,
+    @Id ${id_type} id,
     @Column("field1") String field1,
     @Column("field2") String field2,
     @Column("field3") @Nullable String field3

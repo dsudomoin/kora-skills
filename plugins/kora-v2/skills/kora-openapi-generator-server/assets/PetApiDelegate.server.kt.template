@@ -1,92 +1,86 @@
-package com.example.api
+// Kora 2.x — implementation of a generated *ApiDelegate (Kotlin)
+//
+// The delegate is the ONLY implementation point of a generated OpenAPI server.
+// Kotlin delegate functions are plain `fun` — never `suspend`. Kora 2.0 contracts are synchronous.
+package com.example.petapi.delegate
 
-import com.example.api.PetApiResponses.*
-import com.example.model.Pet
-import com.example.model.Message
-import ru.tinkoff.kora.common.Component
+import io.koraframework.common.Principal
+import io.koraframework.common.annotation.Component
+import io.koraframework.http.server.common.response.HttpServerResponseException
 
-/**
- * Example delegate implementation for Pet API (Kotlin)
- *
- * Key points:
- * - Annotated with @Component for DI discovery
- * - Implements generated PetApiDelegate interface
- * - Returns the generated sealed *ApiResponses records (Kora has no ResponseEntity)
- * - Each HTTP status is a separate ApiResponse record
- * - Delegate handles business logic, controller handles HTTP
- *
- * Generated from: openapi-spec.yaml.template
- */
-@Component
-class PetApiDelegateImpl(
-    private val petService: PetService
-) : PetApiDelegate {
+// Generated into apiPackage / modelPackage by the openApiGenerateHttpServer task.
+import com.example.petapi.api.PetApiDelegate
+import com.example.petapi.api.PetApiResponses
+import com.example.petapi.model.ErrorResponse
+import com.example.petapi.model.Pet
 
-    /**
-     * GET /pets/{petId}
-     *
-     * Response codes:
-     * - 200: Pet found
-     * - 400: Invalid petId format
-     * - 404: Pet not found
-     */
-    override fun getPetById(petId: Long): GetPetByIdApiResponse {
+@Component                       // io.koraframework.common.annotation.Component — required
+class PetDelegate(private val petService: PetService) : PetApiDelegate {
+
+    // Multi-status operation: one class per declared status inside a sealed interface.
+    override fun addPet(pet: Pet): PetApiResponses.AddPetApiResponse =
+        PetApiResponses.AddPetApiResponse.AddPet200ApiResponse(petService.save(pet))
+
+    override fun getPetById(petId: Long): PetApiResponses.GetPetByIdApiResponse {
         if (petId < 0) {
-            return GetPetByIdApiResponse.GetPetById400ApiResponse()
+            return PetApiResponses.GetPetByIdApiResponse.GetPetById400ApiResponse()
         }
-
-        val pet = petService.findById(petId)
-            ?: return GetPetByIdApiResponse.GetPetById404ApiResponse()
-
-        return GetPetByIdApiResponse.GetPetById200ApiResponse(pet)
+        val pet = petService.find(petId)
+            ?: return PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse()
+        return PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse(pet)
     }
 
-    /**
-     * POST /pets
-     *
-     * Response codes:
-     * - 200: Pet created successfully
-     * - 400: Invalid request body (validation failed)
-     *
-     * Note: Validation happens automatically before this method is called
-     * when enableServerValidation: "true" is set.
-     */
-    override fun addPet(body: Pet): AddPetApiResponse {
-        val created = petService.create(body)
-        return AddPetApiResponse.AddPet200ApiResponse(
-            Message("Pet created successfully")
+    // Generated enums expose fromValue(raw); Pet.StatusEnum.valueOf(raw) compares against the
+    // constant name and fails on the contract's own wire values.
+    override fun findPetsByStatus(status: String?): PetApiResponses.FindPetsByStatusApiResponse {
+        val parsed = try {
+            status?.let(Pet.StatusEnum::fromValue)
+        } catch (_: IllegalArgumentException) {
+            null
+        } ?: return PetApiResponses.FindPetsByStatusApiResponse
+            .FindPetsByStatus400ApiResponse(ErrorResponse(message = "unknown status: $status"))
+
+        val pets = petService.byStatus(parsed)
+        // The contract declares a required `x-total-count` response header, so it is a trailing
+        // component of the generated record. Named arguments here too.
+        return PetApiResponses.FindPetsByStatusApiResponse.FindPetsByStatus200ApiResponse(
+            content = pets,
+            xTotalCount = pets.size.toString(),
         )
     }
 
-    /**
-     * PUT /pets/{petId}
-     *
-     * Response codes:
-     * - 200: Pet updated successfully
-     * - 404: Pet not found
-     */
-    override fun updatePet(petId: Long, body: Pet): UpdatePetApiResponse {
-        if (!petService.exists(petId)) {
-            return UpdatePetApiResponse.UpdatePet404ApiResponse()
-        }
-
-        val updated = petService.update(petId, body)
-        return UpdatePetApiResponse.UpdatePet200ApiResponse(updated)
+    // Generated Kotlin models keep SPEC order and put optional properties (with defaults) in
+    // place, so an optional property can sit between two required ones. Always use named
+    // arguments — for the constructor and for copy(). A positional call compiles only by
+    // accident and silently shifts values when the contract changes.
+    override fun updatePet(pet: Pet): PetApiResponses.UpdatePetApiResponse {
+        val existing = petService.find(pet.id)
+            ?: return PetApiResponses.UpdatePetApiResponse.UpdatePet404ApiResponse()
+        val updated = existing.copy(name = pet.name, status = pet.status)
+        return PetApiResponses.UpdatePetApiResponse.UpdatePet200ApiResponse(petService.save(updated))
     }
 
-    /**
-     * DELETE /pets/{petId}
-     *
-     * Response codes:
-     * - 204: Pet deleted successfully (no content)
-     * - 404: Pet not found
-     */
-    override fun deletePet(petId: Long): DeletePetApiResponse {
-        if (!petService.exists(petId)) {
-            return DeletePetApiResponse.DeletePet404ApiResponse()
+    // The `default` response record takes the status code as its first component.
+    override fun deletePet(petId: Long, apiKey: String?): PetApiResponses.DeletePetApiResponse {
+        try {
+            petService.delete(petId)
+        } catch (e: IllegalStateException) {
+            return PetApiResponses.DeletePetApiResponse.DeletePetDefaultApiResponse(
+                statusCode = 409,
+                content = ErrorResponse(message = e.message ?: "conflict"),
+            )
         }
+        return PetApiResponses.DeletePetApiResponse.DeletePet204ApiResponse()
+    }
 
-        petService.delete(petId)
-        return DeletePetApiResponse.DeletePet204ApiResponse()
+    // whoAmI declares exactly ONE response in the contract, so its generated type is a data
+    // class directly — there is no sealed interface and no per-status nested type.
+    //
+    // The authenticated identity established by the generated ApiSecurity interceptor is bound
+    // to a JDK ScopedValue. Kora 2.0 has no Context.
+    override fun whoAmI(): PetApiResponses.WhoAmIApiResponse {
+        val principal = Principal.current()
+            ?: throw HttpServerResponseException.of(401, "Unauthorized")
+        return PetApiResponses.WhoAmIApiResponse(principal.toString())
     }
 }

@@ -1,0 +1,53 @@
+package com.example.interceptor
+
+import io.koraframework.common.annotation.Component
+import io.koraframework.common.annotation.Tag
+import io.koraframework.http.common.body.HttpBody
+import io.koraframework.http.server.common.HttpServer
+import io.koraframework.http.server.common.interceptor.HttpServerInterceptor
+import io.koraframework.http.server.common.request.HttpServerRequest
+import io.koraframework.http.server.common.response.HttpServerResponse
+import io.koraframework.http.server.common.response.HttpServerResponseException
+import io.koraframework.json.common.JsonWriter
+import io.koraframework.json.common.annotation.Json
+
+/**
+ * Server-scoped error-to-JSON interceptor — Kora 2.0 (Kotlin).
+ *
+ * Behaviourally identical to ErrorInterceptor.java.template.
+ *
+ * - @Tag(HttpServer::class), not @Tag(HttpServerModule::class) — the old tag compiles and the
+ *   interceptor is silently never invoked.
+ * - Synchronous: plain try/catch, no .exceptionally(...) and no CompletionException to unwrap.
+ * - errorWriter.toByteArray(...) throws only unchecked exceptions; there is nothing to catch and
+ *   no *Unchecked variant to call.
+ * - HttpServerResponseException implements HttpServerResponse, so it is returned as-is and the
+ *   client sees the status and body the handler intended.
+ */
+@Tag(HttpServer::class)
+@Component
+class ErrorInterceptor(private val errorWriter: JsonWriter<ErrorInterceptor.ErrorResponse>) : HttpServerInterceptor {
+
+    @Json
+    data class ErrorResponse(val code: String, val message: String?)
+
+    override fun intercept(
+        request: HttpServerRequest,
+        chain: HttpServerInterceptor.InterceptChain
+    ): HttpServerResponse {
+        return try {
+            chain.process(request)
+        } catch (e: HttpServerResponseException) {
+            e
+        } catch (e: IllegalArgumentException) {
+            json(400, "BAD_REQUEST", e.message)
+        } catch (e: IllegalStateException) {
+            json(400, "BAD_REQUEST", e.message)
+        } catch (e: Exception) {
+            json(500, "INTERNAL_ERROR", "An unexpected error occurred")
+        }
+    }
+
+    private fun json(code: Int, errorCode: String, message: String?): HttpServerResponse =
+        HttpServerResponse.of(code, HttpBody.json(errorWriter.toByteArray(ErrorResponse(errorCode, message))))
+}

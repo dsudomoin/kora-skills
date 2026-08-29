@@ -1,33 +1,35 @@
-// Minimal Kora dependencies for a basic application
+// Minimal Kora 2.0 dependencies for a basic application
 // Use this as a starting point and add modules as needed
 
 dependencies {
     // Kora BOM - manages all Kora module versions
-    koraBom platform("ru.tinkoff.kora:kora-parent:$koraVersion")
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
 
-    // Annotation processor (Java) - required for compile-time code generation
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
+    // Annotation processor (Java) - required for compile-time code generation.
+    // The koraBom configuration must extendsFrom annotationProcessor or this fails to resolve.
+    annotationProcessor "io.koraframework:annotation-processors"
 
-    // For Kotlin projects, use KSP instead:
-    // ksp "ru.tinkoff.kora:symbol-processors"
+    // For Kotlin projects, use KSP instead - and note the explicit version:
+    // the BOM does not constrain the `ksp` configuration.
+    //   ksp("io.koraframework:symbol-processors:$koraVersion")
 
     // ===========================================
     // ALWAYS NEEDED (core modules)
     // ===========================================
 
     // Logging - SLF4J with Logback backend
-    implementation "ru.tinkoff.kora:logging-logback"
+    implementation "io.koraframework:logging-logback"
 
     // Configuration - HOCON format (application.conf)
-    implementation "ru.tinkoff.kora:config-hocon"
+    implementation "io.koraframework:config-hocon"
 
     // Alternative: YAML configuration (application.yaml)
-    // implementation "ru.tinkoff.kora:config-yaml"
+    // implementation "io.koraframework:config-yaml"
 
-    // JSON - (de)serialization for DTOs, HTTP, Kafka
-    implementation "ru.tinkoff.kora:json-module"
+    // JSON - compile-time (de)serialization for DTOs, HTTP, Kafka.
+    // The artifact is json-common; `json-module` does not exist in Kora 2.0.
+    implementation "io.koraframework:json-common"
 }
 
-// Note: Don't version Kora dependencies explicitly!
-// The BOM (kora-parent) manages all versions.
-// Just use: implementation "ru.tinkoff.kora:module-name"
+// Do not version io.koraframework:* artifacts - kora-bom owns them.
+// The single exception is the Kotlin ksp(...) line above.

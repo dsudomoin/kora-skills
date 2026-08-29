@@ -1,141 +1,85 @@
 #!/usr/bin/env python3
 """
-Kora Project Generator
+Kora 2.x Project Generator
 
-Generates a new Kora framework project with proper structure, Gradle setup,
-and base configuration files.
+Scaffolds a Kora Framework 2.x project (group io.koraframework, BOM io.koraframework:kora-bom)
+with a working @KoraApp graph, the mandatory annotation/symbol processor wiring, and Java 25
+toolchain settings.
 
 Usage:
-    python generate_project.py --name my-app --package com.example
-    python generate_project.py --name my-app --package com.example --lang kotlin
-    python generate_project.py --name my-app --package com.example --multi-module
+    python3 generate_project.py --name my-app --package com.example --dry-run
+    python3 generate_project.py --name my-app --package com.example
+    python3 generate_project.py --name my-app --package com.example --lang kotlin
+    python3 generate_project.py --name my-app --package com.example --multi-module
+
+--dry-run prints every file that would be written, with its full content, and touches nothing.
+Re-running over an existing directory is refused unless --force is given.
 """
 
 import argparse
 import os
-import shutil
+import sys
 from pathlib import Path
+from typing import Dict
+
+DEFAULT_KORA_VERSION = "2.0.0.RC1"
+GRADLE_DISTRIBUTION = "gradle-9.5.1-bin.zip"
+JAVA_TOOLCHAIN = 25
+KOTLIN_PLUGIN_VERSION = "2.4.10"
+KSP_PLUGIN_VERSION = "2.3.11"
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Generate a new Kora framework project"
+        description="Generate a Kora Framework 2.x project skeleton"
+    )
+    parser.add_argument("--name", required=True, help="Project name (e.g. my-app)")
+    parser.add_argument("--package", required=True, help="Base package (e.g. com.example)")
+    parser.add_argument(
+        "--lang", choices=["java", "kotlin"], default="java",
+        help="Source language (default: java)"
     )
     parser.add_argument(
-        "--name",
-        required=True,
-        help="Project name (e.g., my-app)"
+        "--multi-module", action="store_true",
+        help="Multi-module layout: common (@KoraSubmodule) + app (@KoraApp)"
+    )
+    parser.add_argument("--output", default=".", help="Output directory (default: .)")
+    parser.add_argument(
+        "--kora-version", default=DEFAULT_KORA_VERSION,
+        help=f"Kora version (default: {DEFAULT_KORA_VERSION})"
     )
     parser.add_argument(
-        "--package",
-        required=True,
-        help="Base package name (e.g., com.example)"
+        "--dry-run", action="store_true",
+        help="Print what would be written and exit without touching the filesystem"
     )
     parser.add_argument(
-        "--lang",
-        choices=["java", "kotlin"],
-        default="java",
-        help="Programming language (default: java)"
-    )
-    parser.add_argument(
-        "--multi-module",
-        action="store_true",
-        help="Create multi-module project structure"
-    )
-    parser.add_argument(
-        "--output",
-        default=".",
-        help="Output directory (default: current directory)"
-    )
-    parser.add_argument(
-        "--kora-version",
-        default="1.2.19",
-        help="Kora framework version (default: 1.2.19)"
+        "--force", action="store_true",
+        help="Overwrite files in an existing output directory"
     )
     return parser.parse_args()
 
 
 def package_to_path(package: str) -> str:
-    """Convert package name to directory path."""
     return os.path.join(*package.split("."))
 
 
-def create_directory_structure(base_path: Path, package: str, multi_module: bool):
-    """Create project directory structure."""
-    package_path = package_to_path(package)
-
-    if multi_module:
-        # Multi-module structure
-        modules = ["common", "app"]
-        for module in modules:
-            src_path = base_path / module / "src" / "main" / "java" / package_path / module.replace("-", "_")
-            src_path.mkdir(parents=True, exist_ok=True)
-
-            # Test directories
-            test_path = base_path / module / "src" / "test" / "java" / package_path
-            test_path.mkdir(parents=True, exist_ok=True)
-
-            # Resources
-            resources_path = base_path / module / "src" / "main" / "resources"
-            resources_path.mkdir(parents=True, exist_ok=True)
-    else:
-        # Single-module structure
-        src_path = base_path / "src" / "main" / "java" / package_path
-        src_path.mkdir(parents=True, exist_ok=True)
-
-        # Test directories
-        test_path = base_path / "src" / "test" / "java" / package_path
-        test_path.mkdir(parents=True, exist_ok=True)
-
-        # Resources
-        resources_path = base_path / "src" / "main" / "resources"
-        resources_path.mkdir(parents=True, exist_ok=True)
+def source_root(lang: str) -> str:
+    """Kotlin sources belong in src/main/kotlin, not src/main/java."""
+    return "kotlin" if lang == "kotlin" else "java"
 
 
-def create_build_gradle(base_path: Path, lang: str, kora_version: str, package: str, multi_module: bool = False):
-    """Create build.gradle file."""
-    if lang == "kotlin":
-        ext = ".kts"
-    else:
-        ext = ""
+# --------------------------------------------------------------------------------------
+# Build files
+# --------------------------------------------------------------------------------------
 
-    if multi_module:
-        # Root build.gradle for multi-module project
-        content = f'''// Root build.gradle for multi-module Kora project
-
-subprojects {{
-    apply plugin: "java"
-
-    configurations {{
-        koraBom
-        annotationProcessor.extendsFrom(koraBom)
-        compileOnly.extendsFrom(koraBom)
-        implementation.extendsFrom(koraBom)
-        api.extendsFrom(koraBom)
-    }}
-
-    dependencies {{
-        koraBom platform("ru.tinkoff.kora:kora-parent:{kora_version}")
-        annotationProcessor "ru.tinkoff.kora:annotation-processors"
-    }}
-
-    java {{
-        sourceCompatibility = JavaVersion.VERSION_25
-        targetCompatibility = JavaVersion.VERSION_25
-    }}
-
-    compileJava {{
-        options.encoding("UTF-8")
-        options.incremental(true)
-        options.fork = false
-    }}
-}}
-'''
-    else:
-        # Single-module build.gradle
-        content = f'''plugins {{
+def build_gradle_java_single(package: str) -> str:
+    return f'''plugins {{
     id "java"
     id "application"
+}}
+
+repositories {{
+    mavenCentral()
 }}
 
 configurations {{
@@ -143,26 +87,28 @@ configurations {{
     annotationProcessor.extendsFrom(koraBom)
     compileOnly.extendsFrom(koraBom)
     implementation.extendsFrom(koraBom)
-    api.extendsFrom(koraBom)
+    testImplementation.extendsFrom(koraBom)
+    testAnnotationProcessor.extendsFrom(koraBom)
 }}
 
 dependencies {{
-    koraBom platform("ru.tinkoff.kora:kora-parent:{kora_version}")
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
 
-    // Basic dependencies
-    implementation "ru.tinkoff.kora:logging-logback"
-    implementation "ru.tinkoff.kora:config-hocon"
+    // Mandatory: without it ApplicationGraph is never generated
+    annotationProcessor "io.koraframework:annotation-processors"
 
-    // Add more dependencies as needed:
-    // implementation "ru.tinkoff.kora:database-jdbc"
-    // implementation "ru.tinkoff.kora:validation-module"
-    // implementation "ru.tinkoff.kora:micrometer-module"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
+
+    testAnnotationProcessor "io.koraframework:annotation-processors"
+    testImplementation "io.koraframework:test-junit5"
 }}
 
 java {{
-    sourceCompatibility = JavaVersion.VERSION_25
-    targetCompatibility = JavaVersion.VERSION_25
+    toolchain {{
+        languageVersion = JavaLanguageVersion.of({JAVA_TOOLCHAIN})
+        vendor = JvmVendorSpec.ADOPTIUM
+    }}
 }}
 
 application {{
@@ -171,185 +117,392 @@ application {{
     applicationDefaultJvmArgs = ["-Dfile.encoding=UTF-8"]
 }}
 
-compileJava {{
-    options.encoding("UTF-8")
-    options.incremental(true)
-    options.fork = false
+distTar {{
+    archiveFileName = "application.tar"
+}}
+
+tasks.withType(JavaCompile).configureEach {{
+    options.encoding = "UTF-8"
+}}
+
+test {{
+    useJUnitPlatform()
+    testLogging {{
+        events "passed", "skipped", "failed"
+        showStandardStreams = true
+        exceptionFormat = "full"
+    }}
 }}
 '''
 
-    build_file = base_path / f"build.gradle{ext}"
-    build_file.write_text(content)
+
+def build_gradle_java_root() -> str:
+    return f'''// Root build for a multi-module Kora 2.x project.
+// Declaring the processor here is what guarantees every subproject generates its
+// <Name>SubmoduleImpl companion.
+
+subprojects {{
+    apply plugin: "java"
+
+    repositories {{
+        mavenCentral()
+    }}
+
+    configurations {{
+        koraBom
+        annotationProcessor.extendsFrom(koraBom)
+        compileOnly.extendsFrom(koraBom)
+        implementation.extendsFrom(koraBom)
+        testImplementation.extendsFrom(koraBom)
+        testAnnotationProcessor.extendsFrom(koraBom)
+    }}
+
+    dependencies {{
+        koraBom platform("io.koraframework:kora-bom:$koraVersion")
+        annotationProcessor "io.koraframework:annotation-processors"
+        testAnnotationProcessor "io.koraframework:annotation-processors"
+    }}
+
+    java {{
+        toolchain {{
+            languageVersion = JavaLanguageVersion.of({JAVA_TOOLCHAIN})
+            vendor = JvmVendorSpec.ADOPTIUM
+        }}
+    }}
+
+    tasks.withType(JavaCompile).configureEach {{
+        options.encoding = "UTF-8"
+    }}
+
+    test {{
+        useJUnitPlatform()
+    }}
+}}
+'''
 
 
-def create_settings_gradle(base_path: Path, name: str, multi_module: bool, lang: str):
-    """Create settings.gradle file."""
+def build_gradle_java_common() -> str:
+    return '''plugins {
+    id "java-library"
+}
+
+dependencies {
+    // Just the Kora annotations. Use `api` for anything the @KoraSubmodule interface extends,
+    // so the assembly project can see those types.
+    api "io.koraframework:common"
+}
+'''
+
+
+def build_gradle_java_app(package: str) -> str:
+    return f'''plugins {{
+    id "application"
+}}
+
+dependencies {{
+    implementation project(":common")
+
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
+
+    testImplementation "io.koraframework:test-junit5"
+}}
+
+application {{
+    applicationName = "application"
+    mainClass = "{package}.Application"
+    applicationDefaultJvmArgs = ["-Dfile.encoding=UTF-8"]
+}}
+
+distTar {{
+    archiveFileName = "application.tar"
+}}
+'''
+
+
+def build_gradle_kts_single(package: str) -> str:
+    return f'''plugins {{
+    kotlin("jvm") version "{KOTLIN_PLUGIN_VERSION}"
+    id("com.google.devtools.ksp") version "{KSP_PLUGIN_VERSION}"
+    id("application")
+}}
+
+repositories {{
+    mavenCentral()
+}}
+
+val koraVersion: String by project
+
+dependencies {{
+    implementation(platform("io.koraframework:kora-bom:$koraVersion"))
+
+    // Mandatory. The ksp configuration is not covered by the BOM platform, so this needs
+    // an explicit version.
+    ksp("io.koraframework:symbol-processors:$koraVersion")
+
+    implementation("io.koraframework:config-hocon")
+    implementation("io.koraframework:logging-logback")
+
+    kspTest("io.koraframework:symbol-processors:$koraVersion")
+    testImplementation("io.koraframework:test-junit5")
+}}
+
+kotlin {{
+    jvmToolchain {{
+        languageVersion.set(JavaLanguageVersion.of({JAVA_TOOLCHAIN}))
+        vendor.set(JvmVendorSpec.ADOPTIUM)
+    }}
+    sourceSets.main {{ kotlin.srcDir("build/generated/ksp/main/kotlin") }}
+    sourceSets.test {{ kotlin.srcDir("build/generated/ksp/test/kotlin") }}
+}}
+
+application {{
+    applicationName = "application"
+    // A top-level `fun main()` compiles into <package>.ApplicationKt
+    mainClass.set("{package}.ApplicationKt")
+    applicationDefaultJvmArgs = listOf("-Dfile.encoding=UTF-8")
+}}
+
+tasks.distTar {{
+    archiveFileName.set("application.tar")
+}}
+
+tasks.test {{
+    useJUnitPlatform()
+}}
+'''
+
+
+def build_gradle_kts_root() -> str:
+    return f'''// Root build for a multi-module Kora 2.x Kotlin project.
+// Declaring the KSP processor here is what guarantees every subproject generates its
+// <Name>SubmoduleImpl companion.
+
+plugins {{
+    kotlin("jvm") version "{KOTLIN_PLUGIN_VERSION}" apply false
+    id("com.google.devtools.ksp") version "{KSP_PLUGIN_VERSION}" apply false
+}}
+
+subprojects {{
+    apply(plugin = "org.jetbrains.kotlin.jvm")
+    apply(plugin = "com.google.devtools.ksp")
+
+    repositories {{
+        mavenCentral()
+    }}
+
+    pluginManager.withPlugin("org.jetbrains.kotlin.jvm") {{
+        configure<org.jetbrains.kotlin.gradle.dsl.KotlinProjectExtension> {{
+            jvmToolchain {{
+                languageVersion.set(JavaLanguageVersion.of({JAVA_TOOLCHAIN}))
+                vendor.set(JvmVendorSpec.ADOPTIUM)
+            }}
+            sourceSets.named("main") {{ kotlin.srcDir("build/generated/ksp/main/kotlin") }}
+            sourceSets.named("test") {{ kotlin.srcDir("build/generated/ksp/test/kotlin") }}
+        }}
+    }}
+
+    dependencies {{
+        add("implementation", platform("io.koraframework:kora-bom:${{property("koraVersion")}}"))
+        add("ksp", "io.koraframework:symbol-processors:${{property("koraVersion")}}")
+        add("kspTest", "io.koraframework:symbol-processors:${{property("koraVersion")}}")
+        add("testImplementation", "io.koraframework:test-junit5")
+    }}
+
+    tasks.withType<Test>().configureEach {{
+        useJUnitPlatform()
+    }}
+}}
+'''
+
+
+def build_gradle_kts_common() -> str:
+    return '''plugins {
+    id("java-library")
+}
+
+dependencies {
+    // Just the Kora annotations. Use `api` for anything the @KoraSubmodule interface extends,
+    // so the assembly project can see those types.
+    api("io.koraframework:common")
+}
+'''
+
+
+def build_gradle_kts_app(package: str) -> str:
+    return f'''plugins {{
+    id("application")
+}}
+
+dependencies {{
+    implementation(project(":common"))
+
+    implementation("io.koraframework:config-hocon")
+    implementation("io.koraframework:logging-logback")
+}}
+
+application {{
+    applicationName = "application"
+    mainClass.set("{package}.ApplicationKt")
+    applicationDefaultJvmArgs = listOf("-Dfile.encoding=UTF-8")
+}}
+
+tasks.distTar {{
+    archiveFileName.set("application.tar")
+}}
+'''
+
+
+def settings_gradle(name: str, multi_module: bool, lang: str) -> str:
+    quote = '"'
+    header = f"rootProject.name = {quote}{name}{quote}\n"
+    if not multi_module:
+        return header
     if lang == "kotlin":
-        ext = ".kts"
-    else:
-        ext = ""
-
-    if multi_module:
-        content = f'''rootProject.name = "{name}"
-
-include "common"
-include "app"
-'''
-    else:
-        content = f'''rootProject.name = "{name}"
-'''
-
-    settings_file = base_path / f"settings.gradle{ext}"
-    settings_file.write_text(content)
+        return header + '\ninclude(":common")\ninclude(":app")\n'
+    return header + '\ninclude ":common"\ninclude ":app"\n'
 
 
-def create_gradle_properties(base_path: Path, kora_version: str):
-    """Create gradle.properties file."""
-    content = f'''# Kora Framework Version
+def gradle_properties(kora_version: str) -> str:
+    return f'''# Kora framework version — the same value for every Kora dependency.
 koraVersion={kora_version}
 
-# Gradle settings
-org.gradle.jvmargs=-Xmx2048m
 org.gradle.parallel=true
 org.gradle.caching=true
 '''
 
-    props_file = base_path / "gradle.properties"
-    props_file.write_text(content)
 
-
-def create_application_java(base_path: Path, package: str, lang: str, multi_module: bool):
-    """Create Application.java or Application.kt file."""
-    package_path = package_to_path(package)
-
-    if multi_module:
-        # Application in app module
-        if lang == "kotlin":
-            app_path = base_path / "app" / "src" / "main" / "java" / package_path / "Application.kt"
-            content = f'''package {package}
-
-import ru.tinkoff.kora.application.graph.ApplicationGraph
-import ru.tinkoff.kora.application.graph.KoraApplication
-
-@KoraApp
-interface Application {{
-    companion object {{
-        @JvmStatic
-        fun main(args: Array<String>) {{
-            KoraApplication.run(ApplicationGraph::graph)
-        }}
-    }}
-}}
+def gradle_wrapper_properties(assets_dir: Path) -> str:
+    template = assets_dir / "gradle-wrapper.properties.template"
+    if template.exists():
+        return template.read_text()
+    return f'''distributionBase=GRADLE_USER_HOME
+distributionPath=wrapper/dists
+distributionUrl=https\\://services.gradle.org/distributions/{GRADLE_DISTRIBUTION}
+networkTimeout=10000
+validateDistributionUrl=true
+zipStoreBase=GRADLE_USER_HOME
+zipStorePath=wrapper/dists
 '''
-        else:
-            app_path = base_path / "app" / "src" / "main" / "java" / package_path / "Application.java"
-            content = f'''package {package};
 
-import ru.tinkoff.kora.application.graph.ApplicationGraph;
-import ru.tinkoff.kora.application.graph.KoraApplication;
 
+# --------------------------------------------------------------------------------------
+# Sources
+# --------------------------------------------------------------------------------------
+
+def application_java(package: str, extra_supertype: str = "") -> str:
+    supertypes = "\n        HoconConfigModule,\n        LogbackModule"
+    imports = ""
+    if extra_supertype:
+        supertypes = f"\n        {extra_supertype},{supertypes}"
+    return f'''package {package};
+
+import io.koraframework.application.graph.KoraApplication;
+import io.koraframework.common.annotation.KoraApp;
+import io.koraframework.config.hocon.HoconConfigModule;
+import io.koraframework.logging.logback.LogbackModule;
+{imports}
+/**
+ * Kora 2.x application graph.
+ *
+ * <p>ApplicationGraph is generated by the annotation processor into THIS package — it is never
+ * imported from io.koraframework. Modules shipped as artifacts must be listed in extends;
+ * a @Module interface compiled in this same Gradle module is discovered automatically.
+ */
 @KoraApp
-public interface Application {{
-    static void main(String[] args) {{
-        KoraApplication.run(ApplicationGraph::graph);
-    }}
-}}
-'''
-    else:
-        # Application in root module
-        if lang == "kotlin":
-            app_path = base_path / "src" / "main" / "java" / package_path / "Application.kt"
-            content = f'''package {package}
+public interface Application extends{supertypes} {{
 
-import ru.tinkoff.kora.application.graph.ApplicationGraph
-import ru.tinkoff.kora.application.graph.KoraApplication
-
-@KoraApp
-interface Application {{
-    companion object {{
-        @JvmStatic
-        fun main(args: Array<String>) {{
-            KoraApplication.run(ApplicationGraph::graph)
-        }}
-    }}
-}}
-'''
-        else:
-            app_path = base_path / "src" / "main" / "java" / package_path / "Application.java"
-            content = f'''package {package};
-
-import ru.tinkoff.kora.application.graph.ApplicationGraph;
-import ru.tinkoff.kora.application.graph.KoraApplication;
-
-@KoraApp
-public interface Application {{
     static void main(String[] args) {{
         KoraApplication.run(ApplicationGraph::graph);
     }}
 }}
 '''
 
-    app_path.parent.mkdir(parents=True, exist_ok=True)
-    app_path.write_text(content)
 
+def application_kotlin(package: str, extra_supertype: str = "") -> str:
+    supertypes = "HoconConfigModule, LogbackModule"
+    if extra_supertype:
+        supertypes = f"{extra_supertype}, {supertypes}"
+    return f'''package {package}
 
-def create_application_conf(base_path: Path, multi_module: bool):
-    """Create application.conf configuration file."""
-    content = '''# Kora Application Configuration (HOCON format)
+import io.koraframework.application.graph.KoraApplication
+import io.koraframework.common.annotation.KoraApp
+import io.koraframework.config.hocon.HoconConfigModule
+import io.koraframework.logging.logback.LogbackModule
 
-# Application settings
-app {
-    name = ${APP_NAME:-my-app}
-    version = ${APP_VERSION:-1.0.0}
-    environment = ${APP_ENV:-development}
-}
+/**
+ * Kora 2.x application graph.
+ *
+ * ApplicationGraph is generated by the symbol processor into THIS package — it is never imported
+ * from io.koraframework. `application {{ mainClass }}` must point at <package>.ApplicationKt.
+ */
+@KoraApp
+interface Application : {supertypes}
 
-# Logging configuration
-logging {
-    level = ${LOG_LEVEL:-INFO}
-
-    # Console appender
-    console {
-        enabled = true
-        pattern = "%d{{HH:mm:ss.SSS}} [%thread] %-5level %logger{{36}} - %msg%n"
-    }
-}
-
-# HTTP Server configuration (uncomment when using http-server module)
-# kora {
-#     http {
-#         server {
-#             publicApiHttpPort = ${HTTP_PORT:-8080}
-#             publicApiHttpHost = "0.0.0.0"
-#         }
-#     }
-# }
-
-# Database configuration (uncomment when using database-jdbc module)
-# database {
-#     url = ${DATABASE_URL:-jdbc:postgresql://localhost:5432/mydb}
-#     username = ${DATABASE_USERNAME:-postgres}
-#     password = ${DATABASE_PASSWORD:-postgres}
-#     pool-size = 10
-# }
+fun main() {{
+    KoraApplication.run(ApplicationGraph::graph)
+}}
 '''
 
-    if multi_module:
-        conf_path = base_path / "app" / "src" / "main" / "resources" / "application.conf"
-    else:
-        conf_path = base_path / "src" / "main" / "resources" / "application.conf"
 
-    conf_path.parent.mkdir(parents=True, exist_ok=True)
-    conf_path.write_text(content)
+def common_module_java(package: str) -> str:
+    return f'''package {package}.common;
+
+import io.koraframework.common.annotation.KoraSubmodule;
+
+/**
+ * Exports every @Component and @Module provider compiled in this Gradle subproject.
+ *
+ * <p>The processor generates CommonModuleSubmoduleImpl next to this interface; the assembly
+ * project's @KoraApp extends CommonModule and picks the companion up automatically. An empty
+ * body is normal — the interface is only the handle.
+ */
+@KoraSubmodule
+public interface CommonModule {{
+}}
+'''
 
 
-def create_logback_xml(base_path: Path, multi_module: bool):
-    """Create logback.xml configuration file."""
-    content = '''<?xml version="1.0" encoding="UTF-8"?>
+def common_module_kotlin(package: str) -> str:
+    return f'''package {package}.common
+
+import io.koraframework.common.annotation.KoraSubmodule
+
+/**
+ * Exports every @Component and @Module provider compiled in this Gradle subproject.
+ *
+ * The processor generates CommonModuleSubmoduleImpl next to this interface; the assembly
+ * project's @KoraApp extends CommonModule and picks the companion up automatically. An empty
+ * body is normal — the interface is only the handle.
+ */
+@KoraSubmodule
+interface CommonModule
+'''
+
+
+def application_conf(package: str) -> str:
+    return f'''# Kora 2.x configuration — HOCON, loaded by HoconConfigModule from application.conf.
+
+logging {{
+  levels {{
+    "ROOT": "WARN"
+    "{package}": "INFO"
+    "io.koraframework": "INFO"
+  }}
+}}
+
+# Environment substitution:
+#   ${{VAR}}   required — startup fails if unset
+#   ${{?VAR}}  optional — the key is left unset if absent
+'''
+
+
+def logback_xml(package: str) -> str:
+    return f'''<?xml version="1.0" encoding="UTF-8"?>
 <configuration>
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
-            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+            <pattern>%d{{HH:mm:ss.SSS}} [%thread] %-5level %logger{{36}} - %msg%n</pattern>
         </encoder>
     </appender>
 
@@ -357,241 +510,219 @@ def create_logback_xml(base_path: Path, multi_module: bool):
         <appender-ref ref="CONSOLE"/>
     </root>
 
-    <!-- Application logger -->
-    <logger name="com.example" level="DEBUG"/>
-
-    <!-- Kora framework logger -->
-    <logger name="ru.tinkoff.kora" level="INFO"/>
+    <logger name="{package}" level="DEBUG"/>
+    <logger name="io.koraframework" level="INFO"/>
 </configuration>
 '''
 
-    if multi_module:
-        xml_path = base_path / "app" / "src" / "main" / "resources" / "logback.xml"
-    else:
-        xml_path = base_path / "src" / "main" / "resources" / "logback.xml"
 
-    xml_path.parent.mkdir(parents=True, exist_ok=True)
-    xml_path.write_text(content)
-
-
-def create_gitignore(base_path: Path):
-    """Create .gitignore file."""
-    content = '''# Compiled class files
-*.class
-
-# Log files
+def gitignore() -> str:
+    return '''*.class
 *.log
 
-# Package files
-*.jar
-*.war
-*.ear
-*.nar
-
-# Gradle
 .gradle/
 build/
-!gradle-wrapper.jar
-!**/src/main/**/build/
-!**/src/test/**/build/
+!gradle/wrapper/gradle-wrapper.jar
 
-# IDE
 .idea/
 *.iml
-*.iws
-*.ipr
 .vscode/
-.settings/
-.project
-.classpath
 
-# Kora generated files
-**/*Graph.java
-**/*Graph.kt
-
-# Environment
 .env
-.env.local
-.env.*.local
-
-# OS
 .DS_Store
-Thumbs.db
 '''
 
-    gitignore = base_path / ".gitignore"
-    gitignore.write_text(content)
 
-
-def create_readme(base_path: Path, name: str, package: str, multi_module: bool):
-    """Create README.md file."""
+def readme(name: str, package: str, lang: str, multi_module: bool, kora_version: str) -> str:
+    src = source_root(lang)
     pkg_path = package_to_path(package)
+    main_file = "Application.kt" if lang == "kotlin" else "Application.java"
+    generated = ("build/generated/ksp/main/kotlin/" if lang == "kotlin"
+                 else "build/generated/sources/annotationProcessor/java/main/")
 
     if multi_module:
-        structure = f"""```
+        tree = f'''```
 {name}
-├── common/          # Shared types and utilities
-│   ├── build.gradle
-│   └── src/main/java/{pkg_path}/common/
-├── app/             # Application assembly
-│   ├── build.gradle
-│   └── src/main/java/{pkg_path}/
-├── build.gradle     # Root build configuration
-├── settings.gradle  # Module includes
+├── common/                          # @KoraSubmodule — shared components
+│   └── src/main/{src}/{pkg_path}/common/CommonModule.{ 'kt' if lang == 'kotlin' else 'java' }
+├── app/                             # @KoraApp — assembly and entry point
+│   └── src/main/{src}/{pkg_path}/{main_file}
+├── build.gradle{'.kts' if lang == 'kotlin' else ''}
+├── settings.gradle{'.kts' if lang == 'kotlin' else ''}
 └── gradle.properties
-```"""
-        arch_title = "### Multi-Module Architecture"
+```'''
     else:
-        structure = f"""```
+        tree = f'''```
 {name}
-├── src/
-│   ├── main/
-│   │   ├── java/{pkg_path}/
-│   │   │   └── Application.java
-│   │   └── resources/
-│   │       ├── application.conf
-│   │       └── logback.xml
-│   └── test/
-│       └── java/{pkg_path}/
-├── build.gradle
-├── settings.gradle
+├── src/main/{src}/{pkg_path}/{main_file}
+├── src/main/resources/{{application.conf, logback.xml}}
+├── build.gradle{'.kts' if lang == 'kotlin' else ''}
+├── settings.gradle{'.kts' if lang == 'kotlin' else ''}
 └── gradle.properties
-```"""
-        arch_title = "### Single-Module Architecture"
+```'''
 
-    content = f"""# {name}
+    return f'''# {name}
 
-Kora framework application.
+Kora Framework {kora_version} service ({lang.capitalize()}).
 
-## Project Structure
+## Structure
 
-{arch_title}
+{tree}
 
-{structure}
+## Prerequisites
 
-## Getting Started
+- **JDK 25 or newer** — Kora 2.0 artifacts are Java 25 class files
+- Gradle wrapper (included)
 
-### Prerequisites
-
-- Java 25 or higher
-- Gradle 8.x
-
-### Build
+## Build and run
 
 ```bash
-./gradlew clean build
-```
-
-### Run
-
-```bash
+./gradlew classes      # runs the processor and generates ApplicationGraph
+./gradlew build
 ./gradlew run
 ```
 
-### Configuration
+## Generated code
 
-Edit `src/main/resources/application.conf` (or `app/src/main/resources/application.conf` for multi-module) to configure the application.
+The dependency graph is generated as `{package}.ApplicationGraph` under:
 
-Environment variables can be used:
-```hocon
-app {{
-    name = ${{APP_NAME:-my-app}}
-    version = ${{APP_VERSION:-1.0.0}}
-}}
+```
+{generated}
 ```
 
-## Kora Documentation
+Never edit it. After renaming a package, regenerate:
 
-- [Kora Framework Docs](.kora-agent/kora-docs/)
-- [Kora Examples](.kora-agent/kora-examples/)
+```bash
+./gradlew clean classes --no-build-cache
+```
 
-"""
+## Adding a module
 
-    readme = base_path / "README.md"
-    readme.write_text(content)
+Modules that arrive as artifacts must be named in the `@KoraApp` supertype list; a `@Module`
+interface compiled in this same Gradle module is discovered automatically.
 
+```
+implementation "io.koraframework:json-common"           // JsonModule
+implementation "io.koraframework:database-jdbc"         // JdbcDatabaseModule
+implementation "io.koraframework:http-server-undertow"  // UndertowPublicHttpServerModule
+```
 
-def create_gradle_wrapper(base_path: Path, assets_dir: Path):
-    """Create Gradle wrapper files from template."""
-    wrapper_dir = base_path / "gradle" / "wrapper"
-    wrapper_dir.mkdir(parents=True, exist_ok=True)
+## Configuration
 
-    # gradle-wrapper.properties from template
-    template = assets_dir / "gradle-wrapper.properties.template"
-    if template.exists():
-        content = template.read_text()
-    else:
-        content = '''distributionBase=GRADLE_USER_HOME
-distributionPath=wrapper/dists
-distributionUrl=https\\://services.gradle.org/distributions/gradle-9.5.1-bin.zip
-networkTimeout=10000
-validateDistributionUrl=true
-zipStoreBase=GRADLE_USER_HOME
-zipStorePath=wrapper/dists
+`src/main/resources/application.conf` is read by `HoconConfigModule`.
 '''
-    properties = wrapper_dir / "gradle-wrapper.properties"
-    properties.write_text(content)
 
 
-def main():
+# --------------------------------------------------------------------------------------
+# Plan construction
+# --------------------------------------------------------------------------------------
+
+def build_plan(args, assets_dir: Path) -> Dict[str, str]:
+    """Return {relative path -> content} for every file the run would create."""
+    package = args.package
+    pkg_path = package_to_path(package)
+    lang = args.lang
+    src = source_root(lang)
+    kts = ".kts" if lang == "kotlin" else ""
+    ext = "kt" if lang == "kotlin" else "java"
+
+    files: Dict[str, str] = {
+        f"settings.gradle{kts}": settings_gradle(args.name, args.multi_module, lang),
+        "gradle.properties": gradle_properties(args.kora_version),
+        "gradle/wrapper/gradle-wrapper.properties": gradle_wrapper_properties(assets_dir),
+        ".gitignore": gitignore(),
+        "README.md": readme(args.name, package, lang, args.multi_module, args.kora_version),
+    }
+
+    if args.multi_module:
+        if lang == "kotlin":
+            files[f"build.gradle{kts}"] = build_gradle_kts_root()
+            files[f"common/build.gradle{kts}"] = build_gradle_kts_common()
+            files[f"app/build.gradle{kts}"] = build_gradle_kts_app(package)
+            files[f"common/src/main/{src}/{pkg_path}/common/CommonModule.{ext}"] = \
+                common_module_kotlin(package)
+            files[f"app/src/main/{src}/{pkg_path}/Application.{ext}"] = \
+                application_kotlin(package, "CommonModule")
+        else:
+            files[f"build.gradle{kts}"] = build_gradle_java_root()
+            files[f"common/build.gradle{kts}"] = build_gradle_java_common()
+            files[f"app/build.gradle{kts}"] = build_gradle_java_app(package)
+            files[f"common/src/main/{src}/{pkg_path}/common/CommonModule.{ext}"] = \
+                common_module_java(package)
+            files[f"app/src/main/{src}/{pkg_path}/Application.{ext}"] = \
+                application_java(package, "CommonModule")
+
+        # The @KoraApp imports the submodule from a sibling package
+        app_key = f"app/src/main/{src}/{pkg_path}/Application.{ext}"
+        import_line = f"import {package}.common.CommonModule;" if lang == "java" \
+            else f"import {package}.common.CommonModule"
+        files[app_key] = files[app_key].replace(
+            "import io.koraframework.logging.logback.LogbackModule" + (";" if lang == "java" else ""),
+            "import io.koraframework.logging.logback.LogbackModule"
+            + (";" if lang == "java" else "") + "\n" + import_line,
+        )
+
+        files[f"app/src/main/resources/application.conf"] = application_conf(package)
+        files[f"app/src/main/resources/logback.xml"] = logback_xml(package)
+        files[f"common/src/test/{src}/{pkg_path}/common/.gitkeep"] = ""
+        files[f"app/src/test/{src}/{pkg_path}/.gitkeep"] = ""
+    else:
+        if lang == "kotlin":
+            files[f"build.gradle{kts}"] = build_gradle_kts_single(package)
+            files[f"src/main/{src}/{pkg_path}/Application.{ext}"] = application_kotlin(package)
+        else:
+            files[f"build.gradle{kts}"] = build_gradle_java_single(package)
+            files[f"src/main/{src}/{pkg_path}/Application.{ext}"] = application_java(package)
+
+        files["src/main/resources/application.conf"] = application_conf(package)
+        files["src/main/resources/logback.xml"] = logback_xml(package)
+        files[f"src/test/{src}/{pkg_path}/.gitkeep"] = ""
+
+    return files
+
+
+def main() -> int:
     args = parse_args()
 
     base_path = Path(args.output) / args.name
     assets_dir = Path(__file__).parent.parent / "assets"
 
-    # Check if directory exists
-    if base_path.exists():
-        print(f"Error: Directory {base_path} already exists")
+    plan = build_plan(args, assets_dir)
+
+    if args.dry_run:
+        print(f"DRY RUN — no files written. Target: {base_path}")
+        print(f"  language     : {args.lang}")
+        print(f"  package      : {args.package}")
+        print(f"  layout       : {'multi-module' if args.multi_module else 'single-module'}")
+        print(f"  kora version : {args.kora_version}")
+        print(f"  files        : {len(plan)}")
+        for relative in sorted(plan):
+            content = plan[relative]
+            print()
+            print(f"===== {base_path / relative} =====")
+            print(content if content else "(empty file)")
+        return 0
+
+    if base_path.exists() and not args.force:
+        print(f"Error: {base_path} already exists (use --force to overwrite)", file=sys.stderr)
         return 1
 
-    # Create directory structure
-    base_path.mkdir(parents=True, exist_ok=True)
-    print(f"✓ Created project directory: {base_path}")
+    for relative in sorted(plan):
+        target = base_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(plan[relative])
+        print(f"  wrote {target}")
 
-    # Create structure
-    create_directory_structure(base_path, args.package, args.multi_module)
-    print(f"✓ Created source directories")
-
-    # Create Gradle files
-    create_build_gradle(base_path, args.lang, args.kora_version, args.package, args.multi_module)
-    print(f"✓ Created build.gradle")
-
-    create_settings_gradle(base_path, args.name, args.multi_module, args.lang)
-    print(f"✓ Created settings.gradle")
-
-    create_gradle_properties(base_path, args.kora_version)
-    print(f"✓ Created gradle.properties")
-
-    create_gradle_wrapper(base_path, assets_dir)
-    print(f"✓ Created gradle wrapper")
-
-    # Create Application file
-    create_application_java(base_path, args.package, args.lang, args.multi_module)
-    print(f"✓ Created Application.{args.lang}")
-
-    # Create configuration files
-    create_application_conf(base_path, args.multi_module)
-    print(f"✓ Created application.conf")
-
-    create_logback_xml(base_path, args.multi_module)
-    print(f"✓ Created logback.xml")
-
-    # Create .gitignore
-    create_gitignore(base_path)
-    print(f"✓ Created .gitignore")
-
-    # Create README
-    create_readme(base_path, args.name, args.package, args.multi_module)
-    print(f"✓ Created README.md")
-
-    print(f"\nProject '{args.name}' created successfully!")
-    print(f"\nNext steps:")
-    print(f"  cd {args.name}")
-    print(f"  ./gradlew clean build")
-    print(f"  ./gradlew run")
+    print(f"\nProject '{args.name}' created at {base_path}")
+    print("\nNext steps:")
+    print(f"  cd {base_path}")
+    print("  gradle wrapper --gradle-version 9.5.1   # if you do not already have the wrapper jar")
+    print("  ./gradlew classes")
+    print("  ./gradlew run")
+    print("\nKora 2.0 requires JDK 25 or newer.")
 
     return 0
 
 
 if __name__ == "__main__":
-    exit(main())
+    sys.exit(main())

@@ -1,20 +1,24 @@
 package ${package};
 
-import jakarta.annotation.Nullable;
-import ru.tinkoff.kora.database.cassandra.annotation.EntityCassandra;
-import ru.tinkoff.kora.database.common.annotation.Column;
-import ru.tinkoff.kora.database.common.annotation.Embedded;
-import ru.tinkoff.kora.database.common.annotation.Id;
-import ru.tinkoff.kora.database.common.annotation.Table;
+import io.koraframework.database.cassandra.annotation.EntityCassandra;
+import io.koraframework.database.common.annotation.Column;
+import io.koraframework.database.common.annotation.Embedded;
+import io.koraframework.database.common.annotation.Id;
+import io.koraframework.database.common.annotation.Table;
+import org.jspecify.annotations.Nullable;
 
-/**
- * Entity with composite ID (two-field key).
- * Composite ID is implemented as a nested record.
+/*
+ * TEMPLATE NOTES — delete this block after copying.
  *
- * Key patterns:
- * - Nested record for composite key (ID)
- * - @Id @Embedded on the parent field flattens it into the composite primary key
- * - ID types: Use ${id1_type} and ${id2_type} (UUID, String, Long, etc.)
+ * @Embedded flattens the nested ID record into the owning entity's columns; @Id marks the whole
+ * group as the primary key for the %{entity#where = @id} macro, which then expands to
+ * "${id1_field} = :entity.id.${id1_field} AND ${id2_field} = :entity.id.${id2_field}".
+ *
+ * Binding always uses the full path: :entity.id.${id1_field}, not :entity.${id1_field}.
+ * @Embedded("prefix_") prefixes every flattened column name.
+ *
+ * The ID record is NOT annotated — @EntityCassandra belongs on the owner only.
+ * CQL: PRIMARY KEY ((${id1_field}), ${id2_field}) or ((${id1_field}, ${id2_field})).
  */
 @EntityCassandra
 @Table("${table_name}")
@@ -24,12 +28,6 @@ public record ${entity_name}(
     @Column("field1") String field1,
     @Column("field2") @Nullable String field2
 ) {
-    /**
-     * Composite ID class with two fields.
-     */
-    public record ID(${id1_type} ${id1_field}, ${id2_type} ${id2_field}) {
-        public ID() {
-            this(${id1_default}, ${id2_default});
-        }
-    }
+
+    public record ID(${id1_type} ${id1_field}, ${id2_type} ${id2_field}) {}
 }

@@ -1,6 +1,6 @@
-// Kora REST API Service - build.gradle template
+// Kora 2.0 REST API Service - build.gradle template
 // HTTP server with JSON and Micrometer metrics.
-// Metrics and readiness/liveness probes are served on the private HTTP port.
+// Metrics and readiness/liveness are served by the system server on httpServer.system.
 
 plugins {
     id "java"
@@ -8,9 +8,16 @@ plugins {
     id "jacoco"
 }
 
+repositories {
+    mavenCentral()
+    // io.koraframework:kora-bom:2.0.0.RC1 is on Maven Central; nothing else is needed.
+    // Only the 2.0.0-SNAPSHOT development line also needs:
+    // maven { url = "https://central.sonatype.com/repository/maven-snapshots" }
+}
+
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
+        languageVersion = JavaLanguageVersion.of(25)
         vendor = JvmVendorSpec.ADOPTIUM
     }
 }
@@ -27,25 +34,26 @@ configurations {
 
 dependencies {
     // Kora BOM - owns every Kora module version
-    koraBom platform("ru.tinkoff.kora:kora-parent:$koraVersion")
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
 
     // Annotation processors - required for compile-time code generation
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
-    testAnnotationProcessor "ru.tinkoff.kora:annotation-processors"
+    annotationProcessor "io.koraframework:annotation-processors"
+    testAnnotationProcessor "io.koraframework:annotation-processors"
 
     // Core modules
-    implementation "ru.tinkoff.kora:logging-logback"
-    implementation "ru.tinkoff.kora:config-hocon"
-    implementation "ru.tinkoff.kora:json-module"
+    implementation "io.koraframework:logging-logback"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:json-common"
 
-    // HTTP server (Undertow)
-    implementation "ru.tinkoff.kora:http-server-undertow"
+    // HTTP server (Undertow) - UndertowPublicHttpServerModule
+    implementation "io.koraframework:http-server-undertow"
 
-    // Telemetry - Micrometer metrics on the private HTTP port
-    implementation "ru.tinkoff.kora:micrometer-module"
+    // Telemetry - metrics default to disabled, enable them in application.conf:
+    //   httpServer { telemetry.metrics.enabled = true }
+    implementation "io.koraframework:micrometer-module"
 
     // Testing
-    testImplementation "ru.tinkoff.kora:test-junit5"
+    testImplementation "io.koraframework:test-junit5"
     testImplementation "org.skyscreamer:jsonassert:1.5.1"
 }
 

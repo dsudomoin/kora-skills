@@ -1,50 +1,44 @@
 package ${packagePath}.publisher
 
-import java.util.concurrent.CompletionStage
-import java.util.concurrent.Future
+import io.koraframework.kafka.common.annotation.KafkaPublisher
+import io.koraframework.kafka.common.annotation.KafkaPublisher.Topic
+import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.clients.producer.RecordMetadata
-import ru.tinkoff.kora.kafka.common.annotation.KafkaPublisher
-import ru.tinkoff.kora.kafka.common.annotation.KafkaPublisher.Topic
+import org.apache.kafka.common.header.Headers
+import java.util.concurrent.Future
 
 /**
- * Example Kafka producer with a typed interface.
+ * Plain-text Kafka publisher — useful next to a consumer for DLQ and read-process-write flows.
  *
- * Available method signatures:
- * - send: basic send without return value
- * - sendWithMeta: send with RecordMetadata return
- * - sendAsync: asynchronous send with Future
- * - sendStage: asynchronous send with CompletionStage
+ * @KafkaPublisher("<path>") is the producer's own config section (driverProperties, telemetry).
+ * @Topic("<path>") points at a section holding `topic` (and optionally `partition`).
+ *
+ * Return types:
+ *   Unit                      fire and wait for the broker ack, throwing KafkaPublishException
+ *   RecordMetadata            same, but returns the broker's metadata
+ *   Future<RecordMetadata>    hands back the in-flight send
  */
-@KafkaPublisher("kafka.producer.myPublisher")
-interface MessagePublisher {
-    
-    /**
-     * Basic message send (no return value)
-     */
-    @Topic("kafka.producer.myTopic")
+@KafkaPublisher("kafka.producer.${publisherName}")
+interface ${publisherName} {
+
+    @Topic("kafka.producer.${publisherName}.${topicName}")
     fun send(value: String)
 
-    /**
-     * Send a message with a key
-     */
-    @Topic("kafka.producer.myTopic")
+    @Topic("kafka.producer.${publisherName}.${topicName}")
     fun send(key: String, value: String)
 
-    /**
-     * Send with metadata return (synchronous)
-     */
-    @Topic("kafka.producer.myTopic")
+    @Topic("kafka.producer.${publisherName}.${topicName}")
+    fun send(key: String, value: String, headers: Headers)
+
+    @Topic("kafka.producer.${publisherName}.${topicName}")
     fun sendWithMeta(value: String): RecordMetadata
 
-    /**
-     * Asynchronous send with Future
-     */
-    @Topic("kafka.producer.myTopic")
+    @Topic("kafka.producer.${publisherName}.${topicName}")
     fun sendAsync(value: String): Future<RecordMetadata>
 
     /**
-     * Asynchronous send with CompletionStage
+     * Full control over topic, partition, timestamp and headers. A ProducerRecord parameter
+     * carries its own topic, so the function needs no @Topic.
      */
-    @Topic("kafka.producer.myTopic")
-    fun sendStage(value: String): CompletionStage<RecordMetadata>
+    fun send(record: ProducerRecord<String, String>)
 }

@@ -1,255 +1,244 @@
-# Response Handling Templates
+# Response handling patterns — Kora 2.x
 
-## Sealed Interface Pattern (Java 17+)
+How to construct and consume the generated `*ApiResponses` types. Placeholders are `${...}`.
+Kora has no `ResponseEntity` on the server contract: the delegate picks a record, and a generated
+`HttpServerResponseMapper` turns it into the wire response.
 
-All generated response interfaces use Java sealed types:
+---
 
-```java
-// Generated - DO NOT EDIT
-public interface UserApiResponses {
+## 1. The two generated shapes
 
-    sealed interface GetUserApiResponse {
-        record GetUser200ApiResponse(UserResponseTO content) implements GetUserApiResponse {}
-        record GetUser404ApiResponse(ErrorResponseTO content) implements GetUserApiResponse {}
-        record GetUser500ApiResponse(ErrorResponseTO content) implements GetUserApiResponse {}
-    }
-
-    sealed interface CreateUserApiResponse {
-        record CreateUser201ApiResponse(UserResponseTO content) implements CreateUserApiResponse {}
-        record CreateUser400ApiResponse(ErrorResponseTO content) implements CreateUserApiResponse {}
-        record CreateUser409ApiResponse(ErrorResponseTO content) implements CreateUserApiResponse {}
-    }
-}
-```
-
-## Response Selection Guide
-
-| HTTP Status | Scenario | Response Class |
-|-------------|----------|----------------|
-| 200 | Successful GET/PUT/PATCH | `*200ApiResponse(content)` |
-| 201 | Successful POST (create) | `*201ApiResponse(content)` |
-| 204 | Successful DELETE | `*204ApiResponse()` |
-| 400 | Invalid input, business rules | `*400ApiResponse(error)` |
-| 404 | Resource not found | `*404ApiResponse(error)` |
-| 409 | Conflict (duplicate, version) | `*409ApiResponse(error)` |
-| 422 | Semantic validation error | `*422ApiResponse(error)` |
-| 500 | Unexpected server error | `*500ApiResponse(error)` |
-
-## Common Response Patterns
-
-### Simple Lookup (200/404)
+**Two or more declared statuses → a sealed hierarchy.**
 
 ```java
-@Override
-public UserApiResponses.GetUserApiResponse getUser(String userId) {
-    return userService.findById(userId)
-        .<UserApiResponses.GetUserApiResponse>map(user ->
-            new UserApiResponses.GetUserApiResponse.GetUser200ApiResponse(
-                mapper.toResponse(user)
-            )
-        )
-        .orElseGet(() ->
-            new UserApiResponses.GetUserApiResponse.GetUser404ApiResponse(
-                new ErrorResponseTO("User not found: " + userId)
-            )
-        );
+// generated — DO NOT EDIT
+public interface ${Api}ApiResponses {
+
+  sealed interface Get${Entity}ByIdApiResponse {
+    record Get${Entity}ById200ApiResponse(${Entity} content) implements Get${Entity}ByIdApiResponse { }
+    record Get${Entity}ById400ApiResponse() implements Get${Entity}ByIdApiResponse { }
+    record Get${Entity}ById404ApiResponse() implements Get${Entity}ByIdApiResponse { }
+  }
 }
 ```
-
-### Create with Validation (201/400/409)
-
-```java
-@Override
-public UserApiResponses.CreateUserApiResponse createUser(CreateUserRequest request) {
-    // Check for duplicates
-    if (userService.emailExists(request.email())) {
-        return new CreateUser409ApiResponse(
-            new ErrorResponseTO("Email already exists: " + request.email())
-        );
-    }
-
-    // Business rule validation
-    if (request.age() != null && request.age() < 18) {
-        return new CreateUser400ApiResponse(
-            new ErrorResponseTO("User must be at least 18 years old")
-        );
-    }
-
-    // Create user
-    var user = userService.create(mapper.toEntity(request));
-    return new CreateUser201ApiResponse(mapper.toResponse(user));
-}
-```
-
-### Delete (204/404)
-
-```java
-@Override
-public UserApiResponses.DeleteUserApiResponse deleteUser(String userId) {
-    if (!userService.exists(userId)) {
-        return new DeleteUser404ApiResponse(
-            new ErrorResponseTO("User not found: " + userId)
-        );
-    }
-
-    userService.delete(userId);
-    return new DeleteUser204ApiResponse();  // No content
-}
-```
-
-### Batch Operation (200 with errors)
-
-```java
-@Override
-public UserApiResponses.BatchCreateApiResponse batchCreate(BatchCreateRequest request) {
-    List<UserResponseTO> created = new ArrayList<>();
-    List<ErrorDetailTO> errors = new ArrayList<>();
-
-    for (CreateUserRequest item : request.items()) {
-        try {
-            var user = userService.create(mapper.toEntity(item));
-            created.add(mapper.toResponse(user));
-        } catch (EmailAlreadyExistsException e) {
-            errors.add(new ErrorDetailTO(item.email(), e.getMessage()));
-        }
-    }
-
-    return new BatchCreate200ApiResponse(
-        new BatchCreateResponseTO(created, errors)
-    );
-}
-```
-
-### With Custom Headers
-
-```yaml
-# OpenAPI spec
-responses:
-  "200":
-    description: User found
-    headers:
-      X-Total-Count:
-        schema:
-          type: integer
-    content:
-      application/json:
-        schema:
-          $ref: '#/components/schemas/UserListResponse'
-```
-
-```java
-@Override
-public UserApiResponses.ListUsersApiResponse listUsers(int offset, int limit) {
-    var page = userService.findAll(offset, limit);
-
-    return new ListUsers200ApiResponse(
-        mapper.toResponse(page),
-        String.valueOf(page.total())  // Header value
-    );
-}
-```
-
-## Kotlin Pattern Matching
-
-Kotlin's `when` expression for elegant handling:
 
 ```kotlin
-override fun getUser(userId: String): UserApiResponses.GetUserApiResponse {
-    return userService.findById(userId)
-        .map { user ->
-            UserApiResponses.GetUserApiResponse.GetUser200ApiResponse(
-                mapper.toResponse(user)
-            )
-        }
-        .orElseGet {
-            UserApiResponses.GetUserApiResponse.GetUser404ApiResponse(
-                ErrorResponseTO("User not found: $userId")
-            )
-        }
-}
-
-override fun deleteUser(userId: String): UserApiResponses.DeleteUserApiResponse {
-    return when {
-        !userService.exists(userId) ->
-            UserApiResponses.DeleteUserApiResponse.DeleteUser404ApiResponse(
-                ErrorResponseTO("Not found: $userId")
-            )
-        else -> {
-            userService.delete(userId)
-            UserApiResponses.DeleteUserApiResponse.DeleteUser204ApiResponse()
-        }
-    }
+public interface ${Api}ApiResponses {
+  public sealed interface Get${Entity}ByIdApiResponse {
+    public data class Get${Entity}ById200ApiResponse(public val content: ${Entity}) : Get${Entity}ByIdApiResponse
+    public class Get${Entity}ById404ApiResponse() : Get${Entity}ByIdApiResponse
+  }
 }
 ```
 
-## Response with Error Details
+**Exactly one declared status → a record directly, with no nesting.**
 
 ```java
-public record ErrorResponseTO(
-    String code,
-    String message,
-    List<ErrorDetailTO> details
-) {}
-
-public record ErrorDetailTO(
-    String field,
-    String message,
-    Object rejectedValue
-) {}
-
-// Usage in delegate
-@Override
-public CreateUserApiResponse createUser(CreateUserRequest request) {
-    List<ErrorDetailTO> details = new ArrayList<>();
-
-    if (!isValidEmail(request.email())) {
-        details.add(new ErrorDetailTO("email", "Invalid email format", request.email()));
-    }
-
-    if (request.password().length() < 8) {
-        details.add(new ErrorDetailTO("password", "Must be at least 8 characters", null));
-    }
-
-    if (!details.isEmpty()) {
-        return new CreateUser400ApiResponse(
-            new ErrorResponseTO("VALIDATION_ERROR", "Invalid input", details)
-        );
-    }
-
-    // ... proceed with creation
+public interface ${Api}ApiResponses {
+  record WhoAmIApiResponse(String content) { }
 }
 ```
 
-## Exception-to-Response Mapping
+```java
+return new ${Api}ApiResponses.WhoAmIApiResponse(name);   // note: no per-status nested type
+```
 
-Prefer modelling errors as declared status codes in the contract so they become
-generated `*ApiResponse` records. For cross-cutting failures, register an
-`HttpServerInterceptor` that catches the exception and builds the response with
-`HttpServerResponse.of(...)`. The interceptor signature is
-`intercept(Context, HttpServerRequest, InterceptChain)` and you continue the
-chain with `chain.process(context, request)`.
+---
+
+## 2. Component order
+
+1. `int statusCode` — only for the `default` response
+2. `content` — only when the response declares a body
+3. one `String` per declared response header
+
+A status with neither body nor headers is an empty record.
+
+---
+
+## 3. Constructing a response
 
 ```java
-import java.util.concurrent.CompletionStage;
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.common.Context;
-import ru.tinkoff.kora.http.common.body.HttpBody;
-import ru.tinkoff.kora.http.server.common.HttpServerInterceptor;
-import ru.tinkoff.kora.http.server.common.HttpServerRequest;
-import ru.tinkoff.kora.http.server.common.HttpServerResponse;
+// with a body
+return new ${Api}ApiResponses.Get${Entity}ByIdApiResponse
+        .Get${Entity}ById200ApiResponse(entity);
 
+// empty body (204 / 404 / 400 with no schema)
+return new ${Api}ApiResponses.Delete${Entity}ApiResponse
+        .Delete${Entity}204ApiResponse();
+
+// with response headers, declared in the contract under `headers:`
+return new ${Api}ApiResponses.List${Entity}ApiResponse
+        .List${Entity}200ApiResponse(items, String.valueOf(total), nextPageOrNull);
+
+// the `default` response — statusCode comes FIRST
+return new ${Api}ApiResponses.Delete${Entity}ApiResponse
+        .Delete${Entity}DefaultApiResponse(409, new ErrorResponse("conflict"));
+```
+
+```kotlin
+return ${Api}ApiResponses.Get${Entity}ByIdApiResponse.Get${Entity}ById200ApiResponse(entity)
+
+return ${Api}ApiResponses.Delete${Entity}ApiResponse.Delete${Entity}204ApiResponse()
+
+return ${Api}ApiResponses.List${Entity}ApiResponse.List${Entity}200ApiResponse(
+    content = items,
+    xTotalCount = total.toString(),
+    xNextPage = nextPageOrNull,
+)
+
+return ${Api}ApiResponses.Delete${Entity}ApiResponse.Delete${Entity}DefaultApiResponse(
+    statusCode = 409,
+    content = ErrorResponse(message = "conflict"),
+)
+```
+
+Response records are generated types too — use named arguments in Kotlin so a contract change
+that adds a header or a body becomes a compile error rather than a silent reshuffle.
+
+---
+
+## 4. Status selection
+
+| Status | When | Record |
+|---|---|---|
+| `200` | successful `GET` / `PUT` / `PATCH` | `*200ApiResponse(content)` |
+| `201` | successful `POST` that creates | `*201ApiResponse(content)` or empty |
+| `204` | success with no body | `*204ApiResponse()` |
+| `400` | malformed input the parser accepted (e.g. an unknown enum value) | `*400ApiResponse(...)` |
+| `401` / `403` | authentication / authorisation | usually the `ApiSecurity` interceptor; see below |
+| `404` | resource absent | `*404ApiResponse()` |
+| `409` | conflict | `*409ApiResponse(...)` or the `default` record |
+| `default` | anything the contract does not enumerate | `*DefaultApiResponse(statusCode, content)` |
+
+**A record exists only for a status the contract declares.** Needing `*500ApiResponse` means
+adding `"500"` to that operation's `responses` and regenerating — not casting or throwing.
+
+---
+
+## 5. Consuming a sealed response
+
+Exhaustive, so a new contract status becomes a compile error:
+
+```java
+var body = switch (response) {
+    case ${Api}ApiResponses.Get${Entity}ByIdApiResponse.Get${Entity}ById200ApiResponse ok  -> ok.content().name();
+    case ${Api}ApiResponses.Get${Entity}ByIdApiResponse.Get${Entity}ById400ApiResponse bad -> "bad request";
+    case ${Api}ApiResponses.Get${Entity}ByIdApiResponse.Get${Entity}ById404ApiResponse nf  -> "not found";
+};
+```
+
+```kotlin
+val body = when (response) {
+    is ${Api}ApiResponses.Get${Entity}ByIdApiResponse.Get${Entity}ById200ApiResponse -> response.content.name
+    is ${Api}ApiResponses.Get${Entity}ByIdApiResponse.Get${Entity}ById400ApiResponse -> "bad request"
+    is ${Api}ApiResponses.Get${Entity}ByIdApiResponse.Get${Entity}ById404ApiResponse -> "not found"
+}
+```
+
+---
+
+## 6. Java type inference
+
+A conditional or a lambda often infers the *record* type rather than the sealed supertype:
+
+```java
+// error: incompatible types
+return found != null ? new …200ApiResponse(found) : new …404ApiResponse();
+```
+
+Fix by naming the target type, or by splitting into statements:
+
+```java
+if (found == null) {
+    return new ${Api}ApiResponses.Get${Entity}ByIdApiResponse.Get${Entity}ById404ApiResponse();
+}
+return new ${Api}ApiResponses.Get${Entity}ByIdApiResponse.Get${Entity}ById200ApiResponse(found);
+```
+
+```java
+return optional
+        .<${Api}ApiResponses.Get${Entity}ByIdApiResponse>map(e -> new …200ApiResponse(e))
+        .orElseGet(() -> new …404ApiResponse());
+```
+
+Kotlin infers the sealed supertype from the declared return type, so this does not arise there.
+
+---
+
+## 7. Response headers
+
+Declared headers become record components and are written by the generated mapper:
+
+```java
+// contract
+//   headers:
+//     x-total-count: { required: true,  schema: { type: string } }
+//     x-next-page:   {                  schema: { type: string } }
+
+record List${Entity}200ApiResponse(List<${Entity}> content, String xTotalCount, String xNextPage) { }
+```
+
+An optional header may be `null` (the mapper skips it); a required one may not. A header not
+declared in the contract cannot be set from the delegate.
+
+---
+
+## 8. Overriding a response mapping
+
+The generated mappers are `@Component @DefaultComponent`, so you can replace one wholesale by
+declaring your own `@Component` `HttpServerResponseMapper` for the same response type. That is
+the supported escape hatch — not editing generated code.
+
+```java
 @Component
-public final class GlobalExceptionInterceptor implements HttpServerInterceptor {
+public final class CustomGet${Entity}ByIdMapper
+        implements HttpServerResponseMapper<${Api}ApiResponses.Get${Entity}ByIdApiResponse> {
 
     @Override
-    public CompletionStage<HttpServerResponse> intercept(
-            Context context, HttpServerRequest request, InterceptChain chain) throws Exception {
-        return chain.process(context, request).exceptionally(error ->
-            HttpServerResponse.of(500, HttpBody.plaintext("An unexpected error occurred")));
+    public HttpServerResponse apply(HttpServerRequest request,
+                                    ${Api}ApiResponses.Get${Entity}ByIdApiResponse response) {
+        …
     }
 }
 ```
 
-To map one specific exception type to a response body for a handler return value,
-use `HttpServerResponseMapper<T>` whose method is
-`apply(Context, HttpServerRequest, T)` and returns `HttpServerResponse.of(...)`.
+`HttpServerResponseMapper` is `io.koraframework.http.server.common.response.HttpServerResponseMapper`.
+In Kotlin, note the framework contracts are `@NullMarked`: the override is
+`apply(request: HttpServerRequest, result: T?)`, and declaring `result: T` produces
+`'apply' overrides nothing`.
+
+---
+
+## 9. Errors outside the response records
+
+| Situation | Mechanism |
+|---|---|
+| Constraint violation | `@Validate` throws `ViolationException`; `ValidationHttpServerInterceptor` maps it (default `400`) |
+| Unparseable path/query/header value | the generated handler answers `400` before the delegate runs |
+| Authentication failure | the generated `ApiSecurity` interceptor throws `HttpServerResponseException.of(401, "Unauthorized")` |
+| Anything else the contract cannot express | `throw HttpServerResponseException.of(code, message)` |
+
+`HttpServerResponseException` is
+`io.koraframework.http.server.common.response.HttpServerResponseException` and is itself an
+`HttpServerResponse`, so it is returned as-is rather than becoming a 500.
+
+---
+
+## 10. Status-code ranges are not in `2.0.0.RC1`
+
+`4XX` / `5XX` range responses for Java and Kotlin, client and server, landed **after** RC1. On
+RC1 declare explicit statuses or one `default` response; a range key in the contract is not
+supported.
+
+---
+
+## 11. Pitfalls
+
+| Symptom | Cause and fix |
+|---|---|
+| No record for the status you want | Declare that status in the contract and regenerate. |
+| `incompatible types: …ApiResponse cannot be converted to …` | Java inferred the record type — see section 6. |
+| Header missing on the wire | The header is not declared under that response. |
+| `default` response sends `0` | You passed `0` as `statusCode`; it is the record's first component. |
+| Sealed `switch` no longer compiles after regeneration | A status was added to the contract — handle it. |
+| Returned a DTO instead of a record | There is no `ResponseEntity` in Kora; return the generated record. |

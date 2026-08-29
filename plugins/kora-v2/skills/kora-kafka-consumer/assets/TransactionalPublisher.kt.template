@@ -1,58 +1,56 @@
 package ${packagePath}.publisher
 
-import ru.tinkoff.kora.kafka.common.TransactionalPublisher
-import ru.tinkoff.kora.kafka.common.annotation.KafkaPublisher
-import ru.tinkoff.kora.kafka.common.annotation.KafkaPublisher.Topic
+import io.koraframework.kafka.common.annotation.KafkaPublisher
+import io.koraframework.kafka.common.annotation.KafkaPublisher.Topic
+import io.koraframework.kafka.common.producer.TransactionalPublisher
 
 /**
- * Base publisher for use in transactions.
+ * Transactional Kafka publisher.
+ *
+ * A transactional publisher WRAPS an ordinary one: the outer interface carries the transaction
+ * config (idPrefix / maxPoolSize / maxWaitTime), the nested one carries driverProperties and the
+ * @Topic functions. Both are @KafkaPublisher interfaces.
  */
-@KafkaPublisher("kafka.producer.myPublisher")
-interface MyPublisher {
-    
-    @Topic("kafka.producer.myTopic")
-    fun send(key: String, value: String)
+@KafkaPublisher("kafka.producer.${publisherName}Transactional")
+interface ${publisherName}Transactional : TransactionalPublisher<${publisherName}Transactional.TopicPublisher> {
+
+    @KafkaPublisher("kafka.producer.${publisherName}")
+    interface TopicPublisher {
+
+        @Topic("kafka.producer.${publisherName}.${topicName}")
+        fun send(value: String)
+
+        @Topic("kafka.producer.${publisherName}.${topicName}")
+        fun send(key: String, value: String)
+    }
 }
 
-/**
- * Transactional publisher.
+/*
+ * Kotlin cannot pick between the four functional overloads of inTx / withTx from a bare lambda,
+ * so use begin().use { } — close() is the commit. This is what the migrated Kotlin example does.
  *
- * Extends TransactionalPublisher<T> where T is the base publisher.
- * All messages sent within inTx() will be atomically
- * committed or rolled back on error.
+ *   publisher.begin().use { transaction ->
+ *       transaction.publisher().send("value-1")
+ *       transaction.publisher().send("value-2")
+ *       if (somethingWrong) {
+ *           transaction.abort()
+ *       }
+ *   }
+ *
+ * Read-process-write — the consumer parameter is required, both for groupMetadata() and to stop
+ * Kora committing the offset outside the transaction:
+ *
+ *   @KafkaListener("kafka.consumer.${listenerNameLower}")
+ *   fun process(record: ConsumerRecord<String, String>, consumer: Consumer<String, String>) {
+ *       publisher.begin().use { transaction ->
+ *           transaction.publisher().send("processed:" + record.value())
+ *           transaction.sendOffsetsToTransaction(
+ *               mapOf(TopicPartition(record.topic(), record.partition()) to
+ *                         OffsetAndMetadata(record.offset() + 1)),
+ *               consumer.groupMetadata())
+ *       }
+ *   }
+ *
+ * The consuming side must set "isolation.level" = "read_committed" to hide aborted records.
+ * See references/kafka-transactions-reference.md.
  */
-@KafkaPublisher("kafka.producer.myTransactionalPublisher")
-interface MyTransactionalPublisher : TransactionalPublisher<MyPublisher>
-
-/**
- * Example usage of the transactional publisher.
- */
-// @Component
-// class MyService(
-//     private val transactionalPublisher: MyTransactionalPublisher
-// ) {
-//
-//     /**
-//      * Send messages in a transaction (lambda style)
-//      */
-//     fun sendInTransaction() {
-//         transactionalPublisher.inTx { producer ->
-//             producer.send("key1", "value1")
-//             producer.send("key2", "value2")
-//             // All messages will be committed atomically
-//         }
-//     }
-//
-//     /**
-//      * Send messages with manual transaction management
-//      */
-//     fun sendManual() {
-//         transactionalPublisher.begin().use { transaction ->
-//             transaction.producer().send("key", "value")
-//             if (somethingBad) {
-//                 transaction.abort()  // Rollback
-//             }
-//             // commit on use block close
-//         }
-//     }
-// }

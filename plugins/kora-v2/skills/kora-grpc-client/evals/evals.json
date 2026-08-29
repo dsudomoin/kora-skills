@@ -2,108 +2,482 @@
   "evals": [
     {
       "id": "kora-grpc-client-stub-injection",
-      "skills": ["kora-grpc-client"],
+      "skills": [
+        "kora-grpc-client"
+      ],
       "query": "I have a UserService proto with a GetUser RPC. In my Kora service, how do I call it from a component?",
       "expected_behavior": [
-        "Enables GrpcClientModule on the @KoraApp interface",
-        "Injects UserServiceGrpc.UserServiceBlockingStub directly by type via constructor (no @Tag on the parameter)",
-        "Annotates the wrapper with @Component from ru.tinkoff.kora.common",
-        "Builds the request with GetUserRequest.newBuilder() and calls stub.getUser(request)",
-        "Does not use foreign-framework annotations or field injection"
+        "Enables io.koraframework.grpc.client.GrpcClientModule on the @KoraApp interface",
+        "Injects UserServiceGrpc.UserServiceBlockingStub directly by type via constructor with no @Tag on the parameter",
+        "Annotates the wrapper with @Component imported from io.koraframework.common.annotation",
+        "Builds the request with GetUserRequest.newBuilder() and calls stub.getUser(request) synchronously",
+        "Adds implementation \"io.koraframework:grpc-client\" plus the annotation processor (Java) or KSP (Kotlin)",
+        "Keeps protobuf types and StatusRuntimeException handling inside the wrapper component"
       ],
-      "tags": ["stubs", "basic"]
+      "anti_behavior": [
+        "Imports ru.tinkoff.grpc.client.GrpcClientModule or ru.tinkoff.kora.common.Component",
+        "Puts @Tag on the stub constructor parameter",
+        "Returns Mono, Flux, CompletionStage or declares the method suspend",
+        "Uses field injection or a foreign-framework annotation"
+      ],
+      "tags": [
+        "stubs",
+        "basic",
+        "regression-coordinates"
+      ]
     },
     {
-      "id": "kora-grpc-client-configuration",
-      "skills": ["kora-grpc-client"],
+      "id": "kora-grpc-client-module-and-artifact-rename",
+      "skills": [
+        "kora-grpc-client"
+      ],
+      "query": "Our Kora 1.x service depends on ru.tinkoff.kora:grpc-client and its @KoraApp extends ru.tinkoff.grpc.client.GrpcClientModule. What are the Kora 2.0 equivalents?",
+      "expected_behavior": [
+        "States the artifact is io.koraframework:grpc-client",
+        "States the module interface is io.koraframework.grpc.client.GrpcClientModule",
+        "Mentions the BOM change ru.tinkoff.kora:kora-parent -> io.koraframework:kora-bom at 2.0.0.RC1 from mavenCentral()",
+        "States that DI annotations moved to io.koraframework.common.annotation",
+        "Confirms what did NOT change: stubs still inject by type untagged, interceptors are still scoped with @Tag(<Service>Grpc.class), the config section is still grpcClient.<protoServiceName>"
+      ],
+      "anti_behavior": [
+        "Claims io.koraframework:grpc-client-module or any artifact name other than grpc-client",
+        "Recommends 2.0.0-SNAPSHOT or 2.0.0.alpha6 as the version for a new project",
+        "Suggests a blind package find/replace as the whole migration",
+        "Claims the gRPC client API is unchanged because the migration guides do not discuss it"
+      ],
+      "tags": [
+        "migration",
+        "regression-coordinates"
+      ]
+    },
+    {
+      "id": "kora-grpc-client-config-section-and-keys",
+      "skills": [
+        "kora-grpc-client"
+      ],
       "query": "Configure my Kora gRPC client for UserService with a 10 second timeout and metrics enabled, reading the server URL from an environment variable.",
       "expected_behavior": [
-        "Places the config under grpcClient.UserService",
-        "Sets the required url key and overrides it with ${?GRPC_SERVER_URL} for environment substitution",
-        "Sets timeout = \"10s\" and telemetry.metrics.enabled = true",
-        "Uses an http:// URL for plaintext rather than a usePlaintext flag",
-        "Does not invent config keys that are not in GrpcClientConfig"
+        "Places the config under grpcClient.UserService, using the proto service simple name",
+        "Sets the required url key and overrides it with ${?GRPC_SERVER_URL}",
+        "Sets timeout = \"10s\" and telemetry.metrics.enabled = true explicitly",
+        "States that telemetry.metrics.enabled and telemetry.logging.enabled default to false in Kora 2.0 (tracing defaults to true)",
+        "Notes that metrics also require a MeterRegistry in the graph (io.koraframework:micrometer-module)",
+        "Uses an http:// URL for plaintext rather than a usePlaintext flag"
       ],
-      "tags": ["config", "basic"]
+      "anti_behavior": [
+        "Writes maxInboundMessageSize, usePlaintext, or a retry key under grpcClient",
+        "Claims metrics are enabled by default",
+        "Names the section grpcClient.UserServiceGrpc or after java_outer_classname",
+        "Invents config keys not present in GrpcClientConfig"
+      ],
+      "tags": [
+        "config",
+        "basic",
+        "regression-telemetry"
+      ]
     },
     {
-      "id": "kora-grpc-client-gradle-setup",
-      "skills": ["kora-grpc-client"],
-      "query": "Set up the Gradle build for a Java Kora gRPC client, including protobuf code generation.",
-      "expected_behavior": [
-        "Applies the com.google.protobuf plugin and configures protoc plus protoc-gen-grpc-java",
-        "Pins the BOM with platform(\"ru.tinkoff.kora:kora-parent:...\") and does not version individual ru.tinkoff.kora artifacts",
-        "Adds annotationProcessor \"ru.tinkoff.kora:annotation-processors\"",
-        "Declares ru.tinkoff.kora:grpc-client and io.grpc:grpc-protobuf",
-        "Adds build/generated/source/proto/main/{grpc,java} to sourceSets",
-        "Does not reference foreign-framework (non-Kora) Gradle plugins"
+      "id": "kora-grpc-client-stale-config-key",
+      "skills": [
+        "kora-grpc-client"
       ],
-      "tags": ["gradle", "basic"]
+      "query": "I ported this from Kora 1.x and it does nothing: grpcClient { UserService { url = \"grpc://users:8090\", maxInboundMessageSize = 16777216 } }. Why?",
+      "expected_behavior": [
+        "Identifies that maxInboundMessageSize is not a key in Kora 2.0 GrpcClientConfig and is silently ignored — config-common performs no unknown-key validation",
+        "Points at a tagged Configurer<ManagedChannelBuilder<?>> component as the 2.0 way to set maxInboundMessageSize",
+        "Identifies grpc:// as the second bug: usePlaintext() is called only for the http scheme, so this URL silently uses TLS",
+        "Rewrites the URL to http://users:8090",
+        "Lists the real key set: url, timeout, keepAliveTime, keepAliveTimeout, loadBalancingPolicy, defaultServiceConfig, telemetry.*"
+      ],
+      "anti_behavior": [
+        "Claims an unknown config key produces an error or warning at startup",
+        "Keeps grpc:// as a valid plaintext scheme",
+        "Suggests a usePlaintext config key",
+        "Says maxInboundMessageSize just needs a different value or format"
+      ],
+      "tags": [
+        "config",
+        "troubleshooting",
+        "regression-config-keys"
+      ]
+    },
+    {
+      "id": "kora-grpc-client-url-scheme-tls",
+      "skills": [
+        "kora-grpc-client"
+      ],
+      "query": "My Kora 2.0 gRPC client fails with a TLS handshake error against a plaintext local server. The config says url = \"grpc://localhost:8090\". What is wrong?",
+      "expected_behavior": [
+        "Explains that ManagedChannelLifecycle calls usePlaintext() only when the URL scheme is exactly http",
+        "Explains that a non-http scheme WITH an explicit port is accepted and silently uses TLS, which is why there is no config error",
+        "Notes that a non-http/https scheme WITHOUT a port throws IllegalArgumentException: Unsupported gRPC client URL scheme",
+        "Changes the URL to http://localhost:8090",
+        "Mentions that https:// plus a tagged ChannelCredentials component is the path for real TLS"
+      ],
+      "anti_behavior": [
+        "Suggests adding a usePlaintext or plaintext config key",
+        "Claims grpc:// is the canonical Kora scheme",
+        "Recommends disabling TLS verification"
+      ],
+      "tags": [
+        "config",
+        "troubleshooting",
+        "regression-url-scheme"
+      ]
+    },
+    {
+      "id": "kora-grpc-client-gradle-setup-java",
+      "skills": [
+        "kora-grpc-client"
+      ],
+      "query": "Set up the Gradle build for a Java Kora 2.0 gRPC client, including protobuf code generation.",
+      "expected_behavior": [
+        "Applies the com.google.protobuf Gradle plugin at 0.10.0 and configures protoc plus protoc-gen-grpc-java",
+        "Pins the BOM with platform(\"io.koraframework:kora-bom:$koraVersion\") where koraVersion=2.0.0.RC1, without versioning individual io.koraframework artifacts",
+        "Adds annotationProcessor \"io.koraframework:annotation-processors\"",
+        "Declares io.koraframework:grpc-client and io.grpc:grpc-protobuf:1.83.1",
+        "Pins protoc to 3.25.3 and protoc-gen-grpc-java to 1.83.1",
+        "Leaves protobuf-java to resolve transitively from grpc-protobuf (3.25.9) rather than pinning it",
+        "Adds compileOnly javax.annotation:javax.annotation-api for javax.annotation.Generated in the generated stubs",
+        "Adds build/generated/source/proto/main/{grpc,java} to sourceSets.main.java",
+        "Sets the Java toolchain to 25"
+      ],
+      "anti_behavior": [
+        "Uses ru.tinkoff.kora:kora-parent or ru.tinkoff.kora:annotation-processors",
+        "Pins io.grpc artifacts to 1.74.0 or any version other than 1.83.1",
+        "Bumps protoc to 4.35.1 WITHOUT also declaring com.google.protobuf:protobuf-java:4.35.1",
+        "Assumes kora-bom manages gRPC or protobuf versions",
+        "Sets the toolchain below Java 25"
+      ],
+      "tags": [
+        "gradle",
+        "basic",
+        "regression-versions"
+      ]
+    },
+    {
+      "id": "kora-grpc-client-gradle-setup-kotlin",
+      "skills": [
+        "kora-grpc-client"
+      ],
+      "query": "Set up build.gradle.kts for a Kotlin Kora 2.0 gRPC client with protobuf generation.",
+      "expected_behavior": [
+        "Applies org.jetbrains.kotlin.jvm 2.4.10, com.google.devtools.ksp 2.3.11 and com.google.protobuf 0.10.0",
+        "Adds ksp(\"io.koraframework:symbol-processors:...\") and the kora-bom platform at 2.0.0.RC1",
+        "Registers the generated proto dirs on sourceSets.main.java, not on kotlin.srcDir, because protoc-gen-grpc-java emits Java",
+        "Pins protoc 3.25.3, protoc-gen-grpc-java 1.83.1 and io.grpc:grpc-protobuf 1.83.1",
+        "Leaves protobuf-java transitive rather than pinning it",
+        "Sets the jvmToolchain to 25",
+        "Points mainClass at <package>.ApplicationKt"
+      ],
+      "anti_behavior": [
+        "Puts the generated gRPC sources on kotlin.srcDir only",
+        "Uses ru.tinkoff.kora:symbol-processors",
+        "Bumps protoc to 4.35.1 without also pinning protobuf-java:4.35.1",
+        "Adds grpc-kotlin-stub without being asked and presents coroutine stubs as the Kora default",
+        "Pins Kotlin or KSP to versions inconsistent with 2.4.10 / 2.3.11"
+      ],
+      "tags": [
+        "gradle",
+        "kotlin",
+        "regression-versions"
+      ]
+    },
+    {
+      "id": "kora-grpc-client-version-alignment-abstractmethoderror",
+      "skills": [
+        "kora-grpc-client"
+      ],
+      "query": "My Kora 2.0 gRPC client tests fail at runtime with java.lang.AbstractMethodError: ... does not define or inherit an implementation of the resolved method 'buildClientTransportServers(List, MetricRecorder)'. The build compiles fine.",
+      "expected_behavior": [
+        "Identifies this as a gRPC version mismatch, not a Kora bug",
+        "Explains that the test transport (io.grpc:grpc-inprocess or grpc-netty) is pinned to a different version than the grpc-core arriving with io.koraframework:grpc-client",
+        "Says kora-bom constrains io.koraframework artifacts only, so gRPC versions are the application's responsibility",
+        "Aligns every io.grpc artifact on 1.83.1 across main and test source sets",
+        "Optionally suggests a resolutionStrategy.eachDependency rule to make the alignment enforceable"
+      ],
+      "anti_behavior": [
+        "Blames the Kora annotation processor or suggests regenerating the graph",
+        "Suggests excluding grpc-core or downgrading Kora",
+        "Cites KORA_2_FRAMEWORK_ISSUES.md or KORA_2_MIGRATION_STATUS.md",
+        "Recommends adding grpc-inprocess without pinning its version"
+      ],
+      "tags": [
+        "troubleshooting",
+        "gradle",
+        "regression-versions"
+      ]
     },
     {
       "id": "kora-grpc-client-auth-interceptor",
-      "skills": ["kora-grpc-client"],
+      "skills": [
+        "kora-grpc-client"
+      ],
       "query": "Add an authorization metadata header to every outbound gRPC call to UserService, reading the token from a config component.",
       "expected_behavior": [
-        "Implements io.grpc.ClientInterceptor as a @Component",
-        "Scopes the interceptor with @Tag(UserServiceGrpc.class) from ru.tinkoff.kora.common.Tag",
-        "Wraps the call in ForwardingClientCall.SimpleForwardingClientCall and puts the header in start() before super.start()",
+        "Implements io.grpc.ClientInterceptor as a @Component from io.koraframework.common.annotation",
+        "Scopes the interceptor with @Tag(UserServiceGrpc.class) using io.koraframework.common.annotation.Tag",
+        "Wraps the call in ForwardingClientCall.SimpleForwardingClientCall and puts the header inside start() before super.start()",
         "Uses Metadata.Key.of(\"authorization\", Metadata.ASCII_STRING_MARSHALLER)",
-        "Injects the token via constructor from a config component, not field injection"
+        "Injects the credential through the constructor, e.g. from an @ConfigSource interface in io.koraframework.config.common.annotation",
+        "States that gRPC metadata is the only client auth mechanism — there is no Kora gRPC client auth module"
       ],
-      "tags": ["interceptors", "auth", "advanced"]
+      "anti_behavior": [
+        "Imports ru.tinkoff.kora.common.Tag or ru.tinkoff.kora.common.Component",
+        "Writes headers outside start(), or after calling super.start()",
+        "Invents a Kora gRPC auth annotation or an auth config key under grpcClient",
+        "Uses field injection for the config"
+      ],
+      "tags": [
+        "interceptors",
+        "auth",
+        "advanced"
+      ]
     },
     {
-      "id": "kora-grpc-client-logging-interceptor",
-      "skills": ["kora-grpc-client"],
-      "query": "Log the full method name for each gRPC call to my streaming client for debugging.",
-      "expected_behavior": [
-        "Creates a ClientInterceptor @Component tagged with @Tag(ServiceGrpc.class)",
-        "Uses an SLF4J Logger and logs method.getFullMethodName() inside interceptCall",
-        "Returns next.newCall(method, callOptions) to continue the call",
-        "Notes that GrpcClientConfigInterceptor is applied by default",
-        "Does not use foreign-framework AOP or a servlet filter"
+      "id": "kora-grpc-client-stale-interceptor-tag",
+      "skills": [
+        "kora-grpc-client"
       ],
-      "tags": ["interceptors", "logging", "advanced"]
+      "query": "My Kora 2.0 client interceptor is a @Component but it never runs — no log lines, and calls come back UNAUTHENTICATED. It is annotated @Tag(GrpcClientModule.class). Everything compiles and the app starts fine.",
+      "expected_behavior": [
+        "Identifies the tag as the bug: ManagedChannelLifecycle requests All<ClientInterceptor> under @Tag(<Service>Grpc.class), the protoc-generated outer class",
+        "Replaces it with @Tag(UserServiceGrpc.class) or the matching generated class",
+        "Explains that a wrong or missing tag compiles and starts cleanly, so the failure is silent",
+        "Notes that the stub class and Kora module classes are both wrong tag choices",
+        "Recommends a test that asserts the header actually arrives, since nothing at startup reports the mistake"
+      ],
+      "anti_behavior": [
+        "Suggests removing the @Tag entirely as the fix",
+        "Suggests tagging the stub constructor parameter instead",
+        "Claims Kora logs a warning for an uncollected interceptor",
+        "Recommends registering the interceptor by calling ManagedChannelBuilder.intercept manually in application code"
+      ],
+      "tags": [
+        "interceptors",
+        "troubleshooting",
+        "regression-tags"
+      ]
+    },
+    {
+      "id": "kora-grpc-client-telemetry-defaults",
+      "skills": [
+        "kora-grpc-client"
+      ],
+      "query": "Our Kora 2.0 gRPC client produces no rpc.client.duration metric and no request logs, although the service is definitely making calls. Config only sets grpcClient.UserService.url.",
+      "expected_behavior": [
+        "States that telemetry.logging.enabled and telemetry.metrics.enabled default to false in Kora 2.0",
+        "Enables them explicitly under grpcClient.UserService.telemetry",
+        "Notes metrics additionally need a MeterRegistry in the graph and tracing needs a Tracer, since the telemetry factory checks both the flag and the component",
+        "Mentions the two loggers are named <fullProtoServiceName>.request and .response, so logging.levels must also allow INFO",
+        "Notes tracing.enabled defaults to true"
+      ],
+      "anti_behavior": [
+        "Claims metrics or logging are on by default",
+        "Suggests a global telemetry switch outside the grpcClient section as the fix",
+        "Invents a metric name other than rpc.client.duration",
+        "Says the logger is named after the Java stub class"
+      ],
+      "tags": [
+        "telemetry",
+        "troubleshooting",
+        "regression-telemetry"
+      ]
+    },
+    {
+      "id": "kora-grpc-client-no-kora-context",
+      "skills": [
+        "kora-grpc-client"
+      ],
+      "query": "Port this Kora 1.x gRPC client helper to 2.0: `public UserResponse getUser(Context ctx, String id)` — it took ru.tinkoff.kora.common.Context and propagated it into the call.",
+      "expected_behavior": [
+        "States that Context was removed from the entire Kora framework in 2.0 — there is no io.koraframework equivalent",
+        "Removes the Context parameter and passes the needed values as ordinary method parameters",
+        "Distinguishes io.grpc.Context as a different, unrelated class that gRPC still ships and that a ClientInterceptor may legitimately use",
+        "Notes that contracts are synchronous on virtual threads, so there is no async boundary requiring an ambient carrier",
+        "Puts any cross-cutting metadata propagation into a tagged ClientInterceptor instead"
+      ],
+      "anti_behavior": [
+        "Imports io.koraframework.common.Context or claims Kora Context still exists under a new package",
+        "Confuses io.grpc.Context with the removed Kora Context",
+        "Reintroduces a ThreadLocal-based Kora-style context as the recommended pattern",
+        "Makes the method suspend or return a CompletionStage to carry the context"
+      ],
+      "tags": [
+        "migration",
+        "regression-context"
+      ]
+    },
+    {
+      "id": "kora-grpc-client-kotlin-coroutine-stub",
+      "skills": [
+        "kora-grpc-client"
+      ],
+      "query": "In our Kotlin Kora 2.0 service, can I inject a grpc-kotlin coroutine stub and call its suspend methods from a @Component? What do the Kora examples do?",
+      "expected_behavior": [
+        "States that the KSP extension does resolve io.grpc.kotlin.AbstractCoroutineStub subclasses annotated @StubFor, so injection is supported",
+        "Clarifies that a generated suspend fun on such a stub is grpc-kotlin's code, not a Kora contract — Kora provides no coroutine scope to call it from",
+        "States that Kora 2.0 contracts are synchronous on virtual threads",
+        "Says no migrated Kora example uses coroutine stubs; both Kotlin examples use the Java *BlockingStub / *Stub with StreamObserver",
+        "Recommends the Java stubs, and notes grpc-kotlin 1.5.0 plus protoc-gen-grpc-kotlin must be added and kept aligned with grpc-java 1.83.1 if coroutine stubs are used anyway"
+      ],
+      "anti_behavior": [
+        "Claims Kora 2.0 supports suspend gRPC client contracts",
+        "Claims coroutine stubs were removed from Kora 2.0 and cannot be injected",
+        "Recommends runBlocking or Dispatchers.IO as the way to bridge Kora to a coroutine stub without noting it is the caller's own boundary",
+        "Presents coroutine stubs as the Kotlin default for Kora"
+      ],
+      "tags": [
+        "kotlin",
+        "stubs",
+        "advanced"
+      ]
     },
     {
       "id": "kora-grpc-client-server-streaming",
-      "skills": ["kora-grpc-client"],
-      "query": "Consume a server-streaming GetAllUsers RPC and collect all results into a list in my Kora client.",
-      "expected_behavior": [
-        "Injects UserServiceGrpc.UserServiceBlockingStub and iterates the returned Iterator (e.g. forEachRemaining)",
-        "Or uses the async UserServiceGrpc.UserServiceStub with a StreamObserver implementing onNext/onError/onCompleted",
-        "Keeps stream handling inside a @Component wrapper service",
-        "Maps protobuf responses into application DTOs at the boundary",
-        "Does not use a foreign reactive-web stack or reactive HTTP types"
+      "skills": [
+        "kora-grpc-client"
       ],
-      "tags": ["streaming", "advanced"]
+      "query": "Consume a server-streaming GetAllUsers RPC and collect all results into a list in my Kora 2.0 client.",
+      "expected_behavior": [
+        "Injects UserServiceGrpc.UserServiceBlockingStub and drains the returned Iterator, e.g. with forEachRemaining",
+        "Or uses the async UserServiceGrpc.UserServiceStub with a StreamObserver implementing onNext/onError/onCompleted",
+        "Keeps stream handling inside a @Component wrapper and maps protobuf messages to application DTOs there",
+        "Notes that a per-client timeout applies to the whole call, so a long stream needs it unset or overridden per call",
+        "Notes the iterator must be drained or the call cancelled, otherwise the stream stays open"
+      ],
+      "anti_behavior": [
+        "Returns Flux, Flow or a suspend function as the Kora contract",
+        "Uses runBlocking or Dispatchers.IO to bridge the stream in Kotlin",
+        "Leaks StreamObserver callbacks into a controller",
+        "Claims Kora provides a reactive gRPC client contract"
+      ],
+      "tags": [
+        "streaming",
+        "advanced"
+      ]
     },
     {
       "id": "kora-grpc-client-client-streaming",
-      "skills": ["kora-grpc-client"],
+      "skills": [
+        "kora-grpc-client"
+      ],
       "query": "Implement a client-streaming CreateUsers call that pushes multiple requests and awaits one summary response.",
       "expected_behavior": [
         "Injects the async UserServiceGrpc.UserServiceStub",
         "Obtains the request StreamObserver from asyncStub.createUsers(responseObserver)",
         "Calls requestObserver.onNext(...) per request and requestObserver.onCompleted() at the end",
-        "Bridges the async result to a synchronous boundary with a CompletableFuture completed in onNext/onCompleted",
-        "Calls requestObserver.onError(...) on failure to avoid leaking the stream"
+        "Bridges the async result to the synchronous contract with a CompletableFuture completed inside the response observer, using a timed get",
+        "Calls requestObserver.onError(...) in the catch so a failure does not leave the stream open",
+        "Notes the request observer is not thread-safe and must be driven from one thread"
       ],
-      "tags": ["streaming", "advanced"]
+      "anti_behavior": [
+        "Declares the wrapper method suspend or returns CompletionStage as the Kora contract",
+        "Uses an untimed future.get() or latch.await()",
+        "Omits onCompleted() or the error path on the request observer",
+        "Completes the future in onNext for a bidirectional stream"
+      ],
+      "tags": [
+        "streaming",
+        "advanced"
+      ]
     },
     {
       "id": "kora-grpc-client-missing-stub-debug",
-      "skills": ["kora-grpc-client"],
-      "query": "My Kora app fails to build with 'Required dependency not found: UserServiceGrpc.UserServiceBlockingStub'. How do I fix it?",
-      "expected_behavior": [
-        "Confirms GrpcClientModule is extended by the @KoraApp interface",
-        "Confirms the protobuf plugin generated the stub and the generated source dirs are on the source set",
-        "Confirms the mandatory annotation processor is present so the DI graph is generated",
-        "Suggests running ./gradlew classes (or generateProto) so processors run before compilation",
-        "Does not suggest adding @Tag to the stub injection as the fix"
+      "skills": [
+        "kora-grpc-client"
       ],
-      "tags": ["troubleshooting", "advanced"]
+      "query": "My Kora 2.0 app fails to build with 'Required dependency not found: UserServiceGrpc.UserServiceBlockingStub'. How do I fix it?",
+      "expected_behavior": [
+        "Confirms the @KoraApp interface extends io.koraframework.grpc.client.GrpcClientModule",
+        "Confirms io.koraframework:annotation-processors (or symbol-processors for Kotlin) is on the classpath, since it carries the extension that generates the stub factory",
+        "Confirms protobuf generation ran and build/generated/source/proto/main/{grpc,java} are on sourceSets.main.java",
+        "Checks that no @Tag was placed on the stub parameter, since the extension only serves untagged stub requests",
+        "Suggests ./gradlew classes (or generateProto) so generation runs before compilation",
+        "Mentions that the enclosing *Grpc class must carry io.grpc.stub.annotations.GrpcGenerated, which comes from protoc-gen-grpc-java"
+      ],
+      "anti_behavior": [
+        "Suggests adding @Tag to the stub injection as the fix",
+        "Suggests writing a manual @Module factory method returning the stub as the primary fix",
+        "Blames the BOM version",
+        "Suggests editing files under build/generated"
+      ],
+      "tags": [
+        "troubleshooting",
+        "stubs"
+      ]
+    },
+    {
+      "id": "kora-grpc-client-stale-generated-sources",
+      "skills": [
+        "kora-grpc-client"
+      ],
+      "query": "After renaming packages to io.koraframework, my gRPC client module fails with hundreds of 'package ru.tinkoff.kora.common.annotation does not exist' errors in files I never wrote — all under build/generated/source/proto.",
+      "expected_behavior": [
+        "Identifies stale protobuf generator output: generateProto does not delete its previous output and the build cache key does not account for the package change",
+        "Prescribes ./gradlew clean --continue followed by ./gradlew classes testClasses --no-build-cache",
+        "States explicitly that generated code must not be hand-edited",
+        "Notes the same class of failure applies to any code generator in the module (OpenAPI, wsdl2java)"
+      ],
+      "anti_behavior": [
+        "Suggests editing the generated sources",
+        "Suggests adding ru.tinkoff.kora dependencies back to make it compile",
+        "Blames the Kora extension or the BOM"
+      ],
+      "tags": [
+        "troubleshooting",
+        "gradle",
+        "regression-generated"
+      ]
+    },
+    {
+      "id": "kora-grpc-client-channel-builder-options",
+      "skills": [
+        "kora-grpc-client"
+      ],
+      "query": "I need a 16 MiB max inbound message size and a custom user agent on one Kora 2.0 gRPC client. Which config keys do I set?",
+      "expected_behavior": [
+        "States that neither is a grpcClient config key in Kora 2.0",
+        "Provides a Configurer<ManagedChannelBuilder<?>> @Component from io.koraframework.common, tagged @Tag(<Service>Grpc.class)",
+        "Notes the tagged configurer runs last in ManagedChannelLifecycle.init(), after every config-driven setting",
+        "Notes an untagged Configurer<ManagedChannelBuilder<?>> applies to every channel built by the default OkHttp channel factory",
+        "Lists the actual GrpcClientConfig key set so the boundary is clear"
+      ],
+      "anti_behavior": [
+        "Invents grpcClient.<Service>.maxInboundMessageSize or userAgent keys",
+        "Claims the setting is unavailable in Kora 2.0",
+        "Suggests replacing GrpcClientModule or building the channel entirely by hand as the first option"
+      ],
+      "tags": [
+        "config",
+        "advanced",
+        "regression-config-keys"
+      ]
+    },
+    {
+      "id": "kora-grpc-client-protoc-upgrade-unpaired",
+      "skills": [
+        "kora-grpc-client"
+      ],
+      "query": "I bumped protoc to 4.35.1 in my Kora 2.0 gRPC client build to match Kora's own version catalog, and now compilation fails with 'cannot find symbol: class Generated / location: package com.google.protobuf'. The gRPC versions are untouched at 1.83.1.",
+      "expected_behavior": [
+        "Identifies that protoc 4.x generated code references com.google.protobuf.Generated, which does not exist in the protobuf-java the build actually resolves",
+        "States that io.grpc:grpc-protobuf:1.83.1 declares protobuf-java 3.25.9 transitively, so the runtime is still on the 3.25 line",
+        "Offers the two correct recipes: revert to protoc 3.25.3 (matches the transitive runtime, needs no override), or keep 4.35.1 AND add implementation com.google.protobuf:protobuf-java:4.35.1 so it outranks 3.25.9",
+        "Notes that protoc and protobuf-java must move together — bumping one alone is the bug",
+        "Notes that kora-bom does not manage protobuf versions"
+      ],
+      "anti_behavior": [
+        "Suggests adding javax.annotation-api, which supplies javax.annotation.Generated rather than com.google.protobuf.Generated",
+        "Blames the Kora annotation processor, KSP, or the generated ApplicationGraph",
+        "Recommends excluding protobuf-java or downgrading grpc-protobuf",
+        "Suggests a clean build as the fix without changing any version"
+      ],
+      "tags": [
+        "gradle",
+        "troubleshooting",
+        "regression-versions"
+      ]
     }
   ]
 }

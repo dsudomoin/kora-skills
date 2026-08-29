@@ -1,0 +1,58 @@
+package ${packagePath}
+
+import io.koraframework.application.graph.All
+import io.koraframework.common.annotation.Component
+import io.koraframework.common.annotation.Tag
+
+/**
+ * Collecting every implementation of a type.
+ *
+ * `All<T>` (io.koraframework.application.graph.All) extends **Iterable<T>**, not `List<T>`. Kotlin's
+ * `Iterable` extensions apply, so `toList()`, `map { }` and `filter { }` work without materialising
+ * by hand. `All` is sealed and cannot be implemented — use `All.of(...)` in tests.
+ *
+ * `List<T>` is not a collection claim. A `List<${ComponentType}>` parameter asks for a single
+ * component of that type and fails with "no component found".
+ *
+ * Which components arrive is decided by the tag on the parameter:
+ * - `All<T>` — untagged components only (the usual reason implementations go missing)
+ * - `@Tag(Tag.Any::class) All<T>` — every component of that type
+ * - `@Tag(X::class) All<T>` — only components tagged `X`
+ *
+ * Order follows resolution order: deterministic for a given source set, but not something to encode
+ * behaviour against. Where order matters, give the element interface an explicit `order()` and sort.
+ */
+@Component
+class ${ComponentName}(
+    @Tag(Tag.Any::class) private val ${collectionName}: All<${ComponentType}>
+) {
+
+    fun processAll(data: ${DataType}) {
+        for (element in ${collectionName}) {
+            element.process(data)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Variants
+// ---------------------------------------------------------------------------
+//
+// Materialise into a List:
+//
+//     class Dispatcher(@Tag(Tag.Any::class) handlers: All<Handler>) {
+//         private val handlers: List<Handler> = handlers.toList()
+//     }
+//
+// Refresh-isolated members — each element resolves to the current instance, and this component is
+// not rebuilt when a member refreshes:
+//
+//     class HealthAggregator(@Tag(Tag.Any::class) private val checks: All<ValueOf<HealthCheck>>) {
+//         fun healthy(): Boolean = checks.all { it.get().isHealthy() }
+//     }
+//
+// All<PromiseOf<T>> is the lazy form; PromiseOf.get() returns Optional<T>.
+//
+// Members declared @Conditional whose condition failed are skipped, not returned as null.
+// All<T> filters once at construction; All<ValueOf<T>>/All<PromiseOf<T>> re-filter on every
+// iterator() call.

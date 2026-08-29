@@ -1,48 +1,136 @@
 ---
 name: kora-grpc-server
-description: "Kora gRPC server handlers — GrpcServerModule, @Component extending the generated *GrpcImplBase, ServerInterceptor, grpcServer config, reflection. Use when serving gRPC RPCs (unary/streaming) from a Kora service."
+description: "Kora 2.0 gRPC server — io.koraframework:grpc-server, GrpcServerModule, untagged @Component handlers extending the generated *Grpc.*ImplBase (io.grpc.BindableService), untagged io.grpc.ServerInterceptor components, the grpcServer config section (port, reflectionEnabled, maxMessageSize, telemetry), OkHttp transport on virtual threads, gRPC Server Reflection. Use when serving unary or streaming RPCs from a Kora service, pinning io.grpc/protobuf versions against grpc-java 1.83.1, or debugging AbstractMethodError buildClientTransportServers, an interceptor that never runs, or handlers that are not registered."
+license: Apache-2.0
+metadata:
+  kora-version: "2.x"
 ---
 
 # Kora gRPC Server
 
-> **Kora sub-skill — obey the [kora-v1 meta rules](../../SKILL.md) on every task:** **R0** ensure `.kora-agent/` docs+examples are cloned · **R1** read this sub-skill before writing code · **R2** Kora APIs only — no Spring/Micronaut/Quarkus, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
+> **Kora sub-skill — obey the [kora-v2 meta rules](../../SKILL.md) on every task:** **R0** ground the workspace on Kora 2.0 refs before starting (framework source at tag `2.0.0.RC1` + `kora-examples` at `migration/2.0`; `kora-docs` is 1.x only) · **R1** read this sub-skill before writing code · **R2** Kora 2.0 APIs only — no Spring/Micronaut/Quarkus, no Kora 1.x APIs, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
 
-Serve gRPC RPCs from a Kora application. The `.proto` contract is the source of truth: the `protobuf` Gradle plugin generates message classes and a `*Grpc.*ImplBase` base type, and you implement a Kora `@Component` that extends that base. `GrpcServerModule` discovers every `@Component` handler and `ServerInterceptor` and starts the server — no reflection-based wiring, everything is resolved through the compile-time graph.
+| | |
+|---|---|
+| **Artifact** | `io.koraframework:grpc-server` (BOM `io.koraframework:kora-bom:2.0.0.RC1`, plain `mavenCentral()`) |
+| **Module** | `io.koraframework.grpc.server.GrpcServerModule` — add it to the `@KoraApp` interface |
+| **Config section** | `grpcServer` (telemetry component name `kora-grpc`) |
+| **Transport** | **OkHttp** (`io.grpc.okhttp.OkHttpServerBuilder`), calls dispatched onto **virtual threads** |
+| **Handler** | untagged `@Component` extending the generated `*Grpc.*ImplBase` (an `io.grpc.BindableService`) |
+| **Interceptor** | untagged `@Component` implementing `io.grpc.ServerInterceptor` |
+| **Pinned gRPC** | grpc-java **`1.83.1`**, protobuf-java **`3.25.9`** (transitive), protoc **`3.25.3`**, protobuf Gradle plugin **`0.10.0`** |
+
+The `.proto` contract is the source of truth. The `com.google.protobuf` Gradle plugin generates the
+message classes and a `*Grpc.*ImplBase` base type; you implement a Kora `@Component` that extends
+it. `GrpcServerModule` collects every `BindableService` and `ServerInterceptor` in the graph at
+**compile time** and starts one server — no classpath scanning, no reflection-based wiring.
 
 ## When to use vs NOT
 
 Use this skill when:
-- implementing gRPC handlers that extend the generated `*GrpcImplBase`,
-- wiring `GrpcServerModule` into a `@KoraApp`,
+- implementing gRPC handlers that extend a generated `*Grpc.*ImplBase`,
+- wiring `GrpcServerModule` into a `@KoraApp` and pinning the `io.grpc:*` / protobuf versions,
 - configuring `grpcServer` (port, message size, telemetry, keepalive, reflection),
-- adding `io.grpc.ServerInterceptor` beans for auth/logging/metrics,
+- adding `io.grpc.ServerInterceptor` components for auth/logging,
+- customising the server builder (TLS credentials, `Configurer`),
 - enabling gRPC Server Reflection for `grpcurl`.
 
 Do NOT use this skill for:
-- consuming gRPC services (declarative stubs) — that is the `kora-grpc-client` skill,
+- consuming gRPC services (stub injection) — that is the `kora-grpc-client` skill,
 - HTTP/JSON endpoints — use `kora-http-server`.
+
+---
+
+## Changed from Kora 1.x — check this first on ported code
+
+| Kora 1.x | Kora 2.0 | Failure mode if left as-is |
+|---|---|---|
+| `ru.tinkoff.kora:kora-parent` | **`io.koraframework:kora-bom`** | artifact not found |
+| `ru.tinkoff.kora:grpc-server` | **`io.koraframework:grpc-server`** | artifact not found |
+| `ru.tinkoff.kora.grpc.server.GrpcServerModule` | **`io.koraframework.grpc.server.GrpcServerModule`** | compile error |
+| `ru.tinkoff.kora.common.Component` | **`io.koraframework.common.annotation.Component`** | compile error |
+| Netty transport, `netty { }` tuning | **OkHttp transport**; `netty-common` is only used by `redis-lettuce` in 2.0 | `netty { }` silently tunes nothing |
+| `ContextServerInterceptor`, `CoroutineContextInjectInterceptor`, `MetricCollectorServerInterceptor`, `LoggingServerInterceptor` | **gone** — the module adds exactly one built-in, `io.koraframework.grpc.server.interceptor.TelemetryInterceptor` | naming them is wrong |
+| override `serverBuilder` on `GrpcModule` to customise | **`GrpcServerFactoryModule`**: supply an untagged `Configurer<ForwardingServerBuilder<?>>`, `ServerCredentials`, or your own `ForwardingServerBuilder<?>` | `GrpcModule` does not exist |
+| `telemetry.metrics.enabled` defaulted **true** | defaults **`false`** | metrics silently absent |
+| Kora `Context` for per-call state | **`Context` no longer exists anywhere in Kora** (`io.grpc.Context` is gRPC's own, unrelated type) | compile error |
+| Kotlin `suspend` / `Mono` / `Flux` handlers | **synchronous only**, on virtual threads | not a Kora contract |
+| grpc-java `1.74.x` pins | **`1.83.1` everywhere** | `AbstractMethodError` at runtime |
+
+---
+
+## ⚑ Version alignment — the runtime failure class
+
+`kora-bom` constrains **only `io.koraframework:*`**. It pins nothing under `io.grpc` or
+`com.google.protobuf`, so every one of those coordinates is yours to keep consistent.
+
+`io.koraframework:grpc-server:2.0.0.RC1` declares `io.grpc:grpc-okhttp:1.83.1` and
+`io.grpc:grpc-stub:1.83.1`, and `grpc-okhttp:1.83.1` drags in `grpc-core`/`grpc-api`/`grpc-util` at
+`1.83.1`.
+
+**Rule 1 — pin every `io.grpc:*` you add to `1.83.1`**, in `implementation` and `testImplementation`
+alike (`grpc-protobuf`, `grpc-services`, `grpc-netty`, `grpc-inprocess`, `grpc-testing`,
+`protoc-gen-grpc-java`). An older pin resolves `grpc-core` to 1.83.1 while leaving your module
+behind, and the server dies at **runtime** with an error that names nothing useful:
+
+```
+java.lang.AbstractMethodError: ... does not define or inherit an implementation of the
+resolved method 'buildClientTransportServers(List, MetricRecorder)'
+```
+
+**Rule 2 — generate with `com.google.protobuf:protoc:3.25.3`.** `io.grpc:grpc-protobuf:1.83.1`
+brings `com.google.protobuf:protobuf-java:` **`3.25.9`**, not the 4.x line. protoc 4.x gencode
+references `com.google.protobuf.Generated` and `com.google.protobuf.RuntimeVersion`, and **neither
+class exists in protobuf-java 3.25.9**, so the build fails:
+
+```
+error: cannot find symbol
+@com.google.protobuf.Generated
+  symbol:   class Generated
+  location: package com.google.protobuf
+```
+
+(If a 4.x `protobuf-java` is on the compile classpath but a 3.x one wins at runtime, the same
+mismatch surfaces later as `NoClassDefFoundError: com/google/protobuf/RuntimeVersion`.)
+
+All eight migrated gRPC projects — client and server, examples and guides — pin `protoc:3.25.3`.
+To use protobuf 4.x instead, pin **both** `com.google.protobuf:protoc:4.35.1` and an explicit
+`implementation "com.google.protobuf:protobuf-java:4.35.1"`; the catalog's `4.35.1` works inside
+Kora's own build only because it pins `protobuf-java` alongside it.
+
+Details and the full compatible matrix: [references/grpc-server-reference.md](references/grpc-server-reference.md).
+
+---
 
 ## Quick Start
 
-### 1. Dependencies (BOM pins all `ru.tinkoff.kora:*` versions)
+### 1. Dependencies
 
 ```groovy
 dependencies {
-    koraBom platform("ru.tinkoff.kora:kora-parent:1.2.19")
-    annotationProcessor "ru.tinkoff.kora:annotation-processors"
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")   // 2.0.0.RC1
+    annotationProcessor "io.koraframework:annotation-processors"
 
-    implementation "ru.tinkoff.kora:grpc-server"
-    implementation "ru.tinkoff.kora:config-hocon"
-    implementation "ru.tinkoff.kora:logging-logback"
-    implementation "io.grpc:grpc-protobuf:1.74.0"
-    implementation "javax.annotation:javax.annotation-api:1.3.2"
+    implementation "io.koraframework:grpc-server"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
+
+    implementation "io.grpc:grpc-protobuf:1.83.1"
+    compileOnly "javax.annotation:javax.annotation-api:1.3.2"    // generated stubs need @Generated
 
     // Optional: gRPC Server Reflection (grpcurl / Postman gRPC)
-    implementation "io.grpc:grpc-services:1.74.0"
+    implementation "io.grpc:grpc-services:1.83.1"
+
+    testImplementation "io.koraframework:test-junit5"
 }
 ```
 
-Kotlin: replace the processor with `ksp "ru.tinkoff.kora:symbol-processors"`. Never put a version on a `ru.tinkoff.kora:*` artifact — the BOM controls them.
+Kotlin: replace the processor with `ksp("io.koraframework:symbol-processors:$koraVersion")`.
+Never put a version on an `io.koraframework:*` artifact — the BOM controls those. Always put an
+explicit `1.83.1` on every `io.grpc:*` artifact — the BOM controls none of those.
+
+Full build files: [assets/build.gradle.server.template](assets/build.gradle.server.template),
+[assets/build.gradle.server.kt.template](assets/build.gradle.server.kt.template).
 
 ### 2. Protobuf Gradle plugin
 
@@ -54,7 +142,7 @@ plugins {
 protobuf {
     protoc { artifact = "com.google.protobuf:protoc:3.25.3" }
     plugins {
-        grpc { artifact = "io.grpc:protoc-gen-grpc-java:1.74.0" }
+        grpc { artifact = "io.grpc:protoc-gen-grpc-java:1.83.1" }
     }
     generateProtoTasks {
         all()*.plugins { grpc {} }
@@ -69,12 +157,15 @@ sourceSets {
 }
 ```
 
+The generated sources are **Java** in both languages — a Kotlin service extends the same
+`*Grpc.*ImplBase`, so the `java` source set is where the generated directories go.
+
 ### 3. `.proto` contract (`src/main/proto/user_service.proto`)
 
 ```protobuf
 syntax = "proto3";
 
-package ru.tinkoff.kora.example.grpc;
+package io.koraframework.example.grpc;
 option java_multiple_files = true;
 
 import "google/protobuf/timestamp.proto";
@@ -97,6 +188,12 @@ message UserResponse {
 ### 4. Application module
 
 ```java
+import io.koraframework.application.graph.KoraApplication;
+import io.koraframework.common.annotation.KoraApp;
+import io.koraframework.config.hocon.HoconConfigModule;
+import io.koraframework.grpc.server.GrpcServerModule;
+import io.koraframework.logging.logback.LogbackModule;
+
 @KoraApp
 public interface Application extends
         HoconConfigModule,
@@ -109,12 +206,12 @@ public interface Application extends
 }
 ```
 
-### 5. Handler — `@Component` extending the generated `*ImplBase`
+### 5. Handler — untagged `@Component` extending the generated `*ImplBase`
 
 ```java
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
-import ru.tinkoff.kora.common.Component;
+import io.koraframework.common.annotation.Component;
 
 @Component
 public final class UserServiceGrpcHandler extends UserServiceGrpc.UserServiceImplBase {
@@ -137,27 +234,29 @@ public final class UserServiceGrpcHandler extends UserServiceGrpc.UserServiceImp
 }
 ```
 
-The handler is a plain Kora component: constructor injection, business logic delegated to `UserService`. The generated protobuf types are transport DTOs — keep domain logic out of the handler.
+The handler is a plain Kora component: constructor injection, business logic delegated to a service.
+The method body is **synchronous** — it already runs on a virtual thread, so blocking is correct.
 
 ### 6. Configuration (`application.conf`)
 
 ```hocon
 grpcServer {
   port = ${GRPC_PORT}
-  telemetry.logging.enabled = true
+  telemetry.logging.enabled = true    # default false
+  telemetry.metrics.enabled = true    # default false
 }
 ```
 
 ### 7. Run and probe
 
 ```bash
-./gradlew clean classes   # generate proto + build the compile-time graph
+./gradlew clean classes   # generateProto + build the compile-time graph
 ./gradlew run
 grpcurl -plaintext -d '{"user_id":"42"}' \
-  localhost:8090 ru.tinkoff.kora.example.grpc.UserService/GetUser
+  localhost:8090 io.koraframework.example.grpc.UserService/GetUser
 ```
 
-The gRPC method's full name is `<proto package>.<service>/<Method>`.
+A method's full name is `<proto package>.<service>/<Method>`. Default port is **8090**.
 
 ---
 
@@ -165,18 +264,30 @@ The gRPC method's full name is `<proto package>.<service>/<Method>`.
 
 | File | Purpose |
 |------|---------|
-| [references/grpc-server-reference.md](references/grpc-server-reference.md) | Module, dependency, protobuf plugin, default interceptors, troubleshooting |
-| [references/grpc-service-reference.md](references/grpc-service-reference.md) | Handler patterns: unary + all three streaming kinds, message conversion |
-| [references/grpc-config-reference.md](references/grpc-config-reference.md) | Full `grpcServer` config, telemetry tags/attributes, Netty transport, metrics |
-| [references/grpc-interceptors-reference.md](references/grpc-interceptors-reference.md) | `ServerInterceptor` beans: auth, logging, metrics, exception mapping, ordering |
+| [references/grpc-server-reference.md](references/grpc-server-reference.md) | Module wiring, version matrix, transport, builder/TLS customisation, lifecycle, native image, troubleshooting |
+| [references/grpc-service-reference.md](references/grpc-service-reference.md) | Handler patterns: unary + all three streaming kinds, execution model, message conversion, Java/Kotlin |
+| [references/grpc-config-reference.md](references/grpc-config-reference.md) | Every `grpcServer` key with its real default; the metric, span and log records actually emitted |
+| [references/grpc-interceptors-reference.md](references/grpc-interceptors-reference.md) | Exact collection mechanism, ordering, auth/logging/exception interceptors |
 | [references/grpc-error-handling-reference.md](references/grpc-error-handling-reference.md) | `io.grpc.Status` codes, error metadata, streaming errors |
-| [references/grpc-reflection-reference.md](references/grpc-reflection-reference.md) | Reflection setup and `grpcurl`/Postman usage |
+| [references/grpc-reflection-reference.md](references/grpc-reflection-reference.md) | Reflection setup and `grpcurl` usage |
 
-Assets (templates): see `assets/`.
+Templates: see [`assets/`](assets/). Regression cases: see [`evals/evals.json`](evals/evals.json).
 
 ---
 
 ## Core patterns
+
+### Discovery — what "untagged" means
+
+`GrpcServerFactoryModule` collects services and interceptors with
+`@Tag(Tag.Factory.class) All<ValueOf<BindableService>>` and
+`@Tag(Tag.Factory.class) All<ValueOf<ServerInterceptor>>`. `Tag.Factory` resolves to the tag of the
+enclosing factory module, and `GrpcServerModule.grpcServer()` carries **no** `@Tag` — so the claim
+is untagged, and an untagged claim matches **only untagged components**.
+
+> Putting `@Tag(...)` on a handler or an interceptor removes it from the collection. It still
+> compiles and the app still starts — the RPC just answers `UNIMPLEMENTED`, or the interceptor
+> simply never runs. Cover both with a test.
 
 ### RPC method signatures
 
@@ -187,60 +298,47 @@ Assets (templates): see `assets/`.
 | Client streaming | `StreamObserver<Req> method(StreamObserver<Resp>)` |
 | Bidirectional streaming | `StreamObserver<Req> method(StreamObserver<Resp>)` |
 
-Server streaming: emit each item with `onNext`, then a single `onCompleted`.
+All four are supported, in Java and Kotlin, with the same `io.grpc.stub.StreamObserver` shapes as
+plain grpc-java. Full examples: [references/grpc-service-reference.md](references/grpc-service-reference.md).
 
-```java
-@Override
-public void getAllUsers(Empty request, StreamObserver<UserResponse> responseObserver) {
-    for (var user : userService.getAllUsers()) {
-        responseObserver.onNext(toGrpcUser(user));
-    }
-    responseObserver.onCompleted();
-}
-```
+### Execution model
 
-Client/bidirectional streaming: return a `StreamObserver<Req>` that accumulates `onNext` values and replies on `onCompleted`.
+Kora 2.0 contracts are synchronous. `OkHttpServerBuilder` is configured `.directExecutor()` with
+`VirtualThreadExecutorTransportFilter` as both transport filter and call executor, so every call
+body runs on a virtual thread named `grpc-<remote-address>`. Blocking JDBC, blocking HTTP clients
+and `Thread.sleep` inside a handler are all fine.
 
-```java
-@Override
-public StreamObserver<CreateUserRequest> createUsers(StreamObserver<CreateUsersResponse> responseObserver) {
-    return new StreamObserver<>() {
-        private final List<UserRequest> requests = new ArrayList<>();
-        public void onNext(CreateUserRequest v) { requests.add(new UserRequest(v.getName(), v.getEmail())); }
-        public void onError(Throwable t) { responseObserver.onError(t); }
-        public void onCompleted() {
-            var created = userService.createUsers(requests);
-            responseObserver.onNext(CreateUsersResponse.newBuilder()
-                .setCreatedCount(created.size()).build());
-            responseObserver.onCompleted();
-        }
-    };
-}
-```
-
-See [references/grpc-service-reference.md](references/grpc-service-reference.md) for full examples including timestamp/`ByteString` conversion.
+- **No `suspend`, no `Mono`/`Flux`, no `CompletionStage`** — none of these is a Kora contract in 2.0.
+- **The Kora `Context` type is gone from the whole framework.** `io.grpc.Context` is gRPC's own,
+  unrelated type and still exists; do not treat one as a rename of the other.
+- Per-call MDC and the OpenTelemetry context are carried in `ScopedValue`s bound around the call
+  (`MDC.VALUE`, `OpentelemetryContext.VALUE`). Handing work to your own thread pool leaves both
+  behind.
+- **Kotlin uses the Java generated stubs.** Kora ships no server-side `protoc-gen-grpc-kotlin`
+  wiring, and every migrated Kotlin example and guide extends `*Grpc.*ImplBase`.
 
 ### Errors via `io.grpc.Status`
-
-Map domain failures to gRPC status codes. Common: `NOT_FOUND`, `INVALID_ARGUMENT`, `ALREADY_EXISTS`, `PERMISSION_DENIED`, `UNAUTHENTICATED`, `INTERNAL`, `UNAVAILABLE`.
 
 ```java
 throw Status.NOT_FOUND.withDescription("User not found: " + id).asRuntimeException();
 ```
 
-Inside a handler use either `throw ...asRuntimeException()` (when the call propagates) or `responseObserver.onError(...)`. Send exactly one terminal signal per call — never `onNext` after `onError`/`onCompleted`. Details: [references/grpc-error-handling-reference.md](references/grpc-error-handling-reference.md).
+Common codes: `NOT_FOUND`, `INVALID_ARGUMENT`, `ALREADY_EXISTS`, `PERMISSION_DENIED`,
+`UNAUTHENTICATED`, `INTERNAL`, `UNAVAILABLE`. Inside a handler either throw
+`...asRuntimeException()` or call `responseObserver.onError(...)`. Send exactly one terminal signal
+per call — never `onNext` after `onError`/`onCompleted`.
+Details: [references/grpc-error-handling-reference.md](references/grpc-error-handling-reference.md).
 
 ### Interceptors
 
-Register a cross-cutting interceptor by implementing `io.grpc.ServerInterceptor` and annotating it `@Component`; `GrpcServerModule` adds it automatically.
-
 ```java
 import io.grpc.*;
-import ru.tinkoff.kora.common.Component;
+import io.koraframework.common.annotation.Component;
 
 @Component
-public final class MyServerInterceptor implements ServerInterceptor {
-    private final Logger logger = LoggerFactory.getLogger(MyServerInterceptor.class);
+public final class LoggingInterceptor implements ServerInterceptor {
+
+    private static final Logger logger = LoggerFactory.getLogger(LoggingInterceptor.class);
 
     @Override
     public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
@@ -251,11 +349,18 @@ public final class MyServerInterceptor implements ServerInterceptor {
 }
 ```
 
-Default interceptors registered by the module: `ContextServerInterceptor`, `CoroutineContextInjectInterceptor`, `MetricCollectorServerInterceptor`, `LoggingServerInterceptor`. To replace the default list, override the `serverBuilder` method from `GrpcModule`. Auth and exception-mapping examples: [references/grpc-interceptors-reference.md](references/grpc-interceptors-reference.md).
+Every interceptor is global — the module has no per-service registration. Scope one to a single
+service by comparing `call.getMethodDescriptor().getServiceName()` against the generated
+`XxxGrpc.SERVICE_NAME`. The only interceptor Kora adds itself is `TelemetryInterceptor`, and it is
+added **last**, which under gRPC's reverse-order contract makes it the outermost one — your
+interceptors run inside the telemetry span.
+Details: [references/grpc-interceptors-reference.md](references/grpc-interceptors-reference.md).
 
 ### Reflection
 
-Add `io.grpc:grpc-services` and set `reflectionEnabled = true` (default is `false`) for `grpcurl`/Postman discovery.
+Add `io.grpc:grpc-services:1.83.1` **and** set `reflectionEnabled = true` (default `false`).
+The module probes for `io.grpc.protobuf.services.ProtoReflectionServiceV1` and, if the class is
+missing, ignores the flag **without a warning**.
 
 ```hocon
 grpcServer { reflectionEnabled = ${?GRPC_REFLECTION_ENABLED} }
@@ -265,23 +370,34 @@ grpcServer { reflectionEnabled = ${?GRPC_REFLECTION_ENABLED} }
 grpcurl -plaintext localhost:8090 list
 ```
 
-Keep it disabled in production unless the endpoint is internal-only. See [references/grpc-reflection-reference.md](references/grpc-reflection-reference.md).
+Keep it off in production unless the endpoint is internal-only.
+See [references/grpc-reflection-reference.md](references/grpc-reflection-reference.md).
 
 ### Telemetry
 
-The module emits metrics (`rpc.server.duration`, `rpc.server.requests_per_rpc`, `rpc.server.responses_per_rpc`), tracing, and logging — all toggled under `grpcServer.telemetry`. Metrics default on, tracing default on, logging default off. Add custom metric tags / trace attributes under `telemetry.metrics.tags` / `telemetry.tracing.attributes` ([references/grpc-config-reference.md](references/grpc-config-reference.md)).
+One metric — `rpc.server.duration` (a Micrometer `Timer`). Spans are named `<service>/<method>`,
+kind `SERVER`, with the W3C traceparent read from the call metadata. Request/response logs go to
+`io.koraframework.grpc.server.GrpcServer.request` / `.response`.
+
+**Logging and metrics default to `false`; tracing defaults to `true`.** Any config that claims to
+demonstrate metrics or request logging must enable them explicitly.
+Keys and tag lists: [references/grpc-config-reference.md](references/grpc-config-reference.md).
 
 ---
 
 ## Common pitfalls
 
-| Symptom | Fix |
-|---------|-----|
-| Generated classes not found | Run `./gradlew clean classes`; verify the `com.google.protobuf` plugin and the proto `srcDirs` source sets |
-| Handler not registered | Annotate it `@Component` and ensure it extends the generated `*GrpcImplBase` |
-| `Component` import won't resolve | Import `ru.tinkoff.kora.common.Component` (not any `annotation.processor` package) |
-| Client hangs on a stream | Always finish with `onCompleted()` (or `onError`) after the `onNext` calls |
-| `INVALID_ARGUMENT` returned for everything | Use specific `Status` codes instead of a blanket `INTERNAL` |
-| `UNIMPLEMENTED: unknown service` via grpcurl | Add `io.grpc:grpc-services` and set `reflectionEnabled = true` |
-| RPC returns `UNIMPLEMENTED` from a real client | Generated service/method names must match the `.proto` used by the client |
-| Build hangs after clean | `./gradlew --stop`, then rebuild |
+| Symptom | Cause / fix |
+|---------|-------------|
+| `AbstractMethodError ... buildClientTransportServers(List, MetricRecorder)` | An `io.grpc:*` artifact pinned below `1.83.1` (often `grpc-inprocess`/`grpc-netty` in tests). Pin every one to `1.83.1` |
+| `cannot find symbol: class Generated` / `class RuntimeVersion` in generated sources | protoc 4.x gencode against the protobuf-java `3.25.9` that `grpc-protobuf:1.83.1` brings. Use `protoc:3.25.3`, or pin `protobuf-java:4.35.1` explicitly |
+| Handler compiles, RPC answers `UNIMPLEMENTED` | Missing `@Component`, not extending `*Grpc.*ImplBase`, or a `@Tag(...)` on the component — the collection is untagged |
+| Interceptor never runs | Same cause: a `@Tag(...)` on the `ServerInterceptor` component takes it out of `All<ValueOf<ServerInterceptor>>` |
+| `Component` import won't resolve | It is `io.koraframework.common.annotation.Component` |
+| No `rpc_server_duration` metric | `grpcServer.telemetry.metrics.enabled` defaults to **`false`** in 2.0 — set it, and add `micrometer-module` |
+| No request logs | `grpcServer.telemetry.logging.enabled` defaults to **`false`** |
+| `grpcurl list` → `UNIMPLEMENTED` | `io.grpc:grpc-services` missing (flag ignored silently) or `reflectionEnabled` not set |
+| `netty { }` tuning changes nothing | 2.0 serves gRPC over OkHttp; that section belongs to `redis-lettuce` |
+| `Kotlin suspend fun overrides nothing` | The generated stubs are Java; handler methods are plain synchronous overrides |
+| Generated classes not found | `./gradlew clean classes`; check the `com.google.protobuf` plugin and the proto `srcDirs` |
+| Phantom `ru.tinkoff.kora` errors after renaming | Stale `build/generated` — `./gradlew clean` then build with `--no-build-cache` |

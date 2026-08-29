@@ -1,28 +1,106 @@
 ---
 name: kora-openapi-generator-server
-description: "Generate Kora HTTP server code from an OpenAPI 3.x spec (generatorName \"kora\") — *ApiController + *ApiDelegate implemented with @Component + sealed *ApiResponses. Use for a contract-first server; implement the delegate, don't hand-write a controller."
+description: "Generate a Kora 2.x HTTP server from an OpenAPI 3.x contract with the `kora` generator (io.koraframework:openapi-generator, modes java-server / kotlin-server). Emits *ApiController (@Component + @HttpController), a *ApiDelegate interface you implement, sealed *ApiResponses with one record per status code, *ApiServerResponseMappers, model records/data classes and an ApiSecurity @Module for securitySchemes. Use for contract-first servers, enableServerValidation, HttpServerPrincipalExtractor wiring, enum fromValue parsing, or \"delegate not found\" / phantom-package build errors."
+license: Apache-2.0
+metadata:
+  kora-version: "2.x"
 ---
 
 # Kora OpenAPI Generator — HTTP Server
 
-> **Kora sub-skill — obey the [kora-v1 meta rules](../../SKILL.md) on every task:** **R0** ensure `.kora-agent/` docs+examples are cloned · **R1** read this sub-skill before writing code · **R2** Kora APIs only — no Spring/Micronaut/Quarkus, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
+> **Kora sub-skill — obey the [kora-v2 meta rules](../../SKILL.md) on every task:** **R0** ground the workspace on Kora 2.0 refs before starting (framework source at tag `2.0.0.RC1` + `kora-examples` at `migration/2.0`; `kora-docs` is 1.x only) · **R1** read this sub-skill before writing code · **R2** Kora 2.0 APIs only — no Spring/Micronaut/Quarkus, no Kora 1.x APIs, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
 
-Generate a type-safe Kora HTTP server from an OpenAPI 3.x contract. The `kora`
-generator emits the transport layer (controller, response wrappers, models); you
-implement one generated `*ApiDelegate` interface with `@Component` and return the
-generated sealed `*ApiResponses` records. The generated controller registers
-routes automatically — never write `@HttpController`/`@HttpRoute` by hand for a
-generated API, and never edit files under `build/generated/`.
+**Version:** Kora 2.0 (`io.koraframework`, `2.0.0.RC1` on Maven Central) | **Java:** 25 | **Kotlin:** 2.4 + KSP | **Gradle:** 9+
 
-All Kora artifacts inherit their version from the `kora-parent` BOM
-(`ru.tinkoff.kora:kora-parent`, e.g. `1.2.19` in the example apps) — never pin a
-version on an individual `ru.tinkoff.kora:*` dependency. The OpenAPI plugin
-`org.openapi.generator` is pinned to `7.14.0`; other versions are not guaranteed
-to be code-compatible.
+The `kora` generator turns an OpenAPI 3.x contract into the whole transport layer of a Kora
+HTTP server. You implement exactly one thing: the generated `*ApiDelegate` interface, as a
+`@Component`. Everything else — routing, parameter binding, JSON, response mapping, security
+interceptors — is generated and must never be edited or hand-written alongside.
+
+Kora 2.0 contracts are **synchronous**. Delegate methods return a value directly; there is no
+`Mono`, `Flux`, `CompletionStage` or `suspend` variant of a delegate, and `Context` no longer
+exists anywhere in the framework.
+
+## Only four generator modes exist
+
+`configOptions.mode` accepts exactly `java-client`, `java-server`, `kotlin-client`,
+`kotlin-server` (`CodegenMode` in the generator). Anything else fails generation with
+*"Invalid OpenAPI generator `mode`"* and a list of the supported values.
+
+| Kora 1.x mode | Use instead |
+|---|---|
+| `java-async-server`, `java-reactive-server` | `java-server` |
+| `kotlin-suspend-server` | `kotlin-server` |
+| `java-async-client`, `java-reactive-client` | `java-client` |
+| `kotlin-suspend-client` | `kotlin-client` |
+
+Any other reactive/async/suspend variant is equally invalid — the mode string must be one of the
+four above.
+
+## Migrating from Kora 1.x
+
+| Kora 1.x | Kora 2.x |
+|---|---|
+| BOM `ru.tinkoff.kora:kora-parent` | **`io.koraframework:kora-bom`** |
+| `classpath("ru.tinkoff.kora:openapi-generator:…")` | **`classpath("io.koraframework:openapi-generator:$koraVersion")`** |
+| `ru.tinkoff.kora:json-module` | **`io.koraframework:json-common`** |
+| `UndertowHttpServerModule` | **`UndertowPublicHttpServerModule`** |
+| `ru.tinkoff.kora.common.Component` | **`io.koraframework.common.annotation.Component`** |
+| reactive / async / suspend server modes | **removed** — see the table above |
+| `@Tag(ApiSecurity.SecurityRequirementTag1.class)` | **`@Tag(ApiSecurity.<SchemeName>.class)`**, e.g. `ApiSecurity.BearerAuth` |
+| `Enum.valueOf(raw)` / hand-written `statusOf` | **`MyEnum.fromValue(raw)`** |
+| `javax`/`jakarta` nullability on generated params | **JSpecify** `org.jspecify.annotations.@Nullable` |
+| `configOptions.interceptors` | **`configOptions.extensions`** (`interceptorType` / `interceptorTag`) |
+| `configOptions.additionalContractAnnotations` | **`extensions.*.additionalMethodAnnotations`** |
+| `delegateMethodBodyMode: "throw-exception"` | **`"throwException"`** |
+
+Two of these fail only at runtime, never at compile time:
+
+- **`fromValue`, not `valueOf`.** The wire value in the contract (`available`) need not match
+  the generated constant (`AVAILABLE`). `Enum.valueOf("available")` throws for perfectly valid
+  input. `fromValue` throws `IllegalArgumentException` only for values outside the contract, and
+  the delegate turns that into the contract's `400`.
+- **Security tags are named after the security scheme.** `components.securitySchemes.BearerAuth`
+  becomes the nested marker `ApiSecurity.BearerAuth`. Ordinal `SecurityRequirementTagN` names do
+  not exist in 2.0, so an extractor tagged that way is simply never found.
+
+## The Gradle process itself must run on JDK 25+
+
+`io.koraframework:openapi-generator` goes on the **buildscript classpath**, which is resolved by
+the JVM running Gradle — not by the project toolchain. A Java 25 `toolchain { }` block is not
+enough. On an older Gradle JVM configuration fails with:
+
+```
+Dependency requires at least JVM runtime version 25. This build uses a Java 21 JVM.
+```
+
+Fix it where the Gradle JVM is chosen (`JAVA_HOME`, `org.gradle.java.home`, or the IDE's Gradle
+JVM setting), not in the toolchain block. This is the single most common setup failure here.
 
 ## Quick Start
 
-### 1. Dependencies
+### 1. `gradle.properties`
+
+`2.0.0.RC1` is the Kora 2.0 release on Maven Central and resolves from plain `mavenCentral()`.
+`2.0.0-SNAPSHOT` is the development line; it needs
+`https://central.sonatype.com/repository/maven-snapshots` and does not belong in a new project.
+
+```properties
+koraVersion=2.0.0.RC1
+```
+
+### 2. Build wiring
+
+Two independent versions are in play here — do not conflate them:
+
+| What | Where it is set | Value in the 2.0 examples |
+|---|---|---|
+| **OpenAPI Generator Gradle plugin** (`org.openapi.generator`) | `plugins { }` block | `7.23.0` in all 9 Java build files, `7.24.0` in all 7 Kotlin ones |
+| **Kora `kora` generator** (`io.koraframework:openapi-generator`) | `buildscript { dependencies { classpath … } }` | `$koraVersion` = `2.0.0.RC1` |
+
+The Kora generator is built against `org.openapitools:openapi-generator` **7.24.0** (framework
+version catalog), and that is the version stamped into `.openapi-generator/VERSION` in the
+output, so `7.24.0` is the aligned plugin choice.
 
 ===! ":fontawesome-brands-java: `Java`"
 
@@ -30,33 +108,41 @@ to be code-compatible.
     import org.openapitools.generator.gradle.plugin.tasks.GenerateTask
 
     buildscript {
+        repositories { mavenCentral() }
         dependencies {
-            classpath("ru.tinkoff.kora:openapi-generator:$koraVersion")
+            classpath("io.koraframework:openapi-generator:$koraVersion")
         }
     }
 
     plugins {
         id "java"
         id "application"
-        id "org.openapi.generator" version "7.14.0"
+        id "org.openapi.generator" version "7.24.0"
+    }
+
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(25)
+        }
     }
 
     configurations {
         koraBom
         annotationProcessor.extendsFrom(koraBom)
+        compileOnly.extendsFrom(koraBom)
         implementation.extendsFrom(koraBom)
+        testImplementation.extendsFrom(koraBom)
     }
 
     dependencies {
-        koraBom platform("ru.tinkoff.kora:kora-parent:$koraVersion")
-        annotationProcessor "ru.tinkoff.kora:annotation-processors"
+        koraBom platform("io.koraframework:kora-bom:$koraVersion")
+        annotationProcessor "io.koraframework:annotation-processors"
 
-        implementation "ru.tinkoff.kora:http-server-undertow"
-        implementation "ru.tinkoff.kora:json-module"
-        implementation "ru.tinkoff.kora:config-hocon"
-        implementation "ru.tinkoff.kora:logging-logback"
-        implementation "ru.tinkoff.kora:openapi-management"   // serves /openapi + /swagger-ui
-        implementation "ru.tinkoff.kora:validation-module"    // needed for enableServerValidation
+        implementation "io.koraframework:http-server-undertow"
+        implementation "io.koraframework:json-common"
+        implementation "io.koraframework:config-hocon"
+        implementation "io.koraframework:logging-logback"
+        implementation "io.koraframework:validation-module"   // required by enableServerValidation
     }
     ```
 
@@ -66,38 +152,36 @@ to be code-compatible.
     import org.openapitools.generator.gradle.plugin.tasks.GenerateTask
 
     buildscript {
+        repositories { mavenCentral() }
         dependencies {
-            classpath("ru.tinkoff.kora:openapi-generator:$koraVersion")
+            classpath("io.koraframework:openapi-generator:${property("koraVersion")}")
         }
     }
 
     plugins {
-        kotlin("jvm") version "1.9.24"
         id("application")
-        id("org.openapi.generator") version "7.14.0"
-        id("com.google.devtools.ksp") version "1.9.24-1.0.20"
+        kotlin("jvm") version "2.4.10"
+        id("com.google.devtools.ksp") version "2.3.11"
+        id("org.openapi.generator") version "7.24.0"
     }
 
-    configurations {
-        koraBom
-        ksp.extendsFrom(koraBom)
-        implementation.extendsFrom(koraBom)
+    kotlin {
+        jvmToolchain { languageVersion.set(JavaLanguageVersion.of(25)) }
     }
 
     dependencies {
-        koraBom(platform("ru.tinkoff.kora:kora-parent:$koraVersion"))
-        ksp("ru.tinkoff.kora:symbol-processors")
+        implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+        ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
 
-        implementation("ru.tinkoff.kora:http-server-undertow")
-        implementation("ru.tinkoff.kora:json-module")
-        implementation("ru.tinkoff.kora:config-yaml")
-        implementation("ru.tinkoff.kora:logging-logback")
-        implementation("ru.tinkoff.kora:openapi-management")
-        implementation("ru.tinkoff.kora:validation-module")
+        implementation("io.koraframework:http-server-undertow")
+        implementation("io.koraframework:json-common")
+        implementation("io.koraframework:config-hocon")
+        implementation("io.koraframework:logging-logback")
+        implementation("io.koraframework:validation-module")
     }
     ```
 
-### 2. Generation task
+### 3. Generation task
 
 ===! ":fontawesome-brands-java: `Java`"
 
@@ -105,13 +189,12 @@ to be code-compatible.
     def openApiGenerateHttpServer = tasks.register("openApiGenerateHttpServer", GenerateTask) {
         generatorName = "kora"
         group = "openapi tools"
-        inputSpec = "$projectDir/src/main/resources/openapi/user-api.yaml"
-        outputDir = "$buildDir/generated/user-api-server"   // unique per API
-        def corePackage = "com.example.userapi"
+        inputSpec = layout.projectDirectory.file("src/main/resources/openapi/pet-api.yaml")
+        outputDir = layout.buildDirectory.dir("generated/pet-api-server")   // unique per spec
+        def corePackage = "com.example.petapi"
         apiPackage = "${corePackage}.api"
         modelPackage = "${corePackage}.model"
         invokerPackage = "${corePackage}.invoker"
-        openapiNormalizer = [DISABLE_ALL: "true"]           // keeps oneOf/allOf intact
         configOptions = [
             mode                  : "java-server",
             enableServerValidation: "true",
@@ -125,27 +208,30 @@ to be code-compatible.
 
     ```kotlin title="build.gradle.kts"
     val openApiGenerateHttpServer = tasks.register<GenerateTask>("openApiGenerateHttpServer") {
-        generatorName = "kora"
+        generatorName.set("kora")
         group = "openapi tools"
-        inputSpec = "$projectDir/src/main/resources/openapi/user-api.yaml"
-        outputDir = "$buildDir/generated/user-api-server"   // unique per API
-        val corePackage = "com.example.userapi"
-        apiPackage = "$corePackage.api"
-        modelPackage = "$corePackage.model"
-        invokerPackage = "$corePackage.invoker"
-        openapiNormalizer = mapOf("DISABLE_ALL" to "true")
-        configOptions = mapOf(
-            "mode" to "kotlin-server",
-            "enableServerValidation" to "true",
+        inputSpec.set("$projectDir/src/main/resources/openapi/pet-api.yaml")
+        outputDir.set(layout.buildDirectory.dir("generated/pet-api-server").get().asFile.absolutePath)
+        val corePackage = "com.example.petapi"
+        apiPackage.set("$corePackage.api")
+        modelPackage.set("$corePackage.model")
+        invokerPackage.set("$corePackage.invoker")
+        configOptions.set(
+            mapOf(
+                "mode" to "kotlin-server",
+                "enableServerValidation" to "true",
+            )
         )
     }
     kotlin.sourceSets.main { kotlin.srcDir(openApiGenerateHttpServer.get().outputDir) }
-    tasks.withType<org.jetbrains.kotlin.gradle.tasks.KspTask> {
-        dependsOn(openApiGenerateHttpServer)
-    }
+    tasks.matching { it.name.startsWith("ksp") }.configureEach { dependsOn(openApiGenerateHttpServer) }
+    tasks.compileKotlin { dependsOn(openApiGenerateHttpServer) }
     ```
 
-### 3. Plug the modules into `@KoraApp`
+Kotlin needs **both** hooks: KSP reads the generated sources, and `compileKotlin` compiles them.
+Wiring only one of them produces "unresolved reference" errors on a clean build.
+
+### 4. Plug the modules into `@KoraApp`
 
 ```java
 @KoraApp
@@ -153,9 +239,8 @@ public interface Application extends
         HoconConfigModule,
         LogbackModule,
         JsonModule,
-        ValidationModule,             // only if enableServerValidation = true
-        UndertowHttpServerModule,
-        OpenApiManagementModule {     // exposes /openapi + /swagger-ui
+        ValidationModule,                  // only with enableServerValidation = true
+        UndertowPublicHttpServerModule {
 
     static void main(String[] args) {
         KoraApplication.run(ApplicationGraph::graph);
@@ -163,44 +248,64 @@ public interface Application extends
 }
 ```
 
-`KoraApplication` is `ru.tinkoff.kora.application.graph.KoraApplication`.
+`KoraApplication` is `io.koraframework.application.graph.KoraApplication`.
 
-### 4. Implement the generated delegate
+**Do not `extends` the generated `ApiSecurity` / `*ApiModule` interfaces.** They carry `@Module`,
+and the `@KoraApp` processor discovers every `@Module`-annotated interface in the compilation
+round automatically (`KoraAppProcessor#processModules`). The migrated examples list only the
+framework modules.
 
-The generator emits `UsersApiDelegate` (one method per `operationId`) and
-`UsersApiResponses` (one sealed interface per operation, one record per declared
-status). Implement the delegate, returning the matching response record.
+```hocon title="application.conf"
+httpServer {
+  port = 8080
+  system.port = 8085
+  telemetry.logging.enabled = true   # logging and metrics default to false in 2.0
+}
+```
 
-For advanced codegen options (`requestInDelegateParams`, `oneOf` handling, `enableServerValidation`),
-see [Advanced Codegen Options](references/advanced-codegen-reference.md).
+### 5. Implement the generated delegate
+
+For a tag `pet` the generator emits `PetApiDelegate` (one method per `operationId`) and
+`PetApiResponses` (one sealed interface per operation, one record per declared status).
 
 ===! ":fontawesome-brands-java: `Java`"
 
     ```java
-    package com.example.userapi.controller;
+    package com.example.petapi.delegate;
 
-    import ru.tinkoff.kora.common.Component;
-    import com.example.userapi.api.UsersApiDelegate;
-    import com.example.userapi.api.UsersApiResponses;
-    import com.example.userapi.model.ErrorResponseTO;
+    import io.koraframework.common.annotation.Component;
+    import org.jspecify.annotations.Nullable;
+    import com.example.petapi.api.PetApiDelegate;
+    import com.example.petapi.api.PetApiResponses;
+    import com.example.petapi.model.Pet;
 
     @Component
-    public final class UserApiDelegateImpl implements UsersApiDelegate {
+    public final class PetDelegate implements PetApiDelegate {
 
-        private final UserService userService;
+        private final PetService petService;
 
-        public UserApiDelegateImpl(UserService userService) {
-            this.userService = userService;
+        public PetDelegate(PetService petService) {
+            this.petService = petService;
         }
 
         @Override
-        public UsersApiResponses.GetUserApiResponse getUser(String userId) {
-            return userService.findById(userId)
-                .<UsersApiResponses.GetUserApiResponse>map(user ->
-                    new UsersApiResponses.GetUserApiResponse.GetUser200ApiResponse(toTO(user)))
-                .orElseGet(() ->
-                    new UsersApiResponses.GetUserApiResponse.GetUser404ApiResponse(
-                        new ErrorResponseTO("User not found: " + userId)));
+        public PetApiResponses.GetPetByIdApiResponse getPetById(long petId) {
+            var pet = petService.find(petId);
+            return pet == null
+                ? new PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse()
+                : new PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse(pet);
+        }
+
+        @Override
+        public PetApiResponses.FindPetsByStatusApiResponse findPetsByStatus(@Nullable String status) {
+            final Pet.StatusEnum parsed;
+            try {
+                parsed = Pet.StatusEnum.fromValue(status);       // never Enum.valueOf
+            } catch (IllegalArgumentException e) {
+                return new PetApiResponses.FindPetsByStatusApiResponse.FindPetsByStatus400ApiResponse();
+            }
+            return new PetApiResponses.FindPetsByStatusApiResponse
+                .FindPetsByStatus200ApiResponse(petService.byStatus(parsed));
         }
     }
     ```
@@ -208,105 +313,135 @@ see [Advanced Codegen Options](references/advanced-codegen-reference.md).
 === ":simple-kotlin: `Kotlin`"
 
     ```kotlin
-    package com.example.userapi.controller
+    package com.example.petapi.delegate
 
-    import ru.tinkoff.kora.common.Component
-    import com.example.userapi.api.UsersApiDelegate
-    import com.example.userapi.api.UsersApiResponses
-    import com.example.userapi.model.ErrorResponseTO
+    import io.koraframework.common.annotation.Component
+    import com.example.petapi.api.PetApiDelegate
+    import com.example.petapi.api.PetApiResponses
+    import com.example.petapi.model.Pet
 
     @Component
-    class UserApiDelegateImpl(
-        private val userService: UserService
-    ) : UsersApiDelegate {
+    class PetDelegate(private val petService: PetService) : PetApiDelegate {
 
-        override fun getUser(userId: String): UsersApiResponses.GetUserApiResponse =
-            userService.findById(userId)
-                ?.let { UsersApiResponses.GetUserApiResponse.GetUser200ApiResponse(it.toTO()) }
-                ?: UsersApiResponses.GetUserApiResponse.GetUser404ApiResponse(
-                    ErrorResponseTO("User not found: $userId"))
+        override fun getPetById(petId: Long): PetApiResponses.GetPetByIdApiResponse {
+            val pet = petService.find(petId)
+                ?: return PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse()
+            return PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse(pet)
+        }
+
+        override fun findPetsByStatus(status: String?): PetApiResponses.FindPetsByStatusApiResponse {
+            val parsed = try {
+                status?.let(Pet.StatusEnum::fromValue)
+            } catch (_: IllegalArgumentException) {
+                null
+            } ?: return PetApiResponses.FindPetsByStatusApiResponse.FindPetsByStatus400ApiResponse()
+
+            return PetApiResponses.FindPetsByStatusApiResponse
+                .FindPetsByStatus200ApiResponse(petService.byStatus(parsed))
+        }
     }
     ```
 
-### 5. Build and run
+### 6. Build and run
 
 ```bash
-./gradlew clean classes   # runs the generator, then compiles
+./gradlew clean classes   # generate, then compile
 ./gradlew run
 ```
 
----
+Use `clean` (and `--no-build-cache`) on the first build after changing `apiPackage`,
+`modelPackage` or the spec's package layout — see the pitfalls table.
 
-## Server modes
+## What gets generated
 
-Set via `configOptions.mode`. The delegate method's return type follows the mode.
+For `apiPackage = com.example.petapi.api` and a spec tag `pet`:
 
-| Mode | Delegate return type | Notes |
-|------|----------------------|-------|
-| `java-server` | `*ApiResponses.*ApiResponse` | Synchronous (recommended start) |
-| `java-async-server` | `CompletionStage<*ApiResponse>` | Non-blocking |
-| `java-reactive-server` | `Mono<*ApiResponse>` | Add `io.projectreactor:reactor-core` yourself |
-| `kotlin-server` | `*ApiResponses.*ApiResponse` | Synchronous Kotlin |
-| `kotlin-suspend-server` | `suspend fun ... : *ApiResponse` | Coroutine-based |
+| Generated type | Kind | Your job |
+|---|---|---|
+| `PetApiController` | `@Component @HttpController` class, `final` unless aspects are enabled | never touch |
+| `PetApiDelegate` | `public interface`, one method per `operationId` | **implement as `@Component`** |
+| `PetApiResponses` | interface holding one sealed `<Op>ApiResponse` per operation | construct, never edit |
+| `PetApiServerResponseMappers` | `@Component @DefaultComponent` `HttpServerResponseMapper`s | never touch |
+| `PetApiServerRequestMappers` | form/multipart request mappers | never touch |
+| `ApiSecurity` | `@Module` interface: scheme marker classes + generated interceptors | supply `HttpServerPrincipalExtractor`s |
+| `PetApiModule` | `@Module` with a default delegate — only with `delegateMethodBodyMode` ≠ `none` | leave alone |
+| `package-info.java` | `@org.jspecify.annotations.NullMarked` (Java modes only) | never touch |
+| model records / data classes | `@Json` DTOs, nested enums with `fromValue` | construct, never edit |
 
----
+Routing is registered by the **Kora HTTP-server annotation processor**, which generates
+`PetApiControllerModule` from the `@HttpController`. That is a separate step from OpenAPI
+generation, and it is why the annotation processor / KSP dependency is mandatory.
 
 ## Core rules
 
-1. **Implement `*ApiDelegate` only.** It is the single implementation point. The
-   `*ApiController` and `*ApiResponses` are generated — do not touch them.
-2. **Return the generated sealed `*ApiResponses` record**, never a raw DTO. There
-   is no `ResponseEntity` in Kora.
-3. **A response record exists only for a status declared in the contract.** If you
-   need a `GetUser500ApiResponse`, declare `"500"` under that operation's
-   `responses`.
-4. **`@Component` makes the delegate discoverable** by the compile-time graph.
-   Keep business logic in services; the delegate maps between generated transport
-   models and your internal DTOs.
-5. **`openapiNormalizer = [DISABLE_ALL: "true"]`** when using `oneOf`/`allOf` — since plugin 7.0.0 the `SIMPLIFY_ONEOF_ANYOF` rule rewrites polymorphic schemas.
-6. **`oneOf` without discriminator** collapses to empty record in 7.14.0 — flatten to single schema with nullable fields, or add explicit `discriminator` (see [Advanced Codegen](references/advanced-codegen-reference.md)).
-
----
+1. **Implement `*ApiDelegate`, nothing else.** Never hand-write an `@HttpController` or
+   `@HttpRoute` for an operation that the generator already covers — you would register the
+   route twice.
+2. **Return the generated response record**, never a raw DTO. There is no `ResponseEntity`.
+3. **A response record exists only for a status declared in the contract.** Need a `500`?
+   Declare `"500"` under that operation's `responses` and regenerate.
+4. **`@Component` on the delegate implementation** — it is what the compile-time graph resolves
+   into the generated controller's constructor.
+5. **Parse generated enums with `fromValue`**, and map `IllegalArgumentException` to the
+   contract's error response.
+6. **Tag principal extractors with the scheme-named marker**, e.g.
+   `@Tag(ApiSecurity.BearerAuth.class)`.
+7. **Never edit anything under `build/generated`.** A stale-package error is fixed by `clean`,
+   not by editing output.
+8. **Kotlin models: use named arguments.** Optional properties carry defaults but stay in spec
+   order, so a positional call breaks (or silently shifts) as soon as the contract changes.
 
 ## Common pitfalls
 
-| Symptom | Fix |
-|---------|-----|
-| Delegate not discovered ("required dependency not found") | Add `@Component`; confirm it implements the generated `*ApiDelegate` from your `apiPackage`. |
-| Wrong return type / compile error | Return `*ApiResponses.<Op><Status>ApiResponse`, not a DTO or `ResponseEntity`. |
-| Generated classes missing | Register `outputDir` in `sourceSets.main` and add `compileJava.dependsOn` (Java) / `KspTask` `dependsOn` (Kotlin). |
-| Discriminator collapsed to a single type | Set `openapiNormalizer = [DISABLE_ALL: "true"]`. |
-| Validation annotations absent | Set `enableServerValidation: "true"` and add `validation-module` + `ValidationModule`. |
-| Two tasks overwrite each other | Give each generator task a unique `outputDir`. |
-| `/swagger-ui` missing | Add `OpenApiManagementModule` and enable `openapi.management` in config. |
-| `oneOf` without discriminator generates empty record | Kora generator 7.14.0 bug — flatten to single schema with nullable fields, or add `discriminator` (see [Advanced Codegen](references/advanced-codegen-reference.md)) |
-| Need raw `HttpServerRequest` in delegate | Set `requestInDelegateParams: "true"` (see [Advanced Codegen](references/advanced-codegen-reference.md)) |
-
----
+| Symptom | Cause and fix |
+|---|---|
+| `Dependency requires at least JVM runtime version 25. This build uses a Java 21 JVM.` | The Gradle JVM, not the toolchain, resolves the buildscript classpath. Run Gradle on JDK 25+. |
+| `Invalid OpenAPI generator 'mode'` | Only `java-client`, `java-server`, `kotlin-client`, `kotlin-server` exist. |
+| `package com.example… does not exist`, pointing at `build/generated` | Old output from a previous `apiPackage`/`modelPackage` still on the source set — the generator does not delete stale files and the build-cache key ignores those settings. Run `./gradlew clean build --no-build-cache`. Never "fix" it by editing generated code. |
+| Delegate not discovered — `No component found for dependency … ApiDelegate` | Missing `@Component`, or the class implements a delegate from a different `apiPackage`. |
+| `method does not override or implement a method from a supertype` | The implementation signature drifted from the regenerated delegate — usually a leftover `Mono`/`CompletionStage`/`suspend` return type, or a nullability mismatch. Copy the signature from the generated interface. |
+| `'…' overrides nothing` (Kotlin) | Kora contracts are `@NullMarked`; an optional parameter is `T?` in the generated interface and must be `T?` in the override. |
+| Enum lookup fails on valid data | `Enum.valueOf` / `values()` scan instead of `fromValue`. |
+| Principal extractor never called, every request 401 | The extractor's `@Tag` does not match a generated `ApiSecurity` marker. |
+| `Multiple components match` for the delegate | `delegateMethodBodyMode` generated a default delegate **and** you wrote a `@Component` one. Pick one. |
+| Validation annotations absent | `enableServerValidation: "true"` plus `io.koraframework:validation-module` and `ValidationModule` in `@KoraApp`. |
+| Two generator tasks overwrite each other | Give every task its own `outputDir`. |
+| Kotlin `unresolved reference` to generated types | KSP **and** `compileKotlin` must both `dependsOn` the generate task. |
 
 ## References
 
 | Document | Covers |
-|----------|--------|
-| [Codegen Reference](references/openapi-codegen-reference.md) | Full `configOptions` table, modes, normalizer |
-| [Delegates Reference](references/openapi-delegates-reference.md) | `*ApiDelegate` shapes, sync/async/reactive/suspend, `requestInDelegateParams`, `delegateMethodBodyMode` |
-| [Response Reference](references/openapi-response-reference.md) | Sealed `*ApiResponses` records, headers, 204, status selection |
-| [Controllers Reference](references/openapi-controllers-reference.md) | Generated controller, `prefixPath`, interceptors, validation interceptor |
-| [Models Reference](references/openapi-models-reference.md) | Generated records, enums, dates, `JsonNullable`, discriminators |
-| [Validation Reference](references/openapi-validation-reference.md) | Kora validation annotations from schema constraints |
-| [Authorization Reference](references/authorization-reference.md) | `securitySchemes` → `HttpServerPrincipalExtractor` + `ApiSecurity` tags |
+|---|---|
+| [Codegen Reference](references/openapi-codegen-reference.md) | Build wiring, the complete verified `configOptions` table, normalizer, output inventory |
+| [Delegates Reference](references/openapi-delegates-reference.md) | `*ApiDelegate` shape, signature mapping, `requestInDelegateParams`, `delegateMethodBodyMode` |
+| [Response Reference](references/openapi-response-reference.md) | Sealed `*ApiResponses`, headers, `default` responses, generated response mappers |
+| [Controllers Reference](references/openapi-controllers-reference.md) | Generated controller, route registration, `prefixPath`, interceptors |
+| [Models Reference](references/openapi-models-reference.md) | Records / data classes, `withX`, enums, `JsonNullable`, discriminators, JSpecify positions |
+| [Validation Reference](references/openapi-validation-reference.md) | `enableServerValidation`, constraint mapping, `ViolationExceptionHttpServerResponseMapper` |
+| [Authorization Reference](references/authorization-reference.md) | `ApiSecurity` module, scheme-named tags, `HttpServerPrincipalExtractor`, scopes |
+| [Advanced Codegen](references/advanced-codegen-reference.md) | `extensions`, implicit headers, `rawBodyMode`, `filterWithModels`, multi-spec projects |
 
-Source of truth: [openapi-codegen.md](../../.kora-agent/kora-docs/mkdocs/docs/en/documentation/openapi-codegen.md),
-guides [openapi-http-server.md](../../.kora-agent/kora-docs/mkdocs/docs/en/guides/openapi-http-server.md)
-and [openapi-http-server-advanced.md](../../.kora-agent/kora-docs/mkdocs/docs/en/guides/openapi-http-server-advanced.md).
+Related skills: [`kora-http-server`](../kora-http-server/SKILL.md),
+[`kora-http-server-auth`](../kora-http-server-auth/SKILL.md),
+[`kora-openapi-generator-client`](../kora-openapi-generator-client/SKILL.md),
+[`kora-openapi-management`](../kora-openapi-management/SKILL.md),
+[`kora-json`](../kora-json/SKILL.md),
+[`kora-aop-validation`](../kora-aop-validation/SKILL.md).
+
+Upstream: [kora @ `2.0.0.RC1`](https://github.com/kora-projects/kora/tree/2.0.0.RC1),
+[kora-examples @ `migration/2.0`](https://github.com/kora-projects/kora-examples/tree/migration/2.0),
+[OpenAPI Generator Gradle plugin](https://openapi-generator.tech/docs/plugins#gradle).
+There is no Kora 2.0 documentation site — `kora-docs` documents 1.x only.
 
 ## Assets
 
 | Asset | Purpose |
-|-------|---------|
-| `assets/build.gradle.server.template` / `assets/build.gradle.kts.server.template` | Annotated build config for server generation |
-| `assets/Application.server.java.template` / `.kt.template` | `@KoraApp` with OpenAPI management + validation |
-| `assets/PetApiDelegate.server.java.template` / `.kt.template` | Delegate implementation example |
-| `assets/openapi-spec.yaml.template` | Full OpenAPI 3.x spec with CRUD + discriminators |
-| `assets/templates/` | Reusable spec snippets, delegate and response patterns |
-| `scripts/validate_openapi.py` | Pre-generation spec sanity check |
+|---|---|
+| `assets/build.gradle.server.template` / `assets/build.gradle.kts.server.template` | Annotated build wiring for server generation |
+| `assets/Application.server.java.template` / `.kt.template` | `@KoraApp` with validation and principal extractors |
+| `assets/PetApiDelegate.server.java.template` / `.kt.template` | Delegate implementation, both languages |
+| `assets/delegate-impl-templates.java.template` | Delegate patterns: enums, form params, raw request, errors |
+| `assets/response-handling-templates.java.template` | Response construction, headers, `default` status, Kotlin equivalents |
+| `assets/openapi-spec.yaml.template` | Full OpenAPI 3.x contract: CRUD, security, discriminator |
+| `assets/openapi-spec-snippets.yaml.template` | Copy-paste spec fragments mapped to generated code |
+| `scripts/validate_openapi.py` | Read-only pre-generation spec check (Kora 2.0 rules) |

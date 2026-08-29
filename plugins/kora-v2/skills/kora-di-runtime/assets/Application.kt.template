@@ -1,29 +1,25 @@
 package ${packagePath}
 
-import ru.tinkoff.kora.application.graph.KoraApplication
-import ru.tinkoff.kora.common.KoraApp
-import ru.tinkoff.kora.config.hocon.HoconConfigModule
-import ru.tinkoff.kora.logging.logback.LogbackModule
+import io.koraframework.application.graph.KoraApplication
+import io.koraframework.common.annotation.KoraApp
+import io.koraframework.config.hocon.HoconConfigModule
+import io.koraframework.logging.logback.LogbackModule
 
 /**
- * Main application entry point.
+ * Application graph root.
  *
- * This is a minimal Kora application interface.
- * Add more modules as needed:
- * - JsonModule for JSON serialization (Jackson, Gson)
- * - JdbcDatabaseModule for database access
- * - ValidationModule for validation
- * - MicrometerModule for metrics
+ * `ApplicationGraph` is generated next to this interface by the Kora symbol processor
+ * (`io.koraframework:symbol-processors`); it does not exist until the first successful KSP run.
  *
+ * The graph is built from the **root set**: declarations annotated `@Root` plus everything
+ * reachable from them. A component nothing depends on and which is not `@Root` is never created.
+ * With no `@Root` anywhere the build fails with "@KoraApp has no root components".
  */
 @KoraApp
 interface Application :
     HoconConfigModule,
     LogbackModule
-    // JsonModule - add if using JSON serialization
-    // ValidationModule - add if using validation
-    // MicrometerModule - add if using metrics
 
 fun main() {
-    KoraApplication.run { ApplicationGraph.graph() }
+    KoraApplication.run(ApplicationGraph::graph)
 }

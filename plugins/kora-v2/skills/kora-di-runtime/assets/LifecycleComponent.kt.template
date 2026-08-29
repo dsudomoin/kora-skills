@@ -1,0 +1,45 @@
+package ${packagePath}
+
+import io.koraframework.application.graph.Lifecycle
+import io.koraframework.common.annotation.Component
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+
+/**
+ * A component that owns a resource with a start and a stop.
+ *
+ * The `Lifecycle` contract is synchronous — `fun init()` / `fun release()`, both returning `Unit`.
+ * There are no reactive or `suspend` container contracts in Kora 2.0; `suspend fun init()` does not
+ * override anything.
+ *
+ * Ordering: `init()` runs right after construction and before any dependent is created;
+ * `release()` runs in reverse order, only once everything depending on this component has been
+ * released. A component that also implements `AutoCloseable` gets `close()` after `release()`.
+ *
+ * This class has dependents, so it needs no `@Root`. Add `@Root` only if nothing injects it —
+ * see RootComponent.kt.template.
+ */
+@Component
+class ${ComponentName}(
+    private val ${dependencyName}: ${DependencyType}
+) : Lifecycle {
+
+    // Construct here. Do not start anything: interceptors may still replace this instance,
+    // and dependents do not exist yet.
+    private val scheduler = Executors.newSingleThreadScheduledExecutor()
+
+    override fun init() {
+        scheduler.scheduleWithFixedDelay(::tick, 1, 5, TimeUnit.MINUTES)
+    }
+
+    override fun release() {
+        scheduler.shutdown()
+        if (!scheduler.awaitTermination(30, TimeUnit.SECONDS)) {
+            scheduler.shutdownNow()
+        }
+    }
+
+    private fun tick() {
+        ${dependencyName}.doPeriodicWork()
+    }
+}

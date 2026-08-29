@@ -1,65 +1,40 @@
 package ${packagePath}
 
-import ru.tinkoff.kora.application.graph.Lifecycle
-import ru.tinkoff.kora.common.Component
-import ru.tinkoff.kora.common.annotation.Root
+import io.koraframework.application.graph.Lifecycle
+import io.koraframework.common.annotation.Component
+import io.koraframework.common.annotation.Root
 
 /**
- * Self-starting component with lifecycle management.
+ * A component that must run although nothing depends on it.
  *
- * Usage:
- * - HTTP/GRPC servers that must start listening
- * - Kafka consumers that must begin polling
- * - Cache warmers that pre-load data
- * - Health check registrars
- * - Background schedulers
+ * Kora resolves the graph from the root set outwards. Without `@Root` this class has no dependents,
+ * is never instantiated, and [init] never runs — with a green build and no error anywhere.
+ * Implementing [Lifecycle] does **not** make a component reachable.
  *
- * IMPORTANT: Without @Root, this component would never be instantiated
- * unless another component depends on it.
+ * Typical roots: bucket/topic/index initialisers, bootstrap and warm-up tasks, listeners you start
+ * by hand. Kora's own HTTP server, Kafka consumers and schedulers already declare their own roots
+ * and must not be re-rooted here.
  */
 @Root
 @Component
 class ${ComponentName}(
-    // TODO: Add dependencies as needed
-    // private val service: SomeService
+    private val ${dependencyName}: ${DependencyType}
 ) : Lifecycle {
 
-    init {
-        println("${ComponentName} created")
-    }
-
     /**
-     * Called after component creation, before application starts serving requests.
-     * Use for:
-     * - Initializing resources (connections, pools)
-     * - Starting background tasks (schedulers, consumers)
-     * - Warming caches
-     * - Health check registration
+     * Runs once the instance exists and before any dependent is created.
+     * Throwing here aborts startup — which is the correct behaviour when the component cannot
+     * reach what it needs.
      */
     override fun init() {
-        println("${ComponentName} initializing...")
-        // TODO: Add initialization logic
-        // - Start server/consumer/scheduler
-        // - Warm up caches
-        // - Register health checks
-        println("${ComponentName} initialized")
+        ${dependencyName}.start()
     }
 
     /**
-     * Called during application shutdown (SIGTERM).
-     * Use for:
-     * - Stopping background tasks gracefully
-     * - Closing connections/pools
-     * - Releasing resources
-     *
-     * Note: Release order is reverse of creation order.
+     * Runs during graceful shutdown (SIGTERM), after everything depending on this component has
+     * been released. Bound every wait so shutdown cannot hang.
      */
     override fun release() {
-        println("${ComponentName} releasing...")
-        // TODO: Add cleanup logic
-        // - Stop server/consumer/scheduler
-        // - Close connections
-        // - Flush/release resources
-        println("${ComponentName} released")
+        ${dependencyName}.stop()
     }
 }

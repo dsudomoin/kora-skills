@@ -1,466 +1,275 @@
-# OpenAPI Response Reference
+# OpenAPI Response Reference — Kora 2.x
 
-**Generated into:** `$buildDir/generated/<api-name>-server/<apiPackage>/`
+Every generated server operation returns a nested type of `<Tag>ApiResponses`. Kora has no
+`ResponseEntity` on the server contract, and the delegate never builds an `HttpServerResponse`
+itself: it names a status by picking a record, and a generated `HttpServerResponseMapper` turns
+that into the wire response.
 
 ## Contents
 
-- [1. Overview](#1-overview)
-- [2. Generated Structure](#2-generated-structure)
-- [3. Response Selection Guide](#3-response-selection-guide)
-- [4. Delegate Usage](#4-delegate-usage)
-- [5. Responses with Headers](#5-responses-with-headers)
-- [6. Multiple Response Codes per Operation](#6-multiple-response-codes-per-operation)
-- [7. Controller Response Mapping](#7-controller-response-mapping)
-- [8. Kotlin Pattern Matching](#8-kotlin-pattern-matching)
-- [9. Response with No Content](#9-response-with-no-content)
-- [10. Common Pitfalls](#10-common-pitfalls)
-- [11. Testing Responses](#11-testing-responses)
-- [12. Related](#12-related)
+- [1. Two shapes: single-status and sealed](#1-two-shapes-single-status-and-sealed)
+- [2. Naming rules](#2-naming-rules)
+- [3. Record components](#3-record-components)
+- [4. Response headers](#4-response-headers)
+- [5. The `default` response and its status code](#5-the-default-response-and-its-status-code)
+- [6. Picking a response in the delegate](#6-picking-a-response-in-the-delegate)
+- [7. The generated response mappers](#7-the-generated-response-mappers)
+- [8. Errors outside the contract](#8-errors-outside-the-contract)
+- [9. Status-code ranges (`4XX`, `5XX`)](#9-status-code-ranges-4xx-5xx)
+- [10. Common pitfalls](#10-common-pitfalls)
 
 ---
 
-## 1. Overview
+## 1. Two shapes: single-status and sealed
 
-Generated `*ApiResponses` classes are **sealed interfaces** (Java 17+) that represent all possible HTTP responses for each operation. They provide type-safe response handling — Kora has no `ResponseEntity`.
-
-**Key characteristics:**
-- One sealed interface per operation (e.g., `GetUserApiResponse`)
-- Each HTTP status is a separate record implementing the interface
-- The delegate returns the sealed interface, never a raw DTO
-- The generated controller maps the returned record to an HTTP response
-
----
-
-## 2. Generated Structure
-
-### OpenAPI Spec
-
-```yaml
-paths:
-  /users/{userId}:
-    get:
-      operationId: getUser
-      responses:
-        "200":
-          description: User found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/UserResponseTO'
-        "404":
-          description: User not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseTO'
-        "500":
-          description: Internal error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseTO'
-```
-
-### Generated Sealed Interface
+**One declared response → one record, no hierarchy.**
 
 ```java
-// build/generated/user-api-server/com/example/userapi/api/UserApiResponses.java
-package com.example.userapi.api;
-
-import com.example.userapi.model.UserResponseTO;
-import com.example.userapi.model.ErrorResponseTO;
-
-/**
- * Sealed interface for getUser operation responses.
- * Generated — DO NOT EDIT.
- */
-public interface UserApiResponses {
-    
-    sealed interface GetUserApiResponse {
-        
-        record GetUser200ApiResponse(
-            UserResponseTO content
-        ) implements GetUserApiResponse {}
-        
-        record GetUser404ApiResponse(
-            ErrorResponseTO content
-        ) implements GetUserApiResponse {}
-        
-        record GetUser500ApiResponse(
-            ErrorResponseTO content
-        ) implements GetUserApiResponse {}
-    }
+public interface PetsApiResponses {
+  /** Expected response to a valid request (status code 200) */
+  record ShowPetByIdApiResponse(PetCat content) { }
 }
 ```
-
----
-
-## 3. Response Selection Guide
-
-| HTTP Status | When to Use | Generated Class |
-|-------------|-------------|-----------------|
-| `200 OK` | Successful GET, PUT, PATCH | `*200ApiResponse(content)` |
-| `201 Created` | Successful POST | `*201ApiResponse(content)` |
-| `204 No Content` | Successful DELETE | `*204ApiResponse()` |
-| `400 Bad Request` | Invalid input, business rules | `*400ApiResponse(error)` |
-| `404 Not Found` | Resource not found | `*404ApiResponse(error)` |
-| `409 Conflict` | Duplicate, version conflict | `*409ApiResponse(error)` |
-| `422 Unprocessable Entity` | Semantic validation error | `*422ApiResponse(error)` |
-| `500 Internal Error` | Unexpected failures | `*500ApiResponse(error)` |
-
----
-
-## 4. Delegate Usage
-
-### Simple Response (200 OK)
-
-```java
-@Component
-public final class UserApiDelegateImpl implements UserApiDelegate {
-    
-    @Override
-    public UserApiResponses.GetUserApiResponse getUser(String userId) {
-        User user = userService.findById(userId)
-            .orElseThrow(() -> new UserNotFoundException(userId));
-        
-        return new UserApiResponses.GetUserApiResponse.GetUser200ApiResponse(
-            mapper.toResponse(user)
-        );
-    }
-}
-```
-
-### Multiple Responses (200/404)
-
-```java
-@Override
-public UserApiResponses.GetUserApiResponse getUser(String userId) {
-    return userService.findById(userId)
-        .<UserApiResponses.GetUserApiResponse>map(user -> 
-            new UserApiResponses.GetUserApiResponse.GetUser200ApiResponse(
-                mapper.toResponse(user)
-            )
-        )
-        .orElseGet(() -> 
-            new UserApiResponses.GetUserApiResponse.GetUser404ApiResponse(
-                new ErrorResponseTO("User not found: " + userId)
-            )
-        );
-}
-```
-
-### Business Logic Errors (400)
-
-```java
-@Override
-public UserApiResponses.CreateUserApiResponse createUser(UserRequestTO request) {
-    if (emailExists(request.email())) {
-        return new UserApiResponses.CreateUserApiResponse.CreateUser400ApiResponse(
-            new ErrorResponseTO("Email already exists: " + request.email())
-        );
-    }
-    
-    User user = userService.create(mapper.toEntity(request));
-    return new UserApiResponses.CreateUserApiResponse.CreateUser201ApiResponse(
-        mapper.toResponse(user)
-    );
-}
-```
-
-### No Content Response (204)
-
-```java
-@Override
-public UserApiResponses.DeleteUserApiResponse deleteUser(String userId) {
-    if (!userService.exists(userId)) {
-        return new UserApiResponses.DeleteUserApiResponse.DeleteUser404ApiResponse(
-            new ErrorResponseTO("User not found")
-        );
-    }
-    
-    userService.delete(userId);
-    return new UserApiResponses.DeleteUserApiResponse.DeleteUser204ApiResponse();
-}
-```
-
----
-
-## 5. Responses with Headers
-
-### OpenAPI Spec with Custom Headers
-
-```yaml
-put:
-  operationId: updateUser
-  responses:
-    "200":
-      description: User updated
-      headers:
-        X-Updated-At:
-          required: true
-          description: Last update timestamp
-          schema:
-            type: string
-            format: date-time
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/UserResponseTO'
-```
-
-### Generated Response with Header
-
-```java
-sealed interface UpdateUserApiResponse {
-    
-    record UpdateUser200ApiResponse(
-        UserResponseTO content,
-        String xUpdatedAtHeader  // ← Header value
-    ) implements UpdateUserApiResponse {}
-    
-    record UpdateUser400ApiResponse(
-        ErrorResponseTO content
-    ) implements UpdateUserApiResponse {}
-}
-```
-
-### Delegate with Header
-
-```java
-@Override
-public UserApiResponses.UpdateUserApiResponse updateUser(
-    String userId,
-    UserRequestTO request
-) {
-    Instant now = Instant.now();
-    User user = userService.update(userId, mapper.toEntity(request));
-    
-    return new UserApiResponses.UpdateUserApiResponse.UpdateUser200ApiResponse(
-        mapper.toResponse(user),
-        now.toString()  // Header value
-    );
-}
-```
-
----
-
-## 6. Multiple Response Codes per Operation
-
-Complex operation with many responses:
-
-```yaml
-post:
-  operationId: processPayment
-  responses:
-    "200":
-      description: Payment processed
-    "400":
-      description: Invalid request
-    "402":
-      description: Payment required (insufficient funds)
-    "409":
-      description: Duplicate transaction
-    "500":
-      description: Processing error
-```
-
-Generated sealed interface:
-
-```java
-sealed interface ProcessPaymentApiResponse {
-    record ProcessPayment200ApiResponse(PaymentResultTO content) 
-        implements ProcessPaymentApiResponse {}
-    
-    record ProcessPayment400ApiResponse(ErrorResponseTO content) 
-        implements ProcessPaymentApiResponse {}
-    
-    record ProcessPayment402ApiResponse(ErrorResponseTO content) 
-        implements ProcessPaymentApiResponse {}
-    
-    record ProcessPayment409ApiResponse(ErrorResponseTO content) 
-        implements ProcessPaymentApiResponse {}
-    
-    record ProcessPayment500ApiResponse(ErrorResponseTO content) 
-        implements ProcessPaymentApiResponse {}
-}
-```
-
----
-
-## 7. Controller Response Mapping
-
-The generated `*ApiController` inspects which sealed record the delegate returned,
-serializes its body via the Kora JSON module, and writes the matching HTTP status
-and any declared headers. This mapping lives entirely in generated code under
-`build/generated/<api-name>-server/` — you do not write or override it. Your only
-job is to return the correct record from the delegate; the contract's `responses`
-section determines which records exist and which status each maps to.
-
----
-
-## 8. Kotlin Pattern Matching
-
-Kotlin's `when` expression provides elegant handling:
 
 ```kotlin
-@Component
-class UserApiDelegateImpl(
-    private val userService: UserService
-) : UserApiDelegate {
-
-    override fun getUser(userId: String): UserApiResponses.GetUserApiResponse {
-        val user = userService.findById(userId)
-        
-        return if (user != null) {
-            UserApiResponses.GetUserApiResponse.GetUser200ApiResponse(
-                mapper.toResponse(user)
-            )
-        } else {
-            UserApiResponses.GetUserApiResponse.GetUser404ApiResponse(
-                ErrorResponseTO("User not found: $userId")
-            )
-        }
-    }
-
-    override fun deleteUser(userId: String): UserApiResponses.DeleteUserApiResponse {
-        return when {
-            !userService.exists(userId) -> 
-                UserApiResponses.DeleteUserApiResponse.DeleteUser404ApiResponse(
-                    ErrorResponseTO("User not found")
-                )
-            else -> {
-                userService.delete(userId)
-                UserApiResponses.DeleteUserApiResponse.DeleteUser204ApiResponse()
-            }
-        }
-    }
+public interface PetsApiResponses {
+  public data class ShowPetByIdApiResponse(public val content: PetCat)
 }
 ```
 
----
+**Two or more declared responses → a `sealed` interface with one record per status.**
 
-## 9. Response with No Content
+```java
+public interface PetsApiResponses {
+  sealed interface ListPetsApiResponse {
+    /** A paged array of pets (status code 200) */
+    record ListPets200ApiResponse(List<Pet> content, String xNext, String xOptionalNext)
+        implements ListPetsApiResponse { }
 
-### OpenAPI 204 Response
+    /** unexpected error (status code 0) */
+    record ListPetsDefaultApiResponse(int statusCode, ModelError content)
+        implements ListPetsApiResponse { }
+  }
+}
+```
+
+Because the multi-status form is `sealed`, a Java `switch` pattern match or a Kotlin `when` over
+it is exhaustive without a default branch — the compiler tells you when a new status is added to
+the contract.
+
+## 2. Naming rules
+
+| Element | Name |
+|---|---|
+| Container | `<Tag as classname>ApiResponses` — e.g. `PetApiResponses` |
+| Per-operation type | `<OperationId capitalised>ApiResponse` — e.g. `GetPetByIdApiResponse` |
+| Per-status record (multi-status) | `<OperationId capitalised><Code>ApiResponse` — e.g. `GetPetById404ApiResponse` |
+| `default` response record | `<OperationId capitalised>DefaultApiResponse` |
+
+Nesting is `PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse`. Kotlin uses
+`class` for a status with no data and `data class` otherwise.
+
+## 3. Record components
+
+Components are appended in this order:
+
+1. `int statusCode` — only for the `default` response;
+2. `content` — only when the response declares a body, typed as the model, `List<Model>`,
+   `byte[]` for `format: binary`, or the `rawBodyMode` type for a bare object;
+3. one `String` component per declared response header, named from the header in camel case.
+
+A status with no body and no headers is an empty record: `new GetPetById404ApiResponse()`.
+
+## 4. Response headers
+
+Declared response headers become constructor components, and the generated mapper writes them:
 
 ```yaml
-delete:
-  operationId: deleteUser
-  responses:
-    "204":
-      description: User deleted (no content)
+responses:
+  '200':
+    description: A paged array of pets
+    headers:
+      x-next:
+        required: true
+        schema: { type: string }
+      x-optional-next:
+        schema: { type: string }
 ```
 
-### Generated Response (No Fields)
+```java
+record ListPets200ApiResponse(List<Pet> content, String xNext, String xOptionalNext)
+    implements ListPetsApiResponse { }
+```
 
 ```java
-sealed interface DeleteUserApiResponse {
-    
-    record DeleteUser204ApiResponse()  // Empty record
-        implements DeleteUserApiResponse {}
-    
-    record DeleteUser404ApiResponse(
-        ErrorResponseTO content
-    ) implements DeleteUserApiResponse {}
+// generated mapper
+var headers = HttpHeaders.of();
+headers.set("x-next", rs.xNext());
+if (rs.xOptionalNext() != null) {
+  headers.set("x-optional-next", rs.xOptionalNext());
 }
 ```
 
-### Delegate Usage
+A header that is not `required` may be passed `null`; a required one may not. There is no way to
+add an undeclared header from the delegate — declare it in the contract.
+
+## 5. The `default` response and its status code
+
+An OpenAPI `default` response has no fixed status, so its record takes the status as its first
+component:
 
 ```java
-@Override
-public UserApiResponses.DeleteUserApiResponse deleteUser(String userId) {
-    if (!userService.exists(userId)) {
-        return new DeleteUser404ApiResponse(
-            new ErrorResponseTO("Not found")
-        );
+return new PetsApiResponses.ListPetsApiResponse.ListPetsDefaultApiResponse(
+        503, new ModelError(503, "upstream unavailable"));
+```
+
+The generated mapper emits `HttpResponseEntity.of(rs.statusCode(), headers, rs.content())`. The
+Javadoc on the record says "status code 0" — that is the placeholder the OpenAPI tooling uses
+for `default`, not a status Kora will send.
+
+Prefer explicit statuses in the contract. A `default` response is the right tool only for a
+genuinely open-ended error channel.
+
+## 6. Picking a response in the delegate
+
+===! ":fontawesome-brands-java: `Java`"
+
+    ```java
+    @Override
+    public PetApiResponses.GetPetByIdApiResponse getPetById(long petId) {
+        if (petId < 0) {
+            return new PetApiResponses.GetPetByIdApiResponse.GetPetById400ApiResponse();
+        }
+        var pet = petService.find(petId);
+        return pet == null
+            ? new PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse()
+            : new PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse(pet);
     }
-    userService.delete(userId);
-    return new DeleteUser204ApiResponse();  // No arguments
-}
-```
+    ```
 
----
+    A conditional expression needs the sealed supertype to be inferred; when Java picks the
+    record type instead, name it explicitly:
 
-## 10. Common Pitfalls
+    ```java
+    return petService.find(petId)
+        .<PetApiResponses.GetPetByIdApiResponse>map(p ->
+            new PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse(p))
+        .orElseGet(() ->
+            new PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse());
+    ```
 
-### Wrong: Returning a Raw DTO
+=== ":simple-kotlin: `Kotlin`"
 
-```java
-// Wrong: a raw DTO is not a generated response record
-@Override
-public UserResponseTO getUser(String userId) {
-    return mapper.toResponse(userService.findById(userId));
-}
+    ```kotlin
+    override fun getPetById(petId: Long): PetApiResponses.GetPetByIdApiResponse {
+        if (petId < 0) {
+            return PetApiResponses.GetPetByIdApiResponse.GetPetById400ApiResponse()
+        }
+        val pet = petService.find(petId)
+            ?: return PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse()
+        return PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse(pet)
+    }
+    ```
 
-// Correct: return the generated sealed response record
-@Override
-public UserApiResponses.GetUserApiResponse getUser(String userId) {
-    return new UserApiResponses.GetUserApiResponse.GetUser200ApiResponse(mapper.toResponse(user));
-}
-```
-
-### Wrong: Ignoring Response Variants
-
-```java
-// Wrong: Only handles 200, ignores 404/500
-@Override
-public UserApiResponses.GetUserApiResponse getUser(String userId) {
-    User user = userService.findById(userId).get();  // Throws if empty
-    return new GetUser200ApiResponse(mapper.toResponse(user));
-}
-
-// Correct: Handle all variants
-@Override
-public UserApiResponses.GetUserApiResponse getUser(String userId) {
-    return userService.findById(userId)
-        .<UserApiResponses.GetUserApiResponse>map(u -> 
-            new GetUser200ApiResponse(mapper.toResponse(u))
-        )
-        .orElseGet(() -> 
-            new GetUser404ApiResponse(new ErrorResponseTO("Not found"))
-        );
-}
-```
-
----
-
-## 11. Testing Responses
-
-### Unit Test with Sealed Interface
+Consuming a sealed response (for example in a test or an adapter):
 
 ```java
-@Test
-void getUser_found_returns200() {
-    User user = new User("123", "John", "john@example.com");
-    when(userService.findById("123")).thenReturn(Optional.of(user));
-    
-    UserApiResponses.GetUserApiResponse response = 
-        delegate.getUser("123");
-    
-    assertThat(response)
-        .isInstanceOf(UserApiResponses.GetUserApiResponse.GetUser200ApiResponse.class);
-    
-    var successResponse = (UserApiResponses.GetUserApiResponse.GetUser200ApiResponse) response;
-    assertThat(successResponse.content().name()).isEqualTo("John");
-}
+var text = switch (response) {
+    case PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse ok -> ok.content().name();
+    case PetApiResponses.GetPetByIdApiResponse.GetPetById400ApiResponse bad -> "bad request";
+    case PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse nf  -> "not found";
+};
+```
 
-@Test
-void getUser_notFound_returns404() {
-    when(userService.findById("123")).thenReturn(Optional.empty());
-    
-    UserApiResponses.GetUserApiResponse response = 
-        delegate.getUser("123");
-    
-    assertThat(response)
-        .isInstanceOf(UserApiResponses.GetUserApiResponse.GetUser404ApiResponse.class);
+```kotlin
+val text = when (response) {
+    is PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse -> response.content.name
+    is PetApiResponses.GetPetByIdApiResponse.GetPetById400ApiResponse -> "bad request"
+    is PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse -> "not found"
 }
 ```
 
----
+## 7. The generated response mappers
 
-## 12. Related
+`<Tag>ApiServerResponseMappers` holds one `HttpServerResponseMapper` per operation, annotated
+`@Component @DefaultComponent`, and the controller method is wired to it with
+`@Mapping(<Tag>ApiServerResponseMappers.<Op>ApiResponseMapper.class)`:
 
-- [OpenAPI Delegates Reference](openapi-delegates-reference.md) — Delegate interfaces
-- [OpenAPI Controllers Reference](openapi-controllers-reference.md) — Response mapping
-- [OpenAPI Models Reference](openapi-models-reference.md) — DTO structures
+```java
+@Component
+@DefaultComponent
+class ListPetsApiResponseMapper implements HttpServerResponseMapper<PetsApiResponses.ListPetsApiResponse> {
+
+  ListPetsApiResponseMapper(
+      @Json HttpServerResponseMapper<HttpResponseEntity<List<Pet>>> response200Delegate,
+      @Json HttpServerResponseMapper<HttpResponseEntity<ModelError>> response0Delegate) { … }
+
+  @Override
+  public HttpServerResponse apply(HttpServerRequest request, PetsApiResponses.ListPetsApiResponse response) {
+    switch (response) {
+      case …ListPets200ApiResponse rs -> {
+        var headers = HttpHeaders.of();
+        headers.set("x-next", rs.xNext());
+        var entity = HttpResponseEntity.of(200, headers, rs.content());
+        return this.response200Delegate.apply(request, entity);
+      }
+      …
+    }
+  }
+}
+```
+
+Two consequences:
+
+- **JSON serialisation is delegated**, so `JsonModule` must be in the `@KoraApp` graph; the body
+  writers come from the `@Json`-tagged `HttpServerResponseMapper` for each payload type.
+- Because the mapper is `@DefaultComponent`, you may override the whole per-operation mapping by
+  declaring your own `@Component` `HttpServerResponseMapper` for the same response type. That is
+  the supported escape hatch for a response the contract cannot describe — not editing generated
+  code.
+
+A status with neither body nor headers short-circuits to `HttpServerResponse.of(201, headers)`,
+so `204`/`201`-style empty responses cost nothing.
+
+## 8. Errors outside the contract
+
+Throwing `io.koraframework.http.server.common.response.HttpServerResponseException` from the
+delegate bypasses the response mapper entirely:
+
+```java
+throw HttpServerResponseException.of(409, "pet already exists");
+```
+
+Use it for conditions the contract does not model; prefer a declared status record when it does.
+Validation failures are turned into a response by `ValidationHttpServerInterceptor` — see
+[Validation Reference](openapi-validation-reference.md). Authentication failures produce
+`401` inside the generated `ApiSecurity` interceptor — see
+[Authorization Reference](authorization-reference.md).
+
+## 9. Status-code ranges (`4XX`, `5XX`)
+
+OpenAPI lets a response cover a whole class of statuses (`2XX`, `4XX`, `5XX`). **`2.0.0.RC1`
+does not support that** — range support for Java and Kotlin, clients and servers, landed after
+RC1 on `master` (commit "Added(openapi): support status-code range responses (4XX, 5XX)…").
+
+On RC1, declare explicit status codes, or a single `default` response, and do not write `4XX` /
+`5XX` keys into the contract used for generation.
+
+## 10. Common pitfalls
+
+| Symptom | Cause and fix |
+|---|---|
+| No record for the status you want | Only declared statuses are generated. Add `"500": { description: … }` to that operation and regenerate. |
+| `incompatible types: GetPetById200ApiResponse cannot be converted to …` | The ternary/lambda inferred the record type. Annotate the target type or split into `if`/`return`. |
+| `the switch statement does not cover all possible input values` | A status was added to the contract; handle the new record. |
+| Header missing from the wire response | The header is not declared under that response in the contract, so the mapper never writes it. |
+| `default` response returns `0` | You passed `0` as `statusCode`; the record's first component is the real status. |
+| Wrong `Content-Type` on a `byte[]` body | Declare the media type on that response; binary responses carry their content type from the contract. |
+| Returned a raw DTO | Return the generated record; there is no `ResponseEntity` in Kora. |
+
+## Related
+
+- [Delegates Reference](openapi-delegates-reference.md)
+- [Controllers Reference](openapi-controllers-reference.md)
+- [Models Reference](openapi-models-reference.md)
+- [Codegen Reference](openapi-codegen-reference.md)

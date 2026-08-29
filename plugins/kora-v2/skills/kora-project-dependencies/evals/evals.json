@@ -2,132 +2,622 @@
   "evals": [
     {
       "id": "kora-project-dependencies-bom-java",
-      "skills": ["kora-project-dependencies"],
-      "query": "Set up the Kora BOM in build.gradle for a Java service with the annotation processor.",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "Set up the Kora 2.0 BOM in build.gradle for a Java service with the annotation processor.",
       "expected_behavior": [
         "Declares a koraBom configuration and makes annotationProcessor, compileOnly, and implementation extendsFrom(koraBom)",
-        "Imports the BOM via koraBom platform(\"ru.tinkoff.kora:kora-parent:<version>\")",
-        "Adds annotationProcessor \"ru.tinkoff.kora:annotation-processors\"",
+        "Imports the BOM via koraBom platform(\"io.koraframework:kora-bom:$koraVersion\")",
+        "Adds annotationProcessor \"io.koraframework:annotation-processors\"",
         "References Kora modules without an explicit version",
-        "Does not use foreign-framework annotations, field injection, or a foreign-framework starter dependency"
+        "Sets a Java toolchain of 25 or newer",
+        "Pins koraVersion=2.0.0.RC1 and resolves it from repositories { mavenCentral() }"
       ],
-      "tags": ["bom", "basic"]
+      "anti_behavior": [
+        "Uses ru.tinkoff.kora:kora-parent or any ru.tinkoff.kora coordinate",
+        "Puts the platform only on implementation and leaves annotationProcessor unconstrained",
+        "Pins a JDK toolchain below 25",
+        "Uses foreign-framework annotations, field injection, or a foreign-framework starter dependency",
+        "Pins 2.0.0-SNAPSHOT for a new project, or omits the snapshot repository while using it",
+        "Omits the repositories block, so nothing resolves"
+      ],
+      "tags": [
+        "bom",
+        "basic",
+        "java"
+      ]
     },
     {
       "id": "kora-project-dependencies-ksp-kotlin",
-      "skills": ["kora-project-dependencies"],
-      "query": "Configure a Kotlin Kora project with KSP and the BOM. Kotlin is 1.9.25.",
-      "expected_behavior": [
-        "Applies the com.google.devtools.ksp plugin with a version matching Kotlin (1.9.25-1.0.20)",
-        "Adds ksp(\"ru.tinkoff.kora:symbol-processors\")",
-        "Makes the ksp configuration extendsFrom(koraBom)",
-        "Imports the BOM via koraBom(platform(\"ru.tinkoff.kora:kora-parent:<version>\"))",
-        "Does not add the Java annotationProcessor dependency for the Kotlin source set"
+      "skills": [
+        "kora-project-dependencies"
       ],
-      "tags": ["ksp", "kotlin", "basic"]
+      "query": "Configure a Kotlin Kora 2.0 project with KSP and the BOM.",
+      "expected_behavior": [
+        "Applies kotlin(\"jvm\") version 2.4.10 and com.google.devtools.ksp version 2.3.11",
+        "Puts the BOM directly on implementation: implementation(platform(\"io.koraframework:kora-bom:...\"))",
+        "Adds ksp(\"io.koraframework:symbol-processors:<koraVersion>\") WITH an explicit version",
+        "Explains that the BOM does not constrain the ksp configuration, which is why the version stays",
+        "Sets a Kotlin jvmToolchain of 25 or newer",
+        "Includes repositories { mavenCentral() } and pins koraVersion=2.0.0.RC1"
+      ],
+      "anti_behavior": [
+        "Creates a koraBom configuration or uses ksp.get().extendsFrom(koraBom) in a Kotlin build",
+        "Drops the version from the ksp(...) dependency",
+        "Uses Kotlin 1.9.25 / KSP 1.9.25-1.0.20",
+        "Adds kapt for MapStruct",
+        "Adds the Java annotationProcessor dependency for the Kotlin source set"
+      ],
+      "tags": [
+        "ksp",
+        "kotlin",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-project-dependencies-version-and-repository",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "Which Kora 2.0 version do I pin, and which repositories do I need for it?",
+      "expected_behavior": [
+        "Pins io.koraframework:kora-bom:2.0.0.RC1",
+        "States that 2.0.0.RC1 is published on Maven Central and is the only 2.0.x release of kora-bom there",
+        "Says repositories { mavenCentral() } is sufficient for a release build",
+        "Describes 2.0.0-SNAPSHOT as the master development line, needing the Sonatype snapshot repository (or publishToMavenLocal), and not something to pin in a new project"
+      ],
+      "anti_behavior": [
+        "Claims Maven Central only carries 2.0.0.alpha6 or that no 2.0 release is published",
+        "Recommends 2.0.0-SNAPSHOT as the version for a new project",
+        "Adds the snapshot repository for a release build",
+        "Tells the user to build Kora from source or run publishToMavenLocal to get 2.0"
+      ],
+      "tags": [
+        "bom",
+        "versions",
+        "regression",
+        "basic"
+      ]
     },
     {
       "id": "kora-project-dependencies-rest-api",
-      "skills": ["kora-project-dependencies"],
-      "query": "Which Kora dependencies do I need for a REST API with an HTTP server, JSON, and metrics?",
-      "expected_behavior": [
-        "Adds ru.tinkoff.kora:http-server-undertow",
-        "Adds ru.tinkoff.kora:json-module",
-        "Adds ru.tinkoff.kora:micrometer-module for metrics and notes that the Prometheus scrape is served on the private HTTP port",
-        "Includes core modules config-hocon and logging-logback",
-        "Does not invent a non-existent artifact such as http-server-common, micrometer-prometheus, or probes"
+      "skills": [
+        "kora-project-dependencies"
       ],
-      "tags": ["http", "telemetry", "basic"]
+      "query": "Which Kora 2.0 dependencies do I need for a REST API with an HTTP server, JSON, and metrics?",
+      "expected_behavior": [
+        "Adds io.koraframework:http-server-undertow and names UndertowPublicHttpServerModule",
+        "Adds io.koraframework:json-common for JSON",
+        "Adds io.koraframework:micrometer-module for metrics",
+        "Says the metrics scrape is served by the system server (httpServer.system) and that telemetry.metrics.enabled defaults to false, so it must be enabled explicitly",
+        "Includes core modules config-hocon and logging-logback"
+      ],
+      "anti_behavior": [
+        "Adds json-module (it does not exist in 2.0)",
+        "Names UndertowHttpServerModule",
+        "Invents http-server-common as an application dependency, micrometer-prometheus, or a probes artifact",
+        "Claims metrics appear as soon as micrometer-module is on the classpath"
+      ],
+      "tags": [
+        "http",
+        "telemetry",
+        "basic"
+      ]
     },
     {
-      "id": "kora-project-dependencies-jdbc-postgres",
-      "skills": ["kora-project-dependencies"],
-      "query": "Add dependencies for a Kora JDBC service backed by PostgreSQL with Flyway migrations.",
-      "expected_behavior": [
-        "Adds ru.tinkoff.kora:database-jdbc",
-        "Adds ru.tinkoff.kora:database-flyway for SQL migrations",
-        "Adds the PostgreSQL driver org.postgresql:postgresql with an explicit version because it is not in the BOM",
-        "Notes that JDBC transactions are part of database-jdbc (no separate transaction artifact)",
-        "Does not reference invented artifacts such as jdbc-driver, transaction-jdbc, or migrate-kora"
+      "id": "kora-project-dependencies-jdbc-postgres-flyway",
+      "skills": [
+        "kora-project-dependencies"
       ],
-      "tags": ["database", "advanced"]
+      "query": "Add dependencies for a Kora 2.0 JDBC service backed by PostgreSQL with Flyway migrations.",
+      "expected_behavior": [
+        "Adds io.koraframework:database-jdbc",
+        "Adds io.koraframework:database-flyway",
+        "Adds the PostgreSQL driver org.postgresql:postgresql with an explicit version because it is not in the BOM",
+        "Adds the Flyway dialect artifact org.flywaydb:flyway-database-postgresql explicitly, because database-flyway ships flyway-core only",
+        "Mentions that the JDBC config section is `jdbc` in 2.0 (it was `db` in 1.x) and that migrations default to db/migration"
+      ],
+      "anti_behavior": [
+        "Omits the Flyway dialect artifact",
+        "Claims the BOM pins the JDBC driver",
+        "Uses a `db { ... }` config section",
+        "Invents artifacts such as jdbc-driver, transaction-jdbc, or migrate-kora"
+      ],
+      "tags": [
+        "database",
+        "flyway",
+        "regression",
+        "advanced"
+      ]
     },
     {
       "id": "kora-project-dependencies-kafka",
-      "skills": ["kora-project-dependencies"],
-      "query": "I need a Kora Kafka producer and consumer with JSON. Which module and what does the build look like?",
-      "expected_behavior": [
-        "Adds the single ru.tinkoff.kora:kafka artifact for both producer and consumer",
-        "Adds ru.tinkoff.kora:json-module for serialization",
-        "Mentions @KafkaPublisher for producing and @KafkaListener for consuming",
-        "Does not add separate kafka-producer or kafka-consumer artifacts (they do not exist)",
-        "Does not suggest a foreign-framework Kafka starter"
+      "skills": [
+        "kora-project-dependencies"
       ],
-      "tags": ["kafka", "messaging", "basic"]
+      "query": "I need a Kora 2.0 Kafka producer and consumer with JSON. Which module and what does the build look like?",
+      "expected_behavior": [
+        "Adds the single io.koraframework:kafka artifact for both producer and consumer",
+        "Adds io.koraframework:json-common for serialization",
+        "Mentions @KafkaPublisher for producing and @KafkaListener for consuming"
+      ],
+      "anti_behavior": [
+        "Adds separate kafka-producer or kafka-consumer artifacts (they do not exist)",
+        "Adds json-module",
+        "Suggests a foreign-framework Kafka starter"
+      ],
+      "tags": [
+        "kafka",
+        "messaging",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-project-dependencies-json-module-removed",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "My build fails with 'Could not find io.koraframework:json-module'. I copied it from our Kora 1.x service.",
+      "expected_behavior": [
+        "States that json-module does not exist in Kora 2.0 and the artifact is io.koraframework:json-common",
+        "Notes the module interface moved to io.koraframework.json.common.JsonModule",
+        "Mentions that Jackson moved to the tools.jackson.core coordinates in 2.0"
+      ],
+      "anti_behavior": [
+        "Suggests json-module exists under some other group",
+        "Suggests adding a version to make it resolve",
+        "Recommends jackson-module as the drop-in replacement for compile-time @Json"
+      ],
+      "tags": [
+        "migration",
+        "regression",
+        "json"
+      ]
+    },
+    {
+      "id": "kora-project-dependencies-kora-parent-removed",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "Our build.gradle imports platform(\"ru.tinkoff.kora:kora-parent:1.2.19\"). What is the Kora 2.0 equivalent?",
+      "expected_behavior": [
+        "States the BOM is io.koraframework:kora-bom and that kora-parent does not exist in 2.0",
+        "States the group changed from ru.tinkoff.kora to io.koraframework",
+        "Notes the experimental tree publishes as io.koraframework.experimental",
+        "Mentions that a clean build with --no-build-cache is needed after the package rename, because generator output in build/generated still holds the old package"
+      ],
+      "anti_behavior": [
+        "Says kora-parent is still published under the new group",
+        "Presents a blind ru.tinkoff.kora -> io.koraframework search and replace as the complete migration"
+      ],
+      "tags": [
+        "migration",
+        "regression",
+        "bom"
+      ]
+    },
+    {
+      "id": "kora-project-dependencies-cache-redis-removed",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "Add the Kora 2.0 Redis cache module. We used ru.tinkoff.kora:cache-redis before.",
+      "expected_behavior": [
+        "Uses io.koraframework:cache-redis-lettuce and names LettuceRedisCacheModule",
+        "States that cache-redis does not exist in 2.0",
+        "Warns that cache-redis-common is transport-neutral and supplies no RedisCacheClient, so it does not work on its own",
+        "Mentions the lettuce config section for the client"
+      ],
+      "anti_behavior": [
+        "Uses io.koraframework:cache-redis",
+        "Recommends cache-redis-common alone",
+        "Uses @CacheInvalidate(invalidateAll = true) instead of @CacheInvalidateAll"
+      ],
+      "tags": [
+        "cache",
+        "migration",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-project-dependencies-http-client-async-removed",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "We depend on ru.tinkoff.kora:http-client-async. What replaces it in Kora 2.0?",
+      "expected_behavior": [
+        "States http-client-async was removed in 2.0 with no direct replacement",
+        "Offers http-client-jdk, http-client-ok, or http-client-apache as the available transports",
+        "Notes that Kora 2.0 contracts are synchronous on virtual threads, so the async transport has no equivalent"
+      ],
+      "anti_behavior": [
+        "Claims io.koraframework:http-client-async exists",
+        "Invents an http-client-netty or http-client-reactor artifact"
+      ],
+      "tags": [
+        "http",
+        "migration",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-project-dependencies-r2dbc-vertx-removed",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "How do I migrate our reactive Kora repositories that use database-r2dbc and database-vertx to 2.0?",
+      "expected_behavior": [
+        "States that database-r2dbc and database-vertx were removed in 2.0 with no replacement",
+        "Says repository contracts are synchronous in 2.0 and the migration target is io.koraframework:database-jdbc",
+        "Notes that Mono/Flux, CompletionStage and Kotlin suspend repository contracts are gone"
+      ],
+      "anti_behavior": [
+        "Suggests io.koraframework:database-r2dbc or database-vertx",
+        "Suggests a reactive Kora artifact of any name",
+        "Recommends keeping suspend/Mono repository signatures"
+      ],
+      "tags": [
+        "database",
+        "migration",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-project-dependencies-s3-groups",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "Which dependency gives me a Kora 2.0 S3 client for AWS, and which one gives the declarative @S3 client?",
+      "expected_behavior": [
+        "AWS SDK wrapper is io.koraframework:s3-client-aws with group io.koraframework (NOT experimental), module AwsS3ClientModule",
+        "Declarative @S3 client is io.koraframework.experimental:s3-client-kora, module KoraS3ClientModule",
+        "States they are alternatives, not a pair, and each needs an HTTP client transport module on the classpath",
+        "States s3-client-aws provides no @S3 annotations or Kora S3 models"
+      ],
+      "anti_behavior": [
+        "Uses io.koraframework.experimental:s3-client-aws",
+        "Uses io.koraframework:s3-client-kora",
+        "Uses s3-client-minio (it does not exist in 2.0)",
+        "Invents s3-client or s3-client-ceph"
+      ],
+      "tags": [
+        "s3",
+        "experimental",
+        "regression",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-project-dependencies-s3-minio-removed",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "We use ru.tinkoff.kora.experimental:s3-client-minio against a MinIO bucket. What is the Kora 2.0 dependency?",
+      "expected_behavior": [
+        "States s3-client-minio does not exist in Kora 2.0",
+        "Points to io.koraframework.experimental:s3-client-kora (declarative @S3) or io.koraframework:s3-client-aws (SDK wrapper), both of which speak S3 to MinIO",
+        "Mentions that the client config uses `endpoint` in 2.0"
+      ],
+      "anti_behavior": [
+        "Suggests io.koraframework.experimental:s3-client-minio or io.koraframework:s3-client-minio",
+        "Suggests MinioS3ClientModule"
+      ],
+      "tags": [
+        "s3",
+        "migration",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-project-dependencies-mapstruct",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "How do I wire MapStruct into a Kora 2.0 Kotlin service?",
+      "expected_behavior": [
+        "States that mapstruct-ksp-extension already ships inside io.koraframework:symbol-processors, so it is not listed separately",
+        "Adds only the third-party halves: org.mapstruct:mapstruct plus the MapStruct processor",
+        "Mentions konvert-ksp-extension as the Konvert equivalent, also already inside symbol-processors"
+      ],
+      "anti_behavior": [
+        "Adds io.koraframework:mapstruct-extension (a 1.x name that does not exist)",
+        "Lists mapstruct-ksp-extension or konvert-ksp-extension as its own dependency",
+        "Recommends kapt alongside KSP"
+      ],
+      "tags": [
+        "mapping",
+        "kotlin",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-project-dependencies-testcontainers-modules",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "I bumped Testcontainers to 2.0.5 in my Kora 2.0 service and now org.testcontainers:postgresql cannot be resolved.",
+      "expected_behavior": [
+        "States that Testcontainers 2.x renamed its modules: postgresql -> testcontainers-postgresql, kafka -> testcontainers-kafka, cassandra -> testcontainers-cassandra",
+        "Notes that Testcontainers is entirely the application's own dependency and is not constrained by kora-bom",
+        "Mentions that staying on the 1.x line with the old names is also valid, as the reference examples do"
+      ],
+      "anti_behavior": [
+        "Claims kora-bom pins Testcontainers",
+        "Suggests org.testcontainers:postgresql still exists at 2.x",
+        "Suggests forcing an older Testcontainers through the Kora BOM"
+      ],
+      "tags": [
+        "testing",
+        "regression",
+        "advanced"
+      ]
     },
     {
       "id": "kora-project-dependencies-bom-conflict",
-      "skills": ["kora-project-dependencies"],
-      "query": "I have a Jackson version conflict. How do I let the Kora BOM manage Jackson instead of pinning it myself?",
-      "expected_behavior": [
-        "Explains that the kora-parent BOM pins Jackson and other transitive libraries",
-        "Recommends removing the explicit jackson-databind version declaration",
-        "Recommends depending on ru.tinkoff.kora:json-module and letting the BOM resolve Jackson",
-        "Mentions resolutionStrategy.force only as a last resort for a genuine conflict",
-        "Does not advise pinning a raw Jackson version on top of the BOM"
+      "skills": [
+        "kora-project-dependencies"
       ],
-      "tags": ["bom", "troubleshooting", "advanced"]
+      "query": "I have a Jackson version conflict in a Kora 2.0 service. How do I let the BOM manage Jackson instead of pinning it myself?",
+      "expected_behavior": [
+        "Explains that kora-bom pins Jackson and the other libraries Kora ships",
+        "Notes that Kora 2.0 uses Jackson 3 under the tools.jackson.core coordinates, so a pinned com.fasterxml.jackson.core version no longer participates",
+        "Recommends removing the explicit version and depending on io.koraframework:json-common",
+        "Mentions resolutionStrategy.force only as a last resort against a reproduced conflict"
+      ],
+      "anti_behavior": [
+        "Advises pinning a raw Jackson version on top of the BOM",
+        "Refers to json-module",
+        "Claims com.fasterxml.jackson.core is what Kora 2.0 ships"
+      ],
+      "tags": [
+        "bom",
+        "troubleshooting",
+        "advanced"
+      ]
     },
     {
       "id": "kora-project-dependencies-resilience-naming",
-      "skills": ["kora-project-dependencies"],
-      "query": "Add the Kora resilience module so I can use @CircuitBreaker and @Retry.",
-      "expected_behavior": [
-        "Adds ru.tinkoff.kora:resilient-kora (the real artifact name)",
-        "Mentions the @Retry, @CircuitBreaker, @Timeout, and @Fallback annotations",
-        "Keeps the BOM responsible for the version (no version on the artifact)",
-        "Does not use the incorrect artifact name resilient",
-        "Does not pull in Resilience4j directly or use a foreign-framework retry library"
+      "skills": [
+        "kora-project-dependencies"
       ],
-      "tags": ["aop", "resilience", "advanced"]
+      "query": "Add the Kora 2.0 resilience module so I can use a circuit breaker and retries.",
+      "expected_behavior": [
+        "Adds io.koraframework:resilient-kora",
+        "Names the 2.0 annotations @CircuitBreakable, @Retryable, @Timeout, @RateLimited and @Fallback",
+        "Says the annotations take a specification interface, not a string name",
+        "Keeps the BOM responsible for the version"
+      ],
+      "anti_behavior": [
+        "Uses the artifact name `resilient`",
+        "Presents @CircuitBreaker(\"name\") / @Retry(\"name\") string forms as 2.0 API",
+        "Claims resilient-kora brings Resilience4j",
+        "Pulls in Resilience4j or a foreign-framework retry library directly"
+      ],
+      "tags": [
+        "aop",
+        "resilience",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-project-dependencies-jdk-requirement",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "Our Kora 2.0 build fails at configuration with 'Dependency requires at least JVM runtime version 25. This build uses a Java 21 JVM.' The toolchain is already set.",
+      "expected_behavior": [
+        "Explains that io.koraframework:openapi-generator lands on the buildscript classpath, which Gradle resolves with its own JVM, so the toolchain does not apply",
+        "Says the JVM running Gradle must be 25 or newer and suggests setting JAVA_HOME",
+        "Notes 25 is the floor because Kora 2.0 artifacts are compiled at JVM 25, while the guides recommend running the latest GA feature release",
+        "Suggests verifying with JAVA_HOME=<jdk> ./gradlew projects"
+      ],
+      "anti_behavior": [
+        "Says raising the toolchain alone fixes it",
+        "Recommends committing org.gradle.java.home to gradle.properties",
+        "Presents --enable-preview as a Kora requirement",
+        "Freezes a specific 'latest GA' JDK number without saying to re-derive it"
+      ],
+      "tags": [
+        "toolchain",
+        "troubleshooting",
+        "advanced"
+      ]
     },
     {
       "id": "kora-project-dependencies-multimodule",
-      "skills": ["kora-project-dependencies"],
-      "query": "Set up a multi-module Gradle build so every submodule shares one Kora version.",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "Set up a multi-module Gradle build so every submodule shares one Kora 2.0 version.",
       "expected_behavior": [
-        "Applies the BOM in a subprojects block (or convention) so each leaf module imports kora-parent",
-        "Wires annotationProcessor/ksp via extendsFrom(koraBom) in each module that generates code",
+        "Applies the BOM in a subprojects block (or convention) so each leaf module imports io.koraframework:kora-bom",
+        "Wires annotationProcessor via extendsFrom(koraBom) in each Java module that generates code",
         "Pins koraVersion once in gradle.properties",
         "Mentions @KoraSubmodule to export components from a submodule into the @KoraApp",
-        "Does not version individual ru.tinkoff.kora:* artifacts per module"
+        "Notes that a library module declaring @ConfigSource/@ConfigMapper must apply the processor itself, or the missing generated *Module surfaces in the consumer"
       ],
-      "tags": ["multi-module", "advanced"]
-    },
-    {
-      "id": "kora-project-dependencies-s3-experimental",
-      "skills": ["kora-project-dependencies"],
-      "query": "Which dependency gives me a Kora S3 client for AWS?",
-      "expected_behavior": [
-        "Uses the experimental group: ru.tinkoff.kora.experimental:s3-client-aws",
-        "Mentions the @S3.Client declarative client and the AwsS3ClientModule",
-        "Notes that S3 modules are in the experimental group, not ru.tinkoff.kora",
-        "Does not invent a ru.tinkoff.kora:s3-client or s3-client-ceph artifact"
+      "anti_behavior": [
+        "Versions individual io.koraframework:* artifacts per module",
+        "Uses kora-parent",
+        "Applies the Java koraBom/extendsFrom shape to a Kotlin submodule"
       ],
-      "tags": ["s3", "experimental", "advanced"]
+      "tags": [
+        "multi-module",
+        "advanced"
+      ]
     },
     {
       "id": "kora-project-dependencies-generator",
-      "skills": ["kora-project-dependencies"],
-      "query": "Scaffold a new Kora Java service with an HTTP server and PostgreSQL using the project generator.",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "Scaffold a new Kora 2.0 Java service with an HTTP server and PostgreSQL using the project generator.",
       "expected_behavior": [
         "Runs scripts/generate_project.py with --lang java and --modules including http-server and jdbc-postgres",
-        "Produces a build.gradle importing the kora-parent BOM and the chosen modules",
-        "Generates an @KoraApp interface that extends the module interfaces and runs KoraApplication.run(ApplicationGraph::graph)",
-        "Generates a controller using @HttpController and @HttpRoute and a repository using @Repository extends JdbcRepository",
-        "Generated code does not contain foreign-framework package imports or field injection"
+        "Produces a build.gradle importing platform(\"io.koraframework:kora-bom:...\") through a koraBom configuration with extendsFrom",
+        "Generates an @KoraApp interface importing io.koraframework.common.annotation.KoraApp, extending UndertowPublicHttpServerModule and JdbcDatabaseModule, running KoraApplication.run(ApplicationGraph::graph)",
+        "Generates a controller on @HttpController/@HttpRoute and a repository on @Repository extends JdbcRepository with io.koraframework.database.jdbc.annotation.EntityJdbc",
+        "Generated application.conf uses httpServer.port, httpServer.system.port and a jdbc { ... } section"
       ],
-      "tags": ["generator", "scaffolding", "advanced"]
+      "anti_behavior": [
+        "Generated code imports ru.tinkoff.kora packages",
+        "Generated config uses publicApiHttpPort, privateApiHttpPort, or a db { ... } section",
+        "Generated code uses jakarta.annotation.Nullable instead of org.jspecify.annotations.Nullable",
+        "Generated code uses foreign-framework package imports or field injection"
+      ],
+      "tags": [
+        "generator",
+        "scaffolding",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-project-dependencies-generator-dry-run",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "Show me what the Kora project generator would produce for a Kotlin service with Kafka, without writing any files.",
+      "expected_behavior": [
+        "Runs scripts/generate_project.py with --dry-run",
+        "Reports that nothing is written to disk",
+        "Shows a build.gradle.kts with the BOM on implementation and ksp(\"io.koraframework:symbol-processors:<version>\") carrying an explicit version",
+        "Shows kotlin(\"jvm\") 2.4.10 and com.google.devtools.ksp 2.3.11"
+      ],
+      "anti_behavior": [
+        "Generates the project for real when asked for a preview",
+        "Shows a koraBom configuration in the Kotlin build script",
+        "Shows Kotlin 1.9.x / KSP 1.9.x"
+      ],
+      "tags": [
+        "generator",
+        "dry-run",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-project-dependencies-central-listing-trap",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "I can see cache-redis and kora-parent under repo1.maven.org/maven2/io/koraframework/, so they must still be supported in Kora 2.0 — right?",
+      "expected_behavior": [
+        "States the Maven Central directory listing is cumulative and still shows 1.x/alpha leftovers",
+        "Names them: kora-parent, cache-redis, declarative-logging-annotation-processor, declarative-logging-symbol-processor, scheduling-ksp, experimental/s3-client",
+        "States none of them is constrained by the 2.0.0.RC1 BOM",
+        "Points to the kora-bom pom, or the artifact's maven-metadata.xml, as the way to check whether a 2.0.x version exists",
+        "Gives the 2.0 replacements: cache-redis-lettuce and kora-bom"
+      ],
+      "anti_behavior": [
+        "Concludes the artifacts still work because the directory exists",
+        "Suggests adding io.koraframework:cache-redis or io.koraframework:kora-parent",
+        "Treats the directory listing as the artifact catalog"
+      ],
+      "tags": [
+        "bom",
+        "migration",
+        "regression",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-project-dependencies-kora-parent-resolves-alpha",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "I ran a search-and-replace of ru.tinkoff.kora to io.koraframework across our build. It resolves and compiles, so the Kora 2.0 dependency migration is done — right?",
+      "expected_behavior": [
+        "Warns that a group-only rename is not sufficient: io.koraframework:kora-parent is published at 2.0.0.alpha5/2.0.0.alpha6, so it resolves instead of failing and silently pins a pre-release BOM",
+        "Says the same applies to io.koraframework:cache-redis",
+        "States the correct coordinate is io.koraframework:kora-bom:2.0.0.RC1, and that kora-parent has no 2.0.0.RC1 version",
+        "Lists the artifact renames a group replace cannot catch: json-module -> json-common, cache-redis -> cache-redis-lettuce, mapstruct-extension -> mapstruct-java-extension/mapstruct-ksp-extension, and the removals",
+        "Notes that a successful resolve is not evidence the coordinate is correct"
+      ],
+      "anti_behavior": [
+        "Confirms the migration is complete because the build resolves",
+        "Treats a blind ru.tinkoff.kora -> io.koraframework replace as the whole dependency migration",
+        "Claims io.koraframework:kora-parent does not exist or would 404 at any version",
+        "Forgets that config keys and removed modules also change"
+      ],
+      "tags": [
+        "bom",
+        "migration",
+        "regression",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-project-dependencies-openapi-plugin-vs-artifact",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "Which version do I use for the OpenAPI generator in a Kora 2.0 build?",
+      "expected_behavior": [
+        "Distinguishes io.koraframework:openapi-generator (buildscript classpath, versioned at koraVersion) from the org.openapi.generator Gradle plugin (its own release line)",
+        "Puts io.koraframework:openapi-generator on the buildscript classpath, not on implementation",
+        "Notes the reference examples use plugin 7.23.0 (Java) and 7.24.0 (Kotlin), and that Kora does not pin the plugin",
+        "Mentions that org.openapitools:openapi-generator 7.24.0 is the upstream library Kora's module depends on"
+      ],
+      "anti_behavior": [
+        "Adds io.koraframework:openapi-generator as an implementation dependency",
+        "Claims the Gradle plugin version must match koraVersion or org.openapitools:openapi-generator",
+        "Treats the plugin and the Kora artifact as the same thing"
+      ],
+      "tags": [
+        "openapi",
+        "versions",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-project-dependencies-stale-port-keys",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "We migrated to Kora 2.0 and kept our application.conf with httpServer.publicApiHttpPort = 8081 and privateApiHttpPort = 8086. It starts with no errors, but our readiness probe and Prometheus scrape both get nothing. Why?",
+      "expected_behavior": [
+        "Explains that Kora does not reject unrecognised config keys, so both 1.x keys are silently ignored rather than failing",
+        "Says each server therefore falls back to its own default: 8080 for the public server and 8085 for the system server",
+        "States that SystemHttpServerConfig overrides port() to 8085, so the system server does NOT fall back to 8080",
+        "Gives the 2.0 keys: httpServer.port and httpServer.system.port",
+        "Notes the service is genuinely running, just on ports nothing is pointed at"
+      ],
+      "anti_behavior": [
+        "Claims both servers try to bind 8080 or that the app fails with 'Address already in use'",
+        "Claims the system server falls back to the inherited 8080 default",
+        "Claims a stale key produces a startup error or a config validation failure",
+        "Suggests publicApiHttpPort / privateApiHttpPort still work in 2.0"
+      ],
+      "tags": [
+        "config",
+        "http",
+        "regression",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-project-dependencies-protoc-protobuf-java",
+      "skills": [
+        "kora-project-dependencies"
+      ],
+      "query": "Which protoc version do I pin for a Kora 2.0 gRPC service? Kora's version catalog says protobuf 4.35.1.",
+      "expected_behavior": [
+        "Pins protoc 3.25.3, matching what the migrated projects use",
+        "Explains that protobuf-java:3.25.9 is what actually resolves, declared at compile scope by io.grpc:grpc-protobuf:1.83.1",
+        "Explains that Kora's grpc-server declares protobuf-java as compileOnly, so the catalog's 4.35.1 never propagates to a consumer",
+        "Warns that protoc 4.x without an explicit protobuf-java 4.x fails with 'cannot find symbol: class Generated'"
+      ],
+      "anti_behavior": [
+        "Recommends protoc 4.35.1 on the strength of Kora's version catalog alone",
+        "Claims kora-bom pins protobuf-java for consumers",
+        "Treats the catalog version as the version a consumer resolves"
+      ],
+      "tags": [
+        "grpc",
+        "versions",
+        "regression",
+        "advanced"
+      ]
     }
   ]
 }

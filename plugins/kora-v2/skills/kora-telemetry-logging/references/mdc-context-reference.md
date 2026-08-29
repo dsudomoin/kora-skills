@@ -1,145 +1,196 @@
-# MDC Context Reference
+# MDC Reference
 
-**Sources:**
-- `.kora-agent/kora-docs/mkdocs/docs/en/documentation/logging-slf4j.md`
-- `.kora-agent/kora-docs/mkdocs/docs/en/documentation/http-server.md`
+Kora 2.0 has **two** MDCs, and they are not interchangeable. This file covers the values; for the
+declarative `@Mdc` aspect see [`kora-aop-logging`](../../kora-aop-logging/SKILL.md).
 
 ## Contents
 
-- [Two MDC classes](#two-mdc-classes)
-- [Kora MDC (structured, async-safe)](#kora-mdc-structured-async-safe)
-- [SLF4J MDC (string-only)](#slf4j-mdc-string-only)
-- [HTTP interceptor for trace context](#http-interceptor-for-trace-context)
-- [Common MDC keys](#common-mdc-keys)
+- [Kora MDC vs SLF4J MDC](#kora-mdc-vs-slf4j-mdc)
+- [Kora MDC is a ScopedValue](#kora-mdc-is-a-scopedvalue)
+- [Where a scope is bound](#where-a-scope-is-bound)
+- [Using Kora MDC](#using-kora-mdc)
+- [SLF4J MDC](#slf4j-mdc)
+- [Seeding MDC from an HTTP interceptor](#seeding-mdc-from-an-http-interceptor)
+- [Porting a Kora 1.x Context-based helper](#porting-a-kora-1x-context-based-helper)
 - [Best practices](#best-practices)
 
-For the `@Mdc` aspect, see [logging-aspect-reference.md](logging-aspect-reference.md).
+## Kora MDC vs SLF4J MDC
 
-## Two MDC classes
+| | `io.koraframework.logging.common.MDC` | `org.slf4j.MDC` |
+|---|---|---|
+| Value type | structured — `String`, `Integer`, `Long`, `Boolean`, `StructuredArgumentWriter` (written as JSON) | `String` only |
+| Storage | `ScopedValue<MDC>` holding a mutable `MDC` object | thread-local map |
+| API | static `put` / `remove`, instance `put0` / `remove0` / `fork` / `values` | `put` / `remove` / `clear` / `putCloseable` |
+| Carried across `KoraAsyncAppender` | yes — snapshotted into `KoraLoggingEvent.koraMdc()` | yes — Logback copies `getMDCPropertyMap()` |
+| Rendered by `ConsoleTextRecordEncoder` | yes, as `key=<json>` | yes, as `key=value` |
+| Readable by a `%X{key}` pattern | **no** | yes |
 
-| Class | Values | API | Async propagation |
-|-------|--------|-----|-------------------|
-| `ru.tinkoff.kora.logging.common.MDC` | structured (String/Integer/Long/Boolean/writer) | static `put` / `remove` | propagated by `KoraAsyncAppender` |
-| `org.slf4j.MDC` | strings only | `put` / `remove` / `clear` / `putCloseable` | not propagated automatically |
+Both are printed by `ConsoleTextRecordEncoder`; the difference that matters day to day is that
+`%X{}` only sees the SLF4J one, and only the Kora one can hold non-string values.
 
-Pick one per file — importing both `MDC` types in the same file is a compile error.
+Do not import both under the bare name `MDC` in one file — one of them has to be fully qualified.
 
-## Kora MDC (structured, async-safe)
+## Kora MDC is a `ScopedValue`
 
-`ru.tinkoff.kora.logging.common.MDC` attaches structured values to every record in the current
-context and is the form `KoraAsyncAppender` carries through to the async record. It is a static
-put/remove API; there is no `clear()` and no auto-closing handle, so remove what you put.
+```java
+public class MDC {
+    public static final ScopedValue<MDC> VALUE = ScopedValue.newInstance();
+
+    public static MDC get() { return VALUE.get(); }
+    public static void put(String key, String value) { get().put0(key, value); }
+    …
+}
+```
+
+`MDC.get()` therefore throws **`java.util.NoSuchElementException`** when the scoped value is
+unbound — during graph initialization, in a shutdown hook, or in a plain unit test that is not
+inside a Kora-managed scope (`ScopedValue.get()` is specified to throw it when not bound). Kora's own code
+guards for it; yours should too where the call site can run outside a request:
+
+```java
+var snapshot = MDC.VALUE.isBound() ? Map.copyOf(MDC.get().values()) : Map.<String, StructuredArgumentWriter>of();
+```
+
+`KoraAsyncAppender.append` does exactly this — reading an unbound `ScopedValue` there would throw
+inside the appender and drop the event.
+
+## Where a scope is bound
+
+Kora binds a fresh `MDC` at the entry of every unit of work. Inside these, `MDC.put(...)` just
+works; outside them it throws.
+
+| Scope | Bound by |
+|---|---|
+| HTTP request (Undertow) | `KoraRequestProcessingHttpHandler.handleRequest` — `ScopedValue.where(MDC.VALUE, new MDC())` around the whole exchange |
+| gRPC call | `VirtualThreadExecutorTransportFilter` |
+| Kafka record / batch | `RecordHandler` / `RecordsHandler` (a per-record handler `fork()`s the batch MDC) |
+| Kafka publish | `DefaultKafkaPublisherRecordObservation` — forks the bound MDC, or creates an empty one if none |
+| Scheduled job | `AbstractJob` / `CronJob` (JDK), `KoraQuartzJob` (Quartz) |
+| JMS message | `JmsMessageListenerContainer` |
+
+Because the `MDC` instance is created per unit of work and discarded with it, removing your keys at
+the end is optional hygiene rather than a leak fix. `fork()` produces an independent copy — use it
+when handing context to work that outlives the current scope.
+
+## Using Kora MDC
 
 ===! "Java"
 
     ```java
-    import ru.tinkoff.kora.logging.common.MDC;
+    import io.koraframework.logging.common.MDC;
 
-    MDC.put("traceId", traceId);        // String / Integer / Long / Boolean overloads
-    MDC.put("attempt", attempt);        // Integer
-    try {
-        logger.info("Processing request");   // traceId and attempt attached to the record
-    } finally {
-        MDC.remove("traceId");
-        MDC.remove("attempt");
-    }
+    MDC.put("orderId", orderId);          // String
+    MDC.put("attempt", attempt);          // Integer
+    MDC.put("retryable", true);           // Boolean
+    MDC.put("payload", gen -> {           // StructuredArgumentWriter — arbitrary JSON
+        gen.writeStartObject();
+        gen.writeStringProperty("kind", kind);
+        gen.writeEndObject();
+    });
+
+    log.info("Processing order");         // all four keys attached to this and later records
+    MDC.remove("payload");
     ```
 
 === "Kotlin"
 
     ```kotlin
-    import ru.tinkoff.kora.logging.common.MDC
+    import io.koraframework.logging.common.MDC
 
-    MDC.put("traceId", traceId)
-    try {
-        logger.info("Processing request")
-    } finally {
-        MDC.remove("traceId")
-    }
+    MDC.put("orderId", orderId)
+    MDC.put("attempt", attempt)
+    log.info("Processing order")
+    MDC.remove("attempt")
     ```
 
-A structured value can also be written explicitly:
+Overloads accept `String`, `Integer`, `Long`, `Boolean` and `StructuredArgumentWriter`; a `null`
+value is stored as JSON `null` rather than removing the key.
 
-```java
-MDC.put("user", gen -> gen.writeString(userId));
-```
+## SLF4J MDC
 
-## SLF4J MDC (string-only)
-
-Because Kora speaks SLF4J, the standard `org.slf4j.MDC` works for simple string context. Prefer
-try-with-resources so the key is always cleared. Note this MDC is not automatically propagated by
-`KoraAsyncAppender`; use the Kora `MDC` for structured/async-safe context.
+Plain SLF4J works because Kora logs through SLF4J. Use it for simple string context that a
+`%X{key}` pattern must be able to read.
 
 ```java
 import org.slf4j.MDC;
 
-try (MDC.MDCCloseable t = MDC.putCloseable("traceId", traceId);
-     MDC.MDCCloseable u = MDC.putCloseable("userId", userId)) {
-    logger.info("Processing request");
-}  // both keys cleared automatically
+try (var t = MDC.putCloseable("traceId", traceId);
+     var u = MDC.putCloseable("userId", userId)) {
+    log.info("Processing request");
+}
 ```
 
-## HTTP interceptor for trace context
+Note that the Undertow handler calls `org.slf4j.MDC.clear()` at the start of every request, so a
+stale thread-local from a pooled/carrier thread cannot leak into the next request.
 
-A `ru.tinkoff.kora.http.server.common.HttpServerInterceptor` can seed MDC from
-request headers for every request. The real signature returns a
-`CompletionStage<HttpServerResponse>` and receives a `Context`, the request, and an
-`InterceptChain`. Tag it with `@Tag(HttpServerModule.class)` to apply it to all controllers.
-Read a single header with `request.headers().getFirst(name)` (header names are lower-cased).
+## Seeding MDC from an HTTP interceptor
+
+A global interceptor is a `@Component` tagged with `@Tag(HttpServer.class)` — `HttpServerModule`
+injects them as `@Tag(HttpServer.class) All<HttpServerInterceptor>`, so several may coexist. The
+2.0 contract is synchronous:
 
 ```java
-import ru.tinkoff.kora.common.Component;
-import ru.tinkoff.kora.common.Context;
-import ru.tinkoff.kora.common.Tag;
-import ru.tinkoff.kora.http.server.common.HttpServerModule;
-import ru.tinkoff.kora.http.server.common.HttpServerResponse;
-import ru.tinkoff.kora.http.server.common.HttpServerInterceptor;
-import ru.tinkoff.kora.http.server.common.HttpServerRequest;
-import ru.tinkoff.kora.logging.common.MDC;
+public interface HttpServerInterceptor {
+    HttpServerResponse intercept(HttpServerRequest request, InterceptChain chain) throws Exception;
+
+    interface InterceptChain {
+        HttpServerResponse process(HttpServerRequest request) throws Exception;
+    }
+}
+```
+
+```java
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Tag;
+import io.koraframework.http.server.common.HttpServer;
+import io.koraframework.http.server.common.interceptor.HttpServerInterceptor;
+import io.koraframework.http.server.common.request.HttpServerRequest;
+import io.koraframework.http.server.common.response.HttpServerResponse;
+import io.koraframework.logging.common.MDC;
 
 import java.util.UUID;
-import java.util.concurrent.CompletionStage;
 
-@Tag(HttpServerModule.class)
+@Tag(HttpServer.class)
 @Component
 public final class LoggingInterceptor implements HttpServerInterceptor {
 
     @Override
-    public CompletionStage<HttpServerResponse> intercept(Context context,
-                                                         HttpServerRequest request,
-                                                         InterceptChain chain) throws Exception {
-        var traceId = headerOrRandom(request, "x-trace-id");
-        var requestId = headerOrRandom(request, "x-request-id");
-
-        MDC.put("traceId", traceId);
-        MDC.put("requestId", requestId);
-        try {
-            return chain.process(context, request);
-        } finally {
-            MDC.remove("traceId");
-            MDC.remove("requestId");
-        }
+    public HttpServerResponse intercept(HttpServerRequest request, InterceptChain chain) throws Exception {
+        MDC.put("requestId", headerOrRandom(request, "x-request-id"));
+        return chain.process(request);
     }
 
     private static String headerOrRandom(HttpServerRequest request, String name) {
-        var value = request.headers().getFirst(name);
+        var value = request.headers().getFirst(name);   // @Nullable; header names are lower-cased
         return value != null ? value : UUID.randomUUID().toString();
     }
 }
 ```
 
-## Common MDC keys
+`@Tag(HttpServerModule.class)` — the Kora 1.x tag — still compiles, because `HttpServerModule`
+exists, but nothing looks interceptors up by it. The interceptor is then silently never invoked.
+Cover it with a test.
 
-| Key | Description | Source |
-|-----|-------------|--------|
-| `traceId` | Distributed tracing id | header or generated |
-| `requestId` | Request identifier | header or generated |
-| `userId` | User identifier | auth context |
-| `spanId` | Span id | tracing module |
+Do not put `traceId` / `spanId` in MDC by hand: `KoraAsyncAppender` captures
+`Span.current().getSpanContext()` into the event and `ConsoleTextRecordEncoder` prints
+`traceId=… spanId=…` from it whenever the span context is valid.
+
+## Porting a Kora 1.x `Context`-based helper
+
+`ru.tinkoff.kora.common.Context` **does not exist in Kora 2.0** — the class was removed from the
+whole framework, not just from the HTTP APIs. Any 1.x helper shaped like
+`Context.current().set(key, value)` or a `Context`-keyed MDC bridge has nothing to port onto.
+
+| Kora 1.x | Kora 2.0 |
+|---|---|
+| `Context` passed into interceptors / mappers | removed — the interceptor takes only the request and the chain |
+| custom `Context.Key<T>` for request-scoped state | your own `ScopedValue<T>`, bound with `ScopedValue.where(...)` |
+| `Context`-backed MDC helper | `io.koraframework.logging.common.MDC` directly, inside a framework-bound scope |
 
 ## Best practices
 
-- Remove every key you put (Kora `MDC`) or use try-with-resources (SLF4J `MDC`).
-- Generate correlation ids at the request entry point (interceptor).
-- Do not place secrets/PII in MDC.
-- Standardize key names across services.
+- Put correlation ids in at the entry point (interceptor, listener, job), not deep in the stack.
+- Never put secrets or PII in MDC — MDC values go into every record of the scope.
+- Standardise key names across services; a structured MDC is only useful if keys are stable.
+- Guard `MDC.get()` with `MDC.VALUE.isBound()` in code that can also run outside a request.
+- Use SLF4J MDC when a `%X{}` pattern has to read the value; use Kora MDC for anything typed.

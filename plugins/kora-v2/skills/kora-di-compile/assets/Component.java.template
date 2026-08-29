@@ -1,37 +1,36 @@
 package ${packagePath};
 
-import ru.tinkoff.kora.common.Component;
+import io.koraframework.common.annotation.Component;
 
 /**
- * Example Component class with constructor injection.
+ * Example component registered by constructor injection.
  *
- * @Component classes are automatically created by Kora at compile time.
- * The class must:
- * - Be final (not abstract)
- * - Have exactly one public constructor
- * - Have all constructor parameters resolvable from the container
+ * <p>Requirements enforced by the Kora 2.x processor:
+ * <ul>
+ *   <li>a class, not an interface and not abstract
+ *   <li><b>exactly one public constructor</b> — otherwise:
+ *       "@Component class must have exactly one public constructor."
+ *   <li>no raw types in the class or in constructor parameters
+ * </ul>
  *
- * See: references/component-registration-reference.md
+ * <p>{@code final} is a convention, not a requirement — and it inverts once aspects are involved:
+ * a class carrying an AOP annotation (@Log, @Retry, @Cacheable, ...) must NOT be final, because the
+ * aspect processor generates a subclass.
+ *
+ * <p>Component methods are synchronous. Kora 2.0 has no CompletionStage / Mono / Flux / suspend
+ * contracts, and there is no Kora {@code Context} type to inject.
+ *
+ * <p>See: references/component-registration-reference.md
  */
 @Component
 public final class ${Service}Service {
+
     private final ${Repository}Repository repository;
 
-    /**
-     * Constructor injection - single public constructor is automatically used.
-     *
-     * @param repository Injected dependency
-     */
     public ${Service}Service(${Repository}Repository repository) {
         this.repository = repository;
     }
 
-    /**
-     * Business method example.
-     *
-     * @param id Entity ID
-     * @return Entity or null
-     */
     public ${Entity} findById(String id) {
         return repository.findById(id);
     }

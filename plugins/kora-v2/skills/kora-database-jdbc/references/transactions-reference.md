@@ -1,218 +1,368 @@
 # Transactions Reference
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/database-jdbc.md` ("Transaction")
-**Module:** `ru.tinkoff.kora:database-jdbc`
+**Applies to:** Kora 2.x (`io.koraframework:database-jdbc`)
 
 ## Contents
 
+- [Getting the executor](#getting-the-executor)
 - [Basic transaction](#basic-transaction)
-- [Post-commit / post-rollback actions](#transaction-with-post-commit-actions)
-- [Custom isolation](#custom-transaction-isolation)
+- [Kotlin needs an explicit SAM constructor](#kotlin-needs-an-explicit-sam-constructor)
+- [The inTx overload set](#the-intx-overload-set)
+- [Isolation levels](#isolation-levels)
+- [Post-commit and post-rollback actions](#post-commit-and-post-rollback-actions)
 - [Nested transactions](#nested-transactions)
+- [Pessimistic locking](#pessimistic-locking)
+- [Non-transactional connection access](#non-transactional-connection-access)
 - [Retry on deadlock](#retry-on-deadlock)
+- [Kotlin: removing suspend](#kotlin-removing-suspend)
 - [Pitfalls](#pitfalls)
 
 ---
 
-## Basic Transaction
+## Getting the executor
 
-Use `JdbcConnectionFactory.inTx()` for transactional operations:
+`JdbcRepository` exposes one method:
+
+```java
+JdbcExecutor executor();
+```
+
+This **replaces** the 1.x `getJdbcConnectionFactory()`. `JdbcExecutor` lives in
+`io.koraframework.database.jdbc`; the graph implementation is `JdbcDataSource`, so
+`JdbcExecutor` can also be injected directly into any `@Component`:
 
 ```java
 @Component
-public class UserService {
-    private final UserRepository userRepository;
-    private final JdbcConnectionFactory connectionFactory;
-    
-    public UserService(UserRepository userRepository, JdbcConnectionFactory connectionFactory) {
-        this.userRepository = userRepository;
-        this.connectionFactory = connectionFactory;
+public final class LedgerService {
+
+    private final AccountRepository accounts;
+    private final JdbcExecutor executor;
+
+    public LedgerService(AccountRepository accounts, JdbcExecutor executor) {
+        this.accounts = accounts;
+        this.executor = executor;
     }
-    
-    public User createUser(String email, String name) {
-        return connectionFactory.inTx(() -> {
-            var user = new User(null, email, name, LocalDateTime.now());
-            userRepository.insert(user);
-            return user;
+}
+```
+
+Reaching it through a repository (`accounts.executor()`) is the shorter form and is what the
+migrated examples use.
+
+---
+
+## Basic transaction
+
+```java
+@Component
+public final class TaskService {
+
+    private final TaskRepository taskRepository;
+    private final AuditRepository auditRepository;
+
+    public TaskService(TaskRepository taskRepository, AuditRepository auditRepository) {
+        this.taskRepository = taskRepository;
+        this.auditRepository = auditRepository;
+    }
+
+    public List<Long> createTasks(List<TaskDAO> tasks) {
+        return taskRepository.executor().inTx(() -> {
+            var ids = taskRepository.insert(tasks);
+            auditRepository.recordCreated(ids);
+            return ids;
+        });
+    }
+
+    public void assign(long taskId, long userId) {
+        taskRepository.executor().inTx(() -> {
+            var updated = taskRepository.updateAssignee(taskId, userId);
+            if (updated.value() < 1) {
+                throw HttpServerResponseException.of(404, "Task not found");
+            }
         });
     }
 }
 ```
 
-All operations inside `inTx()` block execute in a single transaction. If an exception is thrown, the transaction rolls back.
+Every repository call made inside the lambda joins the same transaction, whichever repository it
+belongs to, as long as they share the same `JdbcExecutor`. Any exception rolls the whole block
+back and is rethrown.
+
+There is no `@Transactional` annotation and no declarative propagation in Kora — transaction
+boundaries are the `inTx` lambda, written in code.
 
 ---
 
-## Transaction with Post-Commit Actions
+## Kotlin needs an explicit SAM constructor
 
-Execute actions after successful commit or on rollback:
+`inTx` has eight overloads, and Kotlin no longer picks one from a bare lambda. Name the functional
+interface:
 
-```java
-@Component
-public class OrderService {
-    private final OrderRepository orderRepository;
-    private final JdbcConnectionFactory connectionFactory;
-    private final EmailService emailService;
-    
-    public Order createOrder(Order order) {
-        return connectionFactory.inTx(() -> {
-            var id = orderRepository.insert(order);
-            
-            var context = connectionFactory.currentConnectionContext();
-            context.addPostCommitAction(conn -> emailService.sendOrderConfirmation(id));
-            context.addPostRollbackAction((conn, ex) -> logger.error("Order failed", ex));
-            
-            return new Order(id, order.customerId(), order.items());
-        });
+```kotlin
+// returns a value
+val ids = taskRepository.executor().inTx(JdbcExecutor.SqlSupplier {
+    taskRepository.insert(tasks)
+})
+
+// returns nothing
+taskRepository.executor().inTx(JdbcExecutor.SqlRunnable {
+    val updated = taskRepository.updateAssignee(taskId, userId)
+    if (updated.value() < 1) {
+        throw HttpServerResponseException.of(404, "Task not found")
     }
-}
+})
 ```
 
-**Use cases:**
-- Post-commit: Send notifications, publish events, update cache
-- Post-rollback: Log failures, send alerts, cleanup
+Without the SAM constructor the compiler reports `Cannot infer type for type parameter T` or
+`Overload resolution ambiguity` — neither error mentions transactions, which makes this an easy
+half-hour to lose during a migration.
+
+Java infers correctly from a bare lambda: a zero-argument lambda that returns a value binds to
+`SqlSupplier<T>`, one that returns nothing binds to `SqlRunnable`.
 
 ---
 
-## Custom Transaction Isolation
+## The inTx overload set
 
-Set isolation level manually:
+The nested functional interfaces are declared on `JdbcExecutor`:
 
 ```java
-public void transferMoney(Long fromId, Long toId, BigDecimal amount) {
-    connectionFactory.inTx(connection -> {
-        // Set isolation level
-        connection.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
-        
-        // Lock accounts for update
-        var fromAccount = accountRepository.findByIdForUpdate(fromId);
-        var toAccount = accountRepository.findByIdForUpdate(toId);
-        
-        // Update balances
-        accountRepository.updateBalance(fromId, fromAccount.balance().subtract(amount));
-        accountRepository.updateBalance(toId, toAccount.balance().add(amount));
+@FunctionalInterface interface SqlSupplier<T>    { T apply() throws SQLException; }
+@FunctionalInterface interface SqlFunction<T, R> { R apply(T t) throws SQLException; }
+@FunctionalInterface interface SqlConsumer<T>    { void accept(T t) throws SQLException; }
+@FunctionalInterface interface SqlRunnable       { void run() throws SQLException; }
+```
+
+`inTx` accepts each of them, with and without an isolation level:
+
+| Overload | Callback receives | Returns |
+|----------|-------------------|---------|
+| `inTx(SqlSupplier<T>)` | nothing | `T` |
+| `inTx(SqlRunnable)` | nothing | `void` |
+| `inTx(SqlFunction<ConnectionContext, T>)` | the `ConnectionContext` | `T` |
+| `inTx(SqlConsumer<ConnectionContext>)` | the `ConnectionContext` | `void` |
+| `inTx(TxIsolation, SqlSupplier<T>)` | nothing | `T` |
+| `inTx(TxIsolation, SqlRunnable)` | nothing | `void` |
+| `inTx(TxIsolation, SqlFunction<ConnectionContext, T>)` | the `ConnectionContext` | `T` |
+| `inTx(TxIsolation, SqlConsumer<ConnectionContext>)` | the `ConnectionContext` | `void` |
+
+Callbacks may throw `SQLException` directly; `JdbcExecutor` wraps failures in
+`io.koraframework.database.jdbc.exception.UncheckedSqlException`.
+
+---
+
+## Isolation levels
+
+The isolation level is an overload argument, not a manual `Connection` call.
+`JdbcExecutor.TxIsolation` has `READ_UNCOMMITTED`, `READ_COMMITTED`, `REPEATABLE_READ` and
+`SERIALIZABLE`.
+
+```java
+public void transfer(long fromId, long toId, BigDecimal amount) {
+    accounts.executor().inTx(JdbcExecutor.TxIsolation.REPEATABLE_READ, () -> {
+        var from = accounts.findByIdForUpdate(fromId);
+        var to = accounts.findByIdForUpdate(toId);
+        // ...
     });
 }
 ```
 
-**Isolation levels:**
-- `Connection.TRANSACTION_READ_UNCOMMITTED` — dirty reads possible
-- `Connection.TRANSACTION_READ_COMMITTED` — PostgreSQL default
-- `Connection.TRANSACTION_REPEATABLE_READ` — no non-repeatable reads
-- `Connection.TRANSACTION_SERIALIZABLE` — strictest
+```kotlin
+accounts.executor().inTx(JdbcExecutor.TxIsolation.REPEATABLE_READ, JdbcExecutor.SqlRunnable {
+    // ...
+})
+```
 
-The default isolation level comes from the Hikari pool `dsProperties`; otherwise set it per transaction via `java.sql.Connection` as shown above.
+The executor restores the connection's previous isolation level afterwards. The default comes from
+the driver and the database (usually `READ_COMMITTED`); a pool-wide default can be set through
+`jdbc.dsProperties`, which is passed to Hikari as `dataSourceProperties`.
 
 ---
 
-## Configuration via HikariCP
+## Post-commit and post-rollback actions
 
-Configure default isolation in `application.conf`:
+`ConnectionContext` registers callbacks that run **after** the outer transaction resolves. Take the
+context from the `SqlFunction`/`SqlConsumer` overload rather than reaching for
+`executor().currentContext()`, which is nullable.
 
-```hocon
-db {
-    dsProperties {
-        transactionIsolation = "TRANSACTION_READ_COMMITTED"
-    }
+```java
+public long createOrder(Order order) {
+    return orders.executor().inTx(ctx -> {
+        var id = orders.insert(order);
+
+        ctx.afterCommit(connection -> eventPublisher.orderCreated(id));
+        ctx.afterRollback((connection, e) -> log.error("order {} rolled back", id, e));
+
+        return id;
+    });
 }
 ```
 
-Or via environment variable:
+- `ConnectionContext.afterCommit(PostCommitAction)` — `void run(Connection connection)`.
+- `ConnectionContext.afterRollback(PostRollbackAction)` — `void run(Connection connection, Exception e)`.
+- Both return the context, so they chain.
+- Both throw `IllegalStateException` when there is no active transaction: *"Cannot add JDBC
+  post-commit action because transaction is not active; register it inside a transactional
+  repository/service method"*.
 
-```hocon
-db {
-    dsProperties {
-        transactionIsolation = ${TX_ISOLATION:TRANSACTION_READ_COMMITTED}
-    }
-}
-```
+Post-rollback actions run inside the rollback handling; anything they throw is attached to the
+original exception as a suppressed exception. Post-commit actions run after `commit()` and after
+auto-commit is restored — a failure there does **not** undo the commit.
+
+Use post-commit for notifications, event publishing and cache invalidation; post-rollback for
+alerting and cleanup.
 
 ---
 
 ## Nested transactions
 
-Kora JDBC has no declarative propagation modes — you compose transactions in code. A nested `inTx()` reuses the current connection and joins the outer transaction (it does not start a separate one):
+There are no propagation modes. `inTx` inspects the current connection: if auto-commit is already
+off, it simply runs the callback on the open transaction instead of starting a new one. So a nested
+`inTx` joins the outer transaction, and an inner rollback rolls the outer one back too.
 
 ```java
 public void processOrder(Order order) {
-    connectionFactory.inTx(() -> {
-        orderRepository.insert(order);
-        
-        // Nested transaction (uses same connection)
-        connectionFactory.inTx(() -> {
-            for (var item : order.items()) {
-                inventoryRepository.reserve(item.productId(), item.quantity());
-            }
-        });
+    orders.executor().inTx(() -> {
+        orders.insert(order);
+
+        // joins the transaction above — not a savepoint, not a separate transaction
+        inventory.executor().inTx(() -> inventory.reserveAll(order.items()));
     });
 }
 ```
 
+Savepoints are not exposed; use `executor().withConnection(...)` and the JDBC API if you need them.
+
 ---
 
-## Common Patterns
-
-### Multi-Repository Transaction
+## Pessimistic locking
 
 ```java
-@Component
-public class OrderService {
-    private final OrderRepository orderRepository;
-    private final InventoryRepository inventoryRepository;
-    private final JdbcConnectionFactory connectionFactory;
-    
-    public void createOrderWithItems(Order order, List<OrderItem> items) {
-        connectionFactory.inTx(() -> {
-            orderRepository.insert(order);
-            inventoryRepository.reserveAll(items);
-        });
-    }
+@Query("SELECT %{return#selects} FROM %{return#table} WHERE id = :id FOR UPDATE")
+@Nullable
+Account findByIdForUpdate(Long id);
+```
+
+`FOR UPDATE` only holds the lock for the life of the transaction, so the call must sit inside
+`inTx`. Called outside one it runs in its own auto-commit statement and the lock is released
+immediately — a silent correctness bug rather than an error.
+
+---
+
+## Non-transactional connection access
+
+`withConnection` / `withContext` reuse the current connection (and therefore the current
+transaction, if any) without opening one of their own:
+
+```java
+default long insertReturning(Entity entity) {
+    return executor().withConnection(connection -> {
+        try (var ps = connection.prepareStatement(
+                "INSERT INTO entities(name) VALUES (?) RETURNING id")) {
+            ps.setString(1, entity.name());
+            try (var rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getLong(1);
+            }
+        }
+    });
 }
 ```
 
-### Retry on deadlock
+`acquireConnection()` hands out a raw connection you own — close it yourself, in
+try-with-resources. `currentConnection()` and `currentContext()` return `null` when no connection
+is bound to the current scope.
 
-Kora's `@Retry` takes a configuration name; attempt count and delays are defined in config under `resilient.retry.<name>`, not as annotation attributes. The retried method must live on a `@Component` so the aspect can wrap it.
+---
+
+## Retry on deadlock
+
+Resilience in 2.0 is typed: `@Retryable(Spec.class)` where the spec interface extends `Retry` and
+carries `@RetrySpec("<config path>")`. The retried method must live on a `@Component` so the AOP
+aspect can wrap it, and the retried block must include the whole transaction — retrying a
+half-rolled-back transaction is not meaningful.
 
 ```java
+@RetrySpec("resilient.retry.orderWrite")
+public interface OrderWriteRetry extends Retry {}
+
 @Component
 public final class OrderWriter {
-    private final OrderRepository repository;
-    private final JdbcConnectionFactory connectionFactory;
 
-    public OrderWriter(OrderRepository repository, JdbcConnectionFactory connectionFactory) {
+    private final OrderRepository repository;
+
+    public OrderWriter(OrderRepository repository) {
         this.repository = repository;
-        this.connectionFactory = connectionFactory;
     }
 
-    @Retry("orderWrite")
+    @Retryable(OrderWriteRetry.class)
     public void updateWithRetry(Order order) {
-        connectionFactory.inTx(() -> repository.update(order));
+        repository.executor().inTx(() -> repository.update(order));
     }
 }
 ```
 
 ```hocon
-resilient.retry.orderWrite { attempts = 3, delay = "50ms" }
+resilient.retry.orderWrite {
+    attempts = 3
+    delay = "50ms"
+    delayStep = "100ms"
+}
 ```
 
-`@Retry` requires the resilience module (`ru.tinkoff.kora:resilient-kora`). See the `kora-aop-resilient` skill for the annotation imports and the full configuration surface.
+`attempts` and `delay` are required; `delayStep` defaults to zero. Annotations come from
+`io.koraframework.resilient.retry.annotation`, the base type from
+`io.koraframework.resilient.retry.Retry`, artifact `io.koraframework:resilient-kora`. The 1.x
+string form `@Retry("orderWrite")` no longer exists. See the `kora-aop-resilient` skill for the
+full surface.
+
+---
+
+## Kotlin: removing suspend
+
+Repository contracts are synchronous, so a 1.x `suspend fun findById(...)` becomes
+`fun findById(...)`. **This is not a mechanical keyword deletion.** Dropping `suspend` propagates
+up the call chain into services, controllers and tests, and it changes behaviour:
+
+- **Cancellation.** Structured concurrency no longer cancels the database call; a coroutine
+  cancellation cannot interrupt a blocking JDBC statement. Bound the work with a query timeout or a
+  statement-level limit instead.
+- **Transaction boundaries.** A transaction is now tied to the calling thread's scope for the
+  duration of the `inTx` lambda, not to a coroutine context. Do not launch coroutines inside `inTx`
+  and expect them to share the transaction — they will not.
+- **Exception propagation.** Failures surface as ordinary thrown exceptions rather than through
+  coroutine machinery; `CancellationException` handling around repository calls becomes dead code.
+- **Tests.** `runTest` / `runBlocking` wrappers around what are now synchronous calls are
+  unnecessary and should be removed.
+
+If a suspend repository existed only as a duplicate of an already-synchronous one, delete it
+outright together with its DI references and coroutine tests instead of keeping two interfaces.
+Once the last coroutine usage is gone, drop the module's direct
+`kotlinx-coroutines-core` / `kotlinx-coroutines-jdk8` dependencies.
+
+For genuine parallel fan-out, Java `StructuredTaskScope` replaces coroutine concurrency — it is a
+preview API, so it needs `--enable-preview` (and the matching Kotlin flags) on every compile, test
+and run task.
 
 ---
 
 ## Pitfalls
 
-| Problem | Solution |
-|---------|----------|
-| Operations outside `inTx()` don't rollback | Wrap all related operations in single `inTx()` |
-| Connection leak | Always use try-with-resources or `inTx()` |
-| Deadlock on concurrent updates | Use consistent ordering, add retry logic |
-| Long-running transactions | Keep transactions short, avoid external calls inside `inTx()` |
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| `Cannot infer type for type parameter T` on `inTx` | Kotlin bare lambda against overloads | `JdbcExecutor.SqlSupplier { … }` / `SqlRunnable { … }` |
+| `getJdbcConnectionFactory()` does not resolve | renamed in 2.0 | `executor()` |
+| `currentConnectionContext()` / `addPostCommitAction` do not resolve | renamed in 2.0 | `currentContext()` / `ConnectionContext.afterCommit` |
+| `IllegalStateException: Cannot add JDBC post-commit action…` | registered outside an active transaction | move the registration inside `inTx` |
+| Writes outside the lambda are not rolled back | they ran in their own auto-commit statement | move every related call into one `inTx` |
+| `FOR UPDATE` does not block a concurrent writer | the query ran outside a transaction | call it inside `inTx` |
+| Post-commit action ran but the data is missing | the action was registered on a *nested* `inTx` that joined an outer transaction that later rolled back | register post-commit work where the outer boundary is |
+| Long transaction exhausts the pool | remote calls inside `inTx` | keep external I/O outside the transaction |
 
 ---
 
 ## See also
 
-- [repository-pattern-reference.md](repository-pattern-reference.md) — `@Repository`, `@Query`, SQL macros
-- [connection-pool-reference.md](connection-pool-reference.md) — HikariCP configuration
-- `kora-aop-resilient` skill — `@Retry` for deadlock handling
+- [repository-pattern-reference.md](repository-pattern-reference.md) — `@Repository`, `@Query`, macros
+- [connection-pool-reference.md](connection-pool-reference.md) — HikariCP sizing and leak detection
+- [database-jdbc-config-reference.md](database-jdbc-config-reference.md) — the `jdbc` config section
+- `kora-aop-resilient` skill — `@Retryable`, `@CircuitBreakable`, `@Timeout`

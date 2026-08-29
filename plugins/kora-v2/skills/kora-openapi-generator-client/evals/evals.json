@@ -1,100 +1,166 @@
 {
   "evals": [
     {
-      "id": "kora-openapi-generator-client-basic-setup",
+      "id": "kora-openapi-generator-client-quickstart-java",
       "skills": ["kora-openapi-generator-client"],
-      "query": "I have an OpenAPI 3 spec at src/main/resources/openapi/pet.yaml. Set up Gradle to generate a synchronous Kora HTTP client from it and show me how to inject and call the generated Api.",
+      "query": "I have an OpenAPI 3 spec at src/main/resources/openapi/pet.yaml with a single tag `pet`. Set up Gradle to generate a Kora HTTP client from it, then show me how to inject the generated Api and call it.",
       "expected_behavior": [
-        "Adds the org.openapi.generator plugin pinned to version 7.14.0 and a buildscript classpath dependency on ru.tinkoff.kora:openapi-generator",
-        "Registers a GenerateTask with generatorName = \"kora\" and configOptions mode = \"java-client\"",
-        "Sets a unique outputDir and wires sourceSets.main plus compileJava.dependsOn the generate task",
-        "Includes annotationProcessor \"ru.tinkoff.kora:annotation-processors\", json-module, and an HTTP client transport (e.g. http-client-jdk with JdkHttpClientModule)",
-        "Injects the generated *Api into a @Component via constructor and pattern matches the sealed *ApiResponses response (e.g. .content() on the 200 variant)",
-        "Does not claim the generated method returns the bare model DTO directly"
+        "Puts io.koraframework:openapi-generator:$koraVersion on the buildscript classpath and applies the org.openapi.generator Gradle plugin",
+        "Uses koraVersion=2.0.0.RC1 from plain mavenCentral() and the io.koraframework:kora-bom platform, never ru.tinkoff.kora:kora-parent",
+        "Registers a GenerateTask with generatorName = \"kora\" and configOptions mode = \"java-client\", with a unique outputDir wired into sourceSets.main and compileJava.dependsOn",
+        "Adds annotationProcessor \"io.koraframework:annotation-processors\", io.koraframework:json-common, and exactly one transport (http-client-ok / http-client-jdk / http-client-apache) whose module is extended by @KoraApp",
+        "Injects the generated *Api by constructor into a @Component from io.koraframework.common.annotation and pattern matches the sealed *ApiResponses variant, reading .content() on the success record",
+        "Does not use ru.tinkoff.kora packages, json-module, http-client-async, or claim the generated method returns the bare model"
       ],
-      "tags": ["openapi-client", "basic"]
+      "tags": ["openapi-client", "java", "basic"]
     },
     {
-      "id": "kora-openapi-generator-client-response-wrappers",
+      "id": "kora-openapi-generator-client-config-key-lowercase",
       "skills": ["kora-openapi-generator-client"],
-      "query": "How do I handle 200 and 404 responses from a generated Kora OpenAPI client method getPetById?",
+      "query": "We upgraded to Kora 2.0. Our generated PetApi client starts fine but every call just hangs until the request timeout, and there is nothing in the logs. build.gradle sets clientConfigPrefix to httpClient.petV2 and application.conf has a `httpClient.petV2.PetApi { url = ... }` section. What is wrong?",
       "expected_behavior": [
-        "Explains the method returns a sealed wrapper such as PetApiResponses.GetPetByIdApiResponse",
-        "Uses instanceof pattern matching or a switch over nested variants GetPetById200ApiResponse and GetPetById404ApiResponse",
-        "Reads the payload via .content() on the success variant",
-        "Does not wrap the call in a non-Kora ResponseEntity type or assume the bare model is returned directly"
+        "Identifies that Kora 2.0 lower-cases the first letter of the API class name, so the section must be httpClient.petV2.petApi, not httpClient.petV2.PetApi",
+        "Explains this is silent: the stale section is an unrecognised HOCON key that is ignored without a warning, so the client comes up with no url and requests hang until requestTimeout instead of failing fast",
+        "Tells the user to confirm the key against the generated @HttpClient annotation value (or the generator's end-of-run 'Generated Kora OpenAPI HTTP clients and config paths' log) rather than guessing it",
+        "Does not suggest raising the timeout, switching transport, adding retries, or setting configPath on the annotation"
       ],
-      "tags": ["openapi-client", "responses", "basic"]
+      "tags": ["openapi-client", "config", "regression", "silent-failure"]
     },
     {
-      "id": "kora-openapi-generator-client-config-prefix",
+      "id": "kora-openapi-generator-client-removed-reactive-mode",
       "skills": ["kora-openapi-generator-client"],
-      "query": "My generated PetApi client is not reading its url and timeout from application.conf. The build sets clientConfigPrefix to httpClient.pet. What is wrong?",
+      "query": "Generate a reactive Kora OpenAPI client that returns Mono/Flux. Our build currently has configOptions mode = \"java-reactive-client\" and it stopped working after the 2.0 upgrade.",
       "expected_behavior": [
-        "Explains that clientConfigPrefix is the config root and the generated Api class name is appended",
-        "States the correct HOCON section is httpClient.pet.PetApi, not httpClient.pet",
-        "Shows url, requestTimeout, and telemetry keys under that section with externalized url via ${ENV_VAR}",
-        "Mentions per-operation overrides nest under <operationId>Config"
+        "States that Kora 2.0 has exactly four generator modes — java-client, java-server, kotlin-client, kotlin-server — and that java-reactive-client no longer exists",
+        "Reports that generation aborts with \"Invalid OpenAPI generator `mode`\" listing the supported values",
+        "Switches the build to mode = \"java-client\" and explains generated methods are synchronous on virtual threads, so awaiting call sites become direct calls",
+        "Does not offer java-async-client, kotlin-suspend-client or kotlin-reactive-client as alternatives, and does not tell the user to add io.projectreactor:reactor-core to make the mode work"
       ],
-      "tags": ["openapi-client", "config", "intermediate"]
+      "tags": ["openapi-client", "modes", "regression"]
     },
     {
-      "id": "kora-openapi-generator-client-apikey-auth",
+      "id": "kora-openapi-generator-client-enum-fromvalue",
       "skills": ["kora-openapi-generator-client"],
-      "query": "My OpenAPI spec declares an apiKey securityScheme named apiKeyAuth. How do I make the generated Kora client send the API key?",
+      "query": "Our Kora OpenAPI client compiles and the unit tests pass, but in production it throws `IllegalArgumentException: No enum constant ...Pet.StatusEnum.available` when parsing a pet status. The spec declares enum values available, pending, sold. Code does Pet.StatusEnum.valueOf(raw).",
       "expected_behavior": [
-        "Sets configOptions primaryAuth = \"apiKeyAuth\" and securityConfigPrefix in the GenerateTask",
-        "Resolves the credential from config at securityConfigPrefix + scheme name (e.g. openapiAuth.apiKeyAuth)",
-        "Alternatively offers a manual ApiKeyHttpClientInterceptor declared in a @Module using ApiKeyLocation and attached with @InterceptWith",
-        "Does not use server-side HttpServerPrincipalExtractor or ru.tinkoff.kora.common.Principal for an outbound client"
+        "Explains the generated enum keeps the wire value in a nested Constants holder while the constant name is a normalised identifier (available -> AVAILABLE), so Enum.valueOf can never match",
+        "Replaces the call with Pet.StatusEnum.fromValue(raw), the static lookup the Kora 2.0 generator emits on every generated enum (Java and Kotlin alike)",
+        "Notes this class of bug is invisible at compile time and only surfaces on real data",
+        "Does not suggest uppercasing the input, adding a manual switch or map, or changing the contract's enum values"
+      ],
+      "tags": ["openapi-client", "enums", "regression", "silent-failure"]
+    },
+    {
+      "id": "kora-openapi-generator-client-kotlin-named-arguments",
+      "skills": ["kora-openapi-generator-client"],
+      "query": "In Kotlin we build a generated model positionally: PetTO(pet.id, pet.name, asDTO(pet.category), status). After regenerating from an updated spec the code still compiles but the wrong values end up in the request. How should we be constructing these?",
+      "expected_behavior": [
+        "Explains that generated Kotlin constructor parameters follow the contract's property declaration order and optional properties carry `= null` (or JsonNullable.nullValue()) defaults, so a positional call is coupled to the spec's ordering",
+        "Points out that when neighbouring properties share a type the reordering is type-compatible, so the call keeps compiling while silently swapping values",
+        "Rewrites the construction with named arguments, e.g. PetTO(id = pet.id, name = pet.name, category = asDTO(pet.category), status = status)",
+        "Does not claim the generator sorts required properties first, and does not suggest editing the generated model"
+      ],
+      "tags": ["openapi-client", "kotlin", "models", "silent-failure"]
+    },
+    {
+      "id": "kora-openapi-generator-client-no-suspend",
+      "skills": ["kora-openapi-generator-client"],
+      "query": "Our Kotlin service used kotlin-suspend-client and every call site is `suspend`. On Kora 2.0 we switched to kotlin-client but now nothing compiles. Can we mark the generated client methods suspend?",
+      "expected_behavior": [
+        "States that suspend is not supported on generated clients: kotlin-client emits plain synchronous functions and the interface is regenerated on every build, so there is nothing to annotate",
+        "Explains Kora 2.0 contracts are synchronous and run on virtual threads",
+        "If the caller must stay coroutine-based, puts the bridge in the caller's own service rather than in the client interface, and presents that as a deliberate decision",
+        "Notes that wrapping in withContext(Dispatchers.IO) is usually unnecessary under virtual threads rather than prescribing it as the mechanical fix",
+        "Does not suggest kotlin-suspend-client, a reactive mode, or hand-editing the generated interface"
+      ],
+      "tags": ["openapi-client", "kotlin", "coroutines", "regression"]
+    },
+    {
+      "id": "kora-openapi-generator-client-httpclient-configpath",
+      "skills": ["kora-openapi-generator-client"],
+      "query": "Next to our generated client we hand-write one @HttpClient interface. On Kora 2.0 `@HttpClient(configPath = \"httpClient.legacy\")` no longer compiles. What replaced it?",
+      "expected_behavior": [
+        "States that io.koraframework.http.client.common.annotation.HttpClient declares String value() default \"\" plus telemetryTag() and httpClientTag(), and that configPath does not exist in 2.0",
+        "Rewrites it as @HttpClient(\"httpClient.legacy\")",
+        "Keeps the hand-written client's config section spelled exactly as the annotation value, independent of the lower-camel rule that applies to generated clients",
+        "Does not invent a configPath alias or point at ru.tinkoff.kora.http.client.common.annotation.HttpClient"
+      ],
+      "tags": ["openapi-client", "annotations", "regression"]
+    },
+    {
+      "id": "kora-openapi-generator-client-gradle-jvm-25",
+      "skills": ["kora-openapi-generator-client"],
+      "query": "Our CI runs Gradle on JDK 21 with a Java 25 toolchain block. After adding the Kora 2.0 OpenAPI generator the build fails during configuration with 'Dependency requires at least JVM runtime version 25. This build uses a Java 21 JVM.' The toolchain is already 25 — why?",
+      "expected_behavior": [
+        "Explains io.koraframework:openapi-generator is a buildscript classpath dependency, resolved by the JVM running Gradle rather than by the project toolchain",
+        "Directs the fix at the Gradle JVM — JAVA_HOME, org.gradle.java.home, or the IDE's Gradle JVM setting — not at the toolchain block",
+        "Keeps the Java 25 toolchain for compilation as well",
+        "Does not suggest downgrading the Kora generator, removing the buildscript dependency, or setting a lower --release"
+      ],
+      "tags": ["openapi-client", "gradle", "toolchain", "troubleshooting"]
+    },
+    {
+      "id": "kora-openapi-generator-client-bearer-token-provider",
+      "skills": ["kora-openapi-generator-client"],
+      "query": "Our spec declares apiKeyAuth and bearerAuth securitySchemes. We only use the API key, but the Kora 2.0 build fails with a missing HttpClientTokenProvider dependency. How do we wire this?",
+      "expected_behavior": [
+        "Explains the generator emits a @DefaultComponent token provider for apiKey and basic schemes, but for bearer and oauth2 it emits only the tag class, so the application must supply the provider",
+        "Adds a @Tag(ApiSecurity.BearerAuth.class) HttpClientTokenProvider, using the scheme-derived nested marker rather than an ordinal SecurityRequirementTagN name",
+        "States that the unused scheme's provider must return null, because the generated interceptor tries each security alternative in order and applies the first one whose providers ALL returned non-null — a placeholder would complete the bearer alternative and pre-empt apiKeyAuth",
+        "Warns that if no alternative comes out complete the interceptor logs \"Security schema is defined for api but no data was provided\" and forwards the request with no credential, so the failure surfaces as a silent 401 rather than an error",
+        "Puts the api key credential under <securityConfigPrefix>.apiKeyAuth using the scheme name verbatim, while the tag capitalises it",
+        "Uses the synchronous io.koraframework.http.client.common.auth.HttpClientTokenProvider returning a nullable String, not a CompletionStage"
       ],
       "tags": ["openapi-client", "auth", "intermediate"]
     },
     {
+      "id": "kora-openapi-generator-client-per-operation-config",
+      "skills": ["kora-openapi-generator-client"],
+      "query": "One operation on our generated Kora client needs a longer timeout than the rest. We added `getPetByIdConfig { requestTimeout = 20s }` under the client section but it is ignored. Show the right configuration.",
+      "expected_behavior": [
+        "States the per-operation section is named after the generated method verbatim — getPetById — with no Config suffix, because the generated $PetApi_Config exposes one HttpClientOperationConfig accessor per interface method",
+        "Shows the block nested inside the client section, itself keyed by the lower-camel API name (e.g. httpClient.pet.petApi)",
+        "Mentions that a per-operation block may override requestTimeout and telemetry",
+        "Notes that logging and metrics telemetry default to false in Kora 2.0 and must be enabled explicitly",
+        "Does not suggest <operationId>Config or annotating the generated interface"
+      ],
+      "tags": ["openapi-client", "config", "intermediate"]
+    },
+    {
       "id": "kora-openapi-generator-client-multi-spec",
       "skills": ["kora-openapi-generator-client"],
-      "query": "I need to generate two separate Kora clients from two different OpenAPI specs in the same module. How should I set up the Gradle tasks?",
+      "query": "I need Kora clients for two different OpenAPI specs in the same Kotlin module. Set up the Gradle tasks and the config.",
       "expected_behavior": [
-        "Registers two GenerateTask instances, each with generatorName = \"kora\"",
-        "Gives each task a unique outputDir and a distinct corePackage/apiPackage/modelPackage",
-        "Repeats sourceSets.main srcDirs and compileJava.dependsOn for each task",
-        "Warns that sharing an outputDir breaks Gradle incremental builds and caching"
+        "Registers two GenerateTask instances with generatorName = \"kora\" and configOptions mode = \"kotlin-client\"",
+        "Gives each task a unique outputDir and a distinct apiPackage/modelPackage, and warns that sharing an outputDir breaks incremental builds and leaves stale classes",
+        "Wires each outputDir into kotlin.sourceSets.main and makes the ksp* tasks (and compileKotlin) depend on both generation tasks, since KSP consumes the generated interfaces",
+        "Gives each client its own clientConfigPrefix and shows the resulting HOCON sections with the API name lower-camel-cased",
+        "Uses ksp(\"io.koraframework:symbol-processors:$koraVersion\") rather than a Java annotation processor"
       ],
-      "tags": ["openapi-client", "gradle", "advanced"]
+      "tags": ["openapi-client", "kotlin", "gradle", "advanced"]
     },
     {
-      "id": "kora-openapi-generator-client-transport-choice",
+      "id": "kora-openapi-generator-client-stale-generated-package",
       "skills": ["kora-openapi-generator-client"],
-      "query": "Build fails with 'Required dependency PetApi not found' after generating my Kora OpenAPI client. What am I missing?",
+      "query": "We renamed modelPackage from ru.tinkoff.example.model to com.example.model in the Kora OpenAPI generate task. Now the build reports errors in classes we never import, still referencing the old package under build/generated. How do we fix it?",
       "expected_behavior": [
-        "Identifies that an HTTP client transport module must be plugged into @KoraApp (JdkHttpClientModule, OkHttpClientModule, or AsyncHttpClientModule)",
-        "Notes the matching artifact (http-client-jdk / http-client-ok / http-client-async) and json-module must be on the classpath",
-        "Confirms annotationProcessor ru.tinkoff.kora:annotation-processors is present so code is generated",
-        "Does not suggest field injection or a runtime classpath component scan; Kora wires components at compile time"
+        "Identifies stale generator output: the task does not delete its previous output and the build-cache key does not account for the package change, so both package trees sit in the same source set",
+        "Fixes it with a clean build that bypasses the cache, e.g. ./gradlew clean build --no-build-cache",
+        "States explicitly that generated code must never be hand-edited or selectively deleted as the fix",
+        "Does not suggest excluding the old package from the source set or adding it to .gitignore as a remedy"
       ],
-      "tags": ["openapi-client", "troubleshooting", "intermediate"]
-    },
-    {
-      "id": "kora-openapi-generator-client-reactive-mode",
-      "skills": ["kora-openapi-generator-client"],
-      "query": "Generate a reactive Kora OpenAPI client that returns Mono/Flux. What mode and dependency do I need?",
-      "expected_behavior": [
-        "Sets configOptions mode = \"java-reactive-client\"",
-        "Adds io.projectreactor:reactor-core manually since the generator does not bring it in",
-        "Explains generated methods return Mono<T>/Flux<T> wrapping the sealed *ApiResponses",
-        "Lists kotlin-suspend-client as the coroutine alternative for Kotlin projects"
-      ],
-      "tags": ["openapi-client", "reactive", "advanced"]
+      "tags": ["openapi-client", "gradle", "troubleshooting"]
     },
     {
       "id": "kora-openapi-generator-client-mockserver-test",
       "skills": ["kora-openapi-generator-client"],
-      "query": "Write an integration test for my generated Kora OpenAPI client that stubs the remote API and verifies the 200 response.",
+      "query": "Write an integration test for our generated Kora OpenAPI client that stubs the remote API and verifies the 200 response.",
       "expected_behavior": [
-        "Annotates the test with @KoraAppTest(Application.class) and injects the generated *Api with @TestComponent",
-        "Stubs the remote API with a MockServer container (testcontainers-extensions-mockserver) and points the client url at it via KoraAppTestConfigModifier",
-        "Asserts on the sealed response variant (e.g. instanceof GetPetById200ApiResponse) and its .content()",
-        "Uses ru.tinkoff.kora:test-junit5 with @KoraAppTest and does not rely on a non-Kora full-context test runner"
+        "Annotates the test with @KoraAppTest(Application.class) and injects the generated *Api with @TestComponent from io.koraframework:test-junit5",
+        "Stubs the remote with a MockServer container and points the client's url at it via KoraAppTestConfigModifier",
+        "Spells the config section with the lower-camel API name (httpClient.pet.petApi), including inside KoraConfigModification, since a misspelled section makes the test hang to timeout rather than fail",
+        "Asserts on the sealed response variant and reads .content() (Java) or .content (Kotlin) on the success variant",
+        "Does not rely on a non-Kora application context or reflection-based injection"
       ],
       "tags": ["openapi-client", "testing", "advanced"]
     }

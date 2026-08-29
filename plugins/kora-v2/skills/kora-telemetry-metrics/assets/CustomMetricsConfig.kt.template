@@ -1,33 +1,39 @@
 package ${package}
 
-import ru.tinkoff.kora.common.Module
-import ru.tinkoff.kora.micrometer.module.PrometheusMeterRegistryInitializer
+import io.koraframework.common.annotation.Module
+import io.koraframework.micrometer.module.PrometheusMeterRegistryInitializer
 
 /**
- * Metrics customization module.
+ * Metrics customization module (Kora 2.0).
  *
- * A PrometheusMeterRegistryInitializer is a
- * Function<PrometheusMeterRegistry, PrometheusMeterRegistry>: it mutates the
- * registry configuration and MUST return the registry. It is applied exactly
- * once when the application graph is initialized.
+ * MetricsModule collects every PrometheusMeterRegistryInitializer with
+ * All<PrometheusMeterRegistryInitializer> and applies them inside
+ * PrometheusMeterRegistryWrapper.init(), BEFORE the JVM binders are bound and before
+ * kora.up is registered -- so common tags land on those meters too.
  *
- * Declare it as a `fun` of a `@Module` interface — Kora picks it up as a
- * component automatically; no extra annotation is required.
+ * PrometheusMeterRegistryInitializer extends
+ * Function<PrometheusMeterRegistry, PrometheusMeterRegistry>, so it MUST return the
+ * registry. In Kotlin that means the lambda's last expression is `registry`.
+ *
+ * Declare it as a function of a `@Module` interface -- Kora picks it up as a component
+ * automatically. Several initializers may coexist; they are applied in graph order.
+ *
+ * This is the global alternative to the per-component telemetry.metrics.tags config key.
  */
 @Module
 interface CustomMetricsConfig {
 
     /**
-     * Adds common tags attached to every metric.
-     * Keep these tags bounded — they multiply onto all time series.
+     * Adds common tags attached to every metric in the process.
+     * Keep the values bounded -- they multiply onto every time series.
      */
-    fun commonTagsInit(): PrometheusMeterRegistryInitializer {
-        return PrometheusMeterRegistryInitializer { registry ->
+    fun commonTagsInit(): PrometheusMeterRegistryInitializer =
+        PrometheusMeterRegistryInitializer { registry ->
             registry.config().commonTags(
                 "service", "my-service",
                 "environment", "production",
-                "version", "1.0.0")
+                "version", "1.0.0"
+            )
             registry
         }
-    }
 }

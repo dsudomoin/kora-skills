@@ -1,9 +1,11 @@
-// Error response DTO for validation errors. Use with ViolationExceptionHttpServerResponseMapper.
+// Kora 2.0 error-response DTOs for validation failures (Kotlin).
+// Returned by a ViolationExceptionHttpServerResponseMapper — see
+// references/violation-exception-reference.md for the full @KoraApp wiring.
 // Replace `com.example.app.dto` with your package.
 
 package com.example.app.dto
 
-import ru.tinkoff.kora.json.common.annotation.Json
+import io.koraframework.json.common.annotation.Json
 
 @Json
 data class ValidationErrorResponse(
@@ -12,15 +14,31 @@ data class ValidationErrorResponse(
     val errors: List<ValidationErrorDetails>
 ) {
     companion object {
-        @JvmStatic
-        fun of(errors: List<ValidationErrorDetails>): ValidationErrorResponse {
-            return ValidationErrorResponse("VALIDATION_ERROR", "Validation failed", errors)
-        }
+        fun of(errors: List<ValidationErrorDetails>): ValidationErrorResponse =
+            ValidationErrorResponse(
+                code = "VALIDATION_ERROR",
+                message = "Validation failed",
+                errors = errors
+            )
     }
-
-    @Json
-    data class ValidationErrorDetails(
-        val field: String,
-        val message: String
-    )
 }
+
+@Json
+data class ValidationErrorDetails(
+    val field: String,
+    val message: String
+)
+
+// The mapper builds this from ViolationException.violations:
+//
+//   ViolationExceptionHttpServerResponseMapper { _, exception ->
+//       HttpServerResponse.of(
+//           400,
+//           HttpBody.json(writer.toByteArray(ValidationErrorResponse.of(
+//               exception.violations.map { ValidationErrorDetails(it.path().full(), it.message()) })))
+//       )
+//   }
+//
+// The @KoraApp override that binds the interceptor must declare the mapper parameter as
+// `ViolationExceptionHttpServerResponseMapper?` — the Java module declares it @Nullable, and a
+// non-null Kotlin type gives "'validationHttpServerInterceptor' overrides nothing".

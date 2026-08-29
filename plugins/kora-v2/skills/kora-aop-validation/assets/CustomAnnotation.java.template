@@ -1,29 +1,50 @@
-// Custom constraint annotation template.
-// Replace `com.example.app.validation` with your package.
+// Kora 2.0 custom constraint annotation.
+// Pair it with CustomValidator.java.template and ValidatorFactory.java.template.
+// Replace `com.example.app.validation` with your package and $typeName$ with your type.
 
 package com.example.app.validation;
 
-import ru.tinkoff.kora.validation.common.annotation.ValidatedBy;
+import io.koraframework.common.annotation.AopAnnotation;
+import io.koraframework.validation.common.annotation.ValidatedBy;
 
+import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
 /**
- * Custom constraint annotation for $typeName$ validation.
+ * Custom constraint for {@code $typeName$}.
  *
- * Usage:
- * @Valid
- * public record MyDto(
- *     @Valid$typeName$ $fieldName$ field
- * ) {}
+ * <pre>
+ * &#64;Valid
+ * public record MyDto(&#64;Valid$typeName$ $typeName$ field) {}
+ * </pre>
+ *
+ * Requirements:
+ * <ul>
+ *   <li>{@code RetentionPolicy.CLASS} — constraints are compile-time only, never read reflectively.</li>
+ *   <li>{@code @Target} must cover every position used: FIELD for class/record fields and Kotlin
+ *       {@code @field:} properties, PARAMETER for {@code @Validate} arguments, METHOD for results.</li>
+ *   <li>{@code @ValidatedBy} points at the factory that produces the {@code Validator}.</li>
+ *   <li>{@code @AopAnnotation} matches what every built-in constraint declares; it is not required.</li>
+ * </ul>
+ *
+ * ATTRIBUTES: if you add any, the factory must declare a {@code create(...)} overload with exactly
+ * one parameter per attribute, in declaration order — the processor calls it with the annotation's
+ * values (defaults applied). A mismatch fails the build with
+ * "Expected $typeName$ValidatorFactory#create() method with N parameters, but was didn't find such".
  */
+@AopAnnotation
+@Documented
 @Retention(RetentionPolicy.CLASS)
-@Target({ElementType.FIELD, ElementType.PARAMETER, ElementType.METHOD})
+@Target({ElementType.METHOD, ElementType.FIELD, ElementType.PARAMETER})
 @ValidatedBy($typeName$ValidatorFactory.class)
 public @interface Valid$typeName$ {
-    // Note: Kora's ValidatorFactory.create() takes no arguments, so annotation
-    // attributes are NOT passed to the validator. Encode any configuration in the
-    // Validator implementation itself (or in separate annotations/factories).
+    // No attributes -> the factory's no-arg create() is used.
+    //
+    // With attributes, e.g.:
+    //   String prefix();
+    //   int minLength() default 3;
+    // the factory needs: Validator<$typeName$> create(String prefix, int minLength);
 }

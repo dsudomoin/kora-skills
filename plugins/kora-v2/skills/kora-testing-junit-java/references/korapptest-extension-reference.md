@@ -1,197 +1,333 @@
 # KoraAppTest Extension Reference
 
-**Source:** `.kora-agent/kora-docs/mkdocs/docs/en/documentation/junit5.md`
-
-The core annotations and interfaces for testing Kora applications with JUnit 5.
+The full public surface of `io.koraframework:test-junit5` for Java, as it exists at Kora
+`2.0.0.RC1`. Nothing under `test/` changed between the tag and `master`.
 
 ## Contents
 
-- [@KoraAppTest](#koraapptest)
-- [@TestComponent](#testcomponent)
-- [@Tag injection](#tag-injection)
-- [KoraAppTestConfigModifier](#koraapptestconfigmodifier)
-- [KoraAppTestGraphModifier](#koraapptestgraphmodifier)
-- [Container lifecycle](#container-lifecycle)
-- [Best practices](#best-practices)
+- [Package map](#package-map)
+- [`@KoraAppTest`](#koraapptest)
+- [`@TestComponent`](#testcomponent)
+- [`@Tag` injection](#tag-injection)
+- [Injecting the graph itself](#injecting-the-graph-itself)
+- [`KoraAppTestConfigModifier`](#koraapptestconfigmodifier)
+- [`KoraAppTestGraphModifier`](#koraapptestgraphmodifier)
+- [Graph lifecycle](#graph-lifecycle)
+- [Rules the extension enforces](#rules-the-extension-enforces)
 - [Troubleshooting](#troubleshooting)
 
 ---
 
-## @KoraAppTest
+## Package map
 
-Builds a trimmed test version of the application graph from a `@KoraApp` interface.
+| Type | Package |
+|---|---|
+| `KoraAppTest`, `TestComponent` | `io.koraframework.test.extension.junit5` |
+| `KoraAppTestConfigModifier`, `KoraConfigModification` | `io.koraframework.test.extension.junit5` |
+| `KoraAppTestGraphModifier`, `KoraGraphModification` | `io.koraframework.test.extension.junit5` |
+| `KoraAppGraph` | `io.koraframework.test.extension.junit5` |
+| `MockitoStrictness` | `io.koraframework.test.extension.junit5.mockito` |
+| `TypeRef`, `Graph`, `RefreshableGraph`, `Wrapped` | `io.koraframework.application.graph` |
+| `Tag`, `Root`, `Component`, `KoraApp` | `io.koraframework.common.annotation` |
 
-### Syntax
+The package is `@NullMarked` (JSpecify), so every parameter and return value is non-null unless
+annotated `@Nullable`.
+
+---
+
+## `@KoraAppTest`
 
 ```java
-@KoraAppTest(
-    value = Application.class,                            // application class (required)
-    components = { Component1.class, Component2.class },  // components to initialize
-    modules = { Module1.class, Module2.class }           // extra modules to include
-)
-class MyTest { }
+@ExtendWith(KoraJUnit5Extension.class)
+@Target(TYPE) @Retention(RUNTIME)
+public @interface KoraAppTest {
+    Class<?> value();               // the @KoraApp interface
+    Class<?>[] components() default {};
+    Class<?>[] modules() default {};
+}
 ```
 
-### Parameters
+The extension loads the class named `<value's FQN> + "Graph"` — the `Supplier<ApplicationGraphDraw>`
+the annotation processor generated for that `@KoraApp` — with the application class's own class
+loader, copies the draw, then trims it.
 
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `value` | `Class` | Yes | The `@KoraApp`-annotated interface used as the graph source |
-| `components` | `Class[]` | No | Components to initialize in the test |
-| `modules` | `Class[]` | No | Extra `*Module` interfaces to include in the container |
+| Attribute | Effect |
+|---|---|
+| `value` | Required. Missing generated graph → `Cannot find generated Kora application graph for: …`, which lists the processor and submodule settings to check |
+| `components` | Extra graph roots kept in the trimmed graph. They are **not** injected anywhere; use them to keep a `@Root`-less component alive |
+| `modules` | `@Module` interfaces. Every factory method's return type (with its `@Tag`, if any) becomes a root. Java: only `default` methods count. **Entries must be interfaces** — a class is rejected with `Entries in @KoraAppTest(modules = ...) must be interfaces` |
 
-### Examples
-
-Basic:
 ```java
+@KoraAppTest(value = Application.class,
+             components = { TestComponent23.class },
+             modules = { UserCreatedConsumerModule.class })
+class SomeTests { }
+```
+
+`modules` is the standard way to pull a Kafka consumer or another self-starting component into a
+test that never injects it directly.
+
+### Full graph vs subgraph
+
+If the test declares no roots at all (no `@TestComponent`, no `components`, no `modules`, no
+mocks), the whole application graph is initialized. Otherwise the extension builds a subgraph out
+of the requested roots plus the mocked nodes, which is why an unreferenced component disappears.
+
+---
+
+## `@TestComponent`
+
+```java
+@Target({FIELD, PARAMETER}) @Retention(RUNTIME)
+public @interface TestComponent {}
+```
+
+Marks an element as both a graph root and an injection target. Three injection styles:
+
+```java
+// field
 @KoraAppTest(Application.class)
-class SimpleTest {
+class FieldTest {
     @TestComponent
     private UserService userService;
 }
-```
 
-With explicit components:
-```java
-@KoraAppTest(value = Application.class, components = { UserService.class, OrderService.class })
-class ComponentTest { }
-```
-
-With extra modules:
-```java
-@KoraAppTest(value = Application.class, modules = { SomeModule.class })
-class ModuleTest { }
-```
-
----
-
-## @TestComponent
-
-Injects a graph component into the test. Each `@TestComponent` is also a root of the
-trimmed graph, so Kora keeps it and its transitive dependencies.
-
-Field injection:
-```java
+// constructor
 @KoraAppTest(Application.class)
-class MyTest {
-    @TestComponent
-    private Supplier<String> component1;
-}
-```
+class ConstructorTest {
+    private final UserService userService;
 
-Constructor injection:
-```java
-@KoraAppTest(Application.class)
-class MyTest {
-    private final Supplier<String> component1;
-
-    MyTest(@TestComponent Supplier<String> component1) {
-        this.component1 = component1;
+    ConstructorTest(@TestComponent UserService userService) {
+        this.userService = userService;
     }
 }
-```
 
-Method-parameter injection:
-```java
+// test-method parameter
 @KoraAppTest(Application.class)
-class MyTest {
+class MethodTest {
     @Test
-    void example(@TestComponent Supplier<String> component1) {
-        assertEquals("1", component1.get());
+    void example(@TestComponent UserService userService) {
+        assertNotNull(userService);
     }
 }
 ```
 
-### Rules
+Constructor injection is exclusive: once the graph was created while resolving constructor
+parameters, `@TestComponent` and mock annotations on **test-method** parameters are rejected —
+move them to the constructor, or switch to field/method injection.
 
-1. Every component used in the test must be reachable from a graph root that is also part
-   of the test. The component you inject is itself a root; a component nobody depends on
-   will be trimmed unless it is `@Root` in the application graph.
-2. Combine with `@Mock`/`@Spy` to substitute dependencies.
-3. Combine with `@Tag` to inject a tagged component.
+Injected fields may not be `static` or `final`; both produce a dedicated
+`ExtensionConfigurationException` naming the field.
+
+### Wrapped components
+
+When the graph node is a `Wrapped<T>` and the requested type is not, the extension injects the
+wrapped value — unless the wrapper itself is an instance of the requested type, as with
+`JdbcDataSource` and `CassandraSession`, which implement the contract they wrap. Ask for the type
+you actually use and the extension resolves it.
 
 ---
 
-## @Tag injection
+## `@Tag` injection
 
-To inject a dependency that carries an `@Tag` in the graph, repeat the `@Tag` at the
-injection point:
+Repeat the graph's `@Tag` at the injection point. The extension reads `@Tag` directly on the
+element, and also a `@Tag` meta-annotation on any annotation present on the element.
 
 ```java
-@KoraAppTest(Application.class)
-class MyTest {
-    @Test
-    void example(@Tag(Supplier.class) @TestComponent Supplier<String> component1) {
-        assertEquals("tag1", component1.get());
-    }
+@Tag(LifecycleComponent.class)
+@TestComponent
+private TestComponent2 tagged;
+
+@Test
+void example(@Tag(TestComponent23.class) @TestComponent LifecycleComponent component) { }
+```
+
+Without a tag, a type that has several tagged implementations produces:
+
+```
+Cannot inject Kora component:
+  …
+Problem:
+  Expected one matching graph component, but found 2:
+  - …
+Fix:
+  Add or correct @Tag to select one component.
+```
+
+A common use is forcing a Kafka consumer into the graph by its generated process tag:
+
+```java
+@Tag(AutoCommitValueListenerModule.AutoCommitValueListenerProcessTag.class)
+@TestComponent
+private Lifecycle consumerLifecycle;
+```
+
+---
+
+## Injecting the graph itself
+
+Three types resolve without being graph nodes: `KoraAppGraph`, `Graph` and `RefreshableGraph`.
+They may be requested as constructor or test-method parameters (`KoraAppGraph` also as a field
+with `@TestComponent`), and they may **not** carry a mock annotation — the extension rejects that
+with *"Cannot mock Kora graph object"*.
+
+```java
+public interface KoraAppGraph {
+    @Nullable Object getFirst(Type type);
+    @Nullable Object getFirst(Type type, @Nullable Class<?> tag);
+    @Nullable <T> T getFirst(Class<T> type);
+    @Nullable <T> T getFirst(Class<T> type, @Nullable Class<?> tag);
+
+    default Optional<Object> findFirst(Type type);
+    default Optional<Object> findFirst(Type type, Class<?> tag);
+    default <T> Optional<T> findFirst(Class<T> type);
+    default <T> Optional<T> findFirst(Class<T> type, @Nullable Class<?> tag);
+
+    List<Object> getAll(Type type);
+    List<Object> getAll(Type type, @Nullable Class<?> tag);
+    <T> List<T> getAll(Class<T> type);
+    <T> List<T> getAll(Class<T> type, @Nullable Class<?> tag);
+}
+```
+
+```java
+@Test
+void lookUpGeneric(KoraAppGraph graph) {
+    assertNotNull(graph.getFirst(TypeRef.of(GenericComponent.class, String.class)));
 }
 ```
 
 ---
 
-## KoraAppTestConfigModifier
+## `KoraAppTestConfigModifier`
 
-Implement this interface to change configuration for the test. It must be implemented via
-the interface method, not through the constructor (config is required before construction).
-
-System properties (substituted into the real config file):
 ```java
-@KoraAppTest(Application.class)
-class MyTest implements KoraAppTestConfigModifier {
-    @NotNull
-    @Override
-    public KoraConfigModification config() {
-        return KoraConfigModification
-            .ofSystemProperty("POSTGRES_JDBC_URL", "jdbc:postgresql://localhost:5432/postgres")
-            .withSystemProperty("POSTGRES_USER", "postgres")
-            .withSystemProperty("POSTGRES_PASS", "postgres");
-    }
+public interface KoraAppTestConfigModifier {
+    KoraConfigModification config();
 }
 ```
 
-Config from a resource file:
+Implement it **on the test class**. The extension calls it on the test instance, so it cannot be
+combined with constructor injection; that combination is rejected with a message explaining that
+the graph is built before the instance exists. A `@Nested` class inherits the outer class's
+modifier when it has none of its own.
+
+### `KoraConfigModification`
+
 ```java
-@Override
+static KoraConfigModification ofString(String config);            // -> config.file (temp file)
+static KoraConfigModification ofResourceFile(String configFile);  // -> config.resource
+static KoraConfigModification ofSystemProperty(String k, String v);
+
+KoraConfigModification withSystemProperty(String key, String value);
+default KoraConfigModification withSystemProperties(Map<String, String> properties);
+Map<String, String> systemProperties();
+```
+
+How the three layers actually behave, per `HoconConfigModule`:
+
+- `ofString` writes the text to a temporary file and sets the `config.file` system property.
+  `ofResourceFile` sets `config.resource`. Either one **replaces** `application.conf` for the test
+   — it is not merged on top of it. Setting both is rejected: *"Application config source is
+  ambiguous"*.
+- System properties are `ConfigFactory.defaultOverrides`, the highest-priority layer. They fill
+  `${PLACEHOLDER}` substitutions in whichever config file is active, and they also appear as
+  top-level config keys in their own right.
+- The properties are installed **only for the duration of graph initialization**: the extension
+  clones `System.getProperties()`, sets `config.file`/`config.resource` and the requested
+  properties, builds the graph, and restores the snapshot in a `finally` block. They are therefore
+  not visible from the test body — read the value from the container object, not from
+  `System.getProperty`.
+- A test whose config carries system properties takes an exclusive lock while its graph
+  initializes, so such classes serialize against each other; classes with no system properties do
+  not. Keep `withSystemProperty` for values that genuinely come from a container.
+- Initialization failures are wrapped as `@KoraAppTest graph initialization failed after: <time>`
+  with the real cause attached.
+
+```java
+// substitute into the real application.conf
+public KoraConfigModification config() {
+    return KoraConfigModification
+        .ofSystemProperty("POSTGRES_JDBC_URL", POSTGRES.getJdbcUrl())
+        .withSystemProperty("POSTGRES_USER", POSTGRES.getUsername())
+        .withSystemProperty("POSTGRES_PASS", POSTGRES.getPassword());
+}
+
+// a dedicated test config file on the classpath
 public KoraConfigModification config() {
     return KoraConfigModification.ofResourceFile("application-test.conf");
 }
-```
 
-Inline config (replaces all config files for the test):
-```java
-@Override
+// inline, replacing application.conf entirely
 public KoraConfigModification config() {
     return KoraConfigModification.ofString("""
-        myconfig {
-            myproperty = 1
-        }
-        """);
+            jdbc {
+              jdbcUrl = ${POSTGRES_JDBC_URL}
+              username = ${POSTGRES_USER}
+              password = ${POSTGRES_PASS}
+            }
+            """)
+        .withSystemProperty("POSTGRES_JDBC_URL", POSTGRES.getJdbcUrl())
+        .withSystemProperty("POSTGRES_USER", POSTGRES.getUsername())
+        .withSystemProperty("POSTGRES_PASS", POSTGRES.getPassword());
 }
 ```
 
+Because `ofString` replaces the file, every key the graph needs must be inside the block, and every
+key must be a **Kora 2.0** key — see the config section of the parent skill for the renames
+(`db` → `jdbc`, `publicApiHttpPort` → `httpServer.port`, `slidingWindowSize` →
+`countBased.windowSize`, telemetry `enabled` defaults).
+
 ---
 
-## KoraAppTestGraphModifier
+## `KoraAppTestGraphModifier`
 
-Implement this interface to add, replace, or mock components in the container. Also
-constructor-forbidden (the graph is needed before construction).
+```java
+public interface KoraAppTestGraphModifier {
+    KoraGraphModification graph();
+}
+```
+
+Also instance-based, so also incompatible with constructor injection.
+
+```java
+public final class KoraGraphModification {
+    public static KoraGraphModification create();
+
+    public <T> KoraGraphModification addComponent(Type typeToAdd, Supplier<T> instanceSupplier);
+    public <T> KoraGraphModification addComponent(Type typeToAdd, @Nullable Class<?> tag, Supplier<T> instanceSupplier);
+    public <T> KoraGraphModification addComponent(Type typeToAdd, Function<KoraAppGraph, T> instanceSupplier);
+    public <T> KoraGraphModification addComponent(Type typeToAdd, @Nullable Class<?> tag, Function<KoraAppGraph, T> instanceSupplier);
+
+    public <T> KoraGraphModification replaceComponent(Type typeToReplace, Supplier<? extends T> replacement);
+    public <T> KoraGraphModification replaceComponent(Type typeToReplace, @Nullable Class<?> tag, Supplier<? extends T> replacement);
+    public <T> KoraGraphModification replaceComponent(Type typeToReplace, Function<KoraAppGraph, ? extends T> replacement);
+    public <T> KoraGraphModification replaceComponent(Type typeToReplace, @Nullable Class<?> tag, Function<KoraAppGraph, ? extends T> replacement);
+
+    public <T> KoraGraphModification mockComponent(Type typeToMock, Supplier<? extends T> replacement);
+    public <T> KoraGraphModification mockComponent(Type typeToMock, @Nullable Class<?> tag, Supplier<? extends T> replacement);
+}
+```
+
+The tag parameter is a **single `Class<?>`**, not a `List` — that is the shape change from Kora 1.x.
+`null` behaves like the overload without a tag.
+
+`Supplier` vs `Function<KoraAppGraph, …>` is not just convenience:
+
+| Form | Dependency handling |
+|---|---|
+| `replaceComponent(type, supplier)` | Replaces the node **without** keeping its dependencies — they leave the subgraph |
+| `replaceComponent(type, graph -> …)` | Replaces the node and **keeps** its dependencies, so the lambda can read them from the graph |
+| `mockComponent(type, supplier)` | Same as the `Supplier` form of `replaceComponent`: original dependencies are dropped |
 
 ### Adding a component
 
 ```java
-@KoraAppTest(Application.class)
-class MyTest implements KoraAppTestGraphModifier {
-    @Override
-    public KoraGraphModification graph() {
-        return KoraGraphModification.create()
-            .addComponent(TypeRef.of(Supplier.class, Integer.class),
-                          () -> (Supplier<Integer>) () -> 1);
-    }
-
-    @Test
-    void example(@TestComponent Supplier<Integer> supplier) {
-        assertEquals(1, supplier.get());
-    }
+@Override
+public KoraGraphModification graph() {
+    return KoraGraphModification.create()
+        .addComponent(LifecycleComponent.class, TestComponent23.class,
+                      () -> (LifecycleComponent) () -> "?");
 }
 ```
 
@@ -201,75 +337,104 @@ class MyTest implements KoraAppTestGraphModifier {
 @Override
 public KoraGraphModification graph() {
     return KoraGraphModification.create()
-        .addComponent(TypeRef.of(Supplier.class, String.class),
-            graph -> {
-                var existing = (Supplier<Integer>) graph.getFirst(TypeRef.of(Supplier.class, Integer.class));
-                return (Supplier<String>) () -> "1" + existing.get();
-            });
+        .addComponent(LifecycleComponent.class, TestComponent23.class, g -> {
+            var existing = g.getFirst(TestComponent2.class, LifecycleComponent.class);
+            return (LifecycleComponent) () -> "?" + existing.get();
+        });
 }
 ```
 
-### Replacing a component
-
-The middle argument is the list of `@Tag` classes on the target component (empty list when
-the component is untagged):
+### Replacing a generic component
 
 ```java
 @Override
 public KoraGraphModification graph() {
     return KoraGraphModification.create()
-        .replaceComponent(TypeRef.of(Supplier.class, String.class),
-                          List.of(Supplier.class),
-                          () -> (Supplier<String>) () -> "?");
+        .replaceComponent(TypeRef.of(Function.class, String.class, Integer.class),
+                          () -> (Function<String, Integer>) s -> 25);
 }
 ```
 
-### Replacing using the existing value
+### Replacing a tagged component
 
 ```java
 @Override
 public KoraGraphModification graph() {
     return KoraGraphModification.create()
-        .replaceComponent(TypeRef.of(Supplier.class, Integer.class),
-            graph -> {
-                var existing = (Supplier<Integer>) graph.getFirst(TypeRef.of(Supplier.class, Integer.class));
-                return (Supplier<Integer>) () -> 1 + existing.get();
-            });
+        .replaceComponent(TestComponent2.class, LifecycleComponent.class,
+                          () -> (TestComponent2) () -> "?");
+}
+```
+
+### Replacing while keeping the real dependencies
+
+```java
+@Override
+public KoraGraphModification graph() {
+    return KoraGraphModification.create()
+        .replaceComponent(TestComponent12.class, graph -> {
+            var component1 = graph.getFirst(TestComponent1.class);
+            return new TestComponent12(component1) {
+                @Override
+                public String get() {
+                    return "?" + component1.get();
+                }
+            };
+        });
 }
 ```
 
 ---
 
-## Container lifecycle
+## Graph lifecycle
 
-By default the graph is rebuilt for every `@Test` method. To build it once per class, use
-the standard JUnit lifecycle annotation:
+Controlled by the standard JUnit `@TestInstance` annotation — `@KoraAppTest` has no lifecycle
+attribute of its own.
+
+| Lifecycle | Behaviour |
+|---|---|
+| `PER_METHOD` (default) | A fresh graph per test method; the graph is closed in `afterEach` |
+| `PER_CLASS` | One graph per class, closed in `afterAll`; mocks are reset in `beforeEach` |
 
 ```java
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @KoraAppTest(Application.class)
-class MyTest {
-    // one container shared by all test methods in the class
-}
+class SharedGraphTest { }
 ```
+
+`PER_CLASS` is the cheap win for a class of read-only tests: graph construction, container
+startup and Flyway migrations happen once. It is unsafe when tests mutate shared state, and it
+rules out method-parameter mocks (see below).
+
+`@Nested` classes share the outer class's graph. With a `PER_CLASS` outer class the extension
+rejects `@TestComponent` fields on the nested class, because the outer graph is already built.
 
 ---
 
-## Best practices
+## Rules the extension enforces
 
-1. Use `@Mock` + `@TestComponent` together to mock dependencies.
-2. Do not attach `MockitoExtension`/`MockKExtension` — they conflict with `@KoraAppTest`.
-3. Mark test-only components `@Root` so they enter the graph.
-4. Use `@TestInstance(PER_CLASS)` to speed up classes that do not need per-method isolation.
-5. Override config via `KoraAppTestConfigModifier` rather than hardcoding values in tests.
+Each of these produces an `ExtensionConfigurationException` with a message that states the fix:
+
+- `@TestComponent` on a `static` or `final` field.
+- Constructor injection together with `KoraAppTestConfigModifier` or `KoraAppTestGraphModifier`.
+- `@TestComponent`/mock annotations on test-method parameters after constructor injection.
+- Method-parameter mocks with `@TestInstance(PER_CLASS)`.
+- The same candidate declared both as a plain component and as a mock, or both as a mock and a spy.
+- A non-interface entry in `@KoraAppTest(modules = …)`.
+- A mock annotation on `KoraAppGraph` or `Graph`.
+- `@TestComponent` fields on a `@Nested` class whose outer class is `PER_CLASS`.
+- A `@Mock`/`@Spy` candidate whose type does not resolve to a raw class.
 
 ---
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
-|---------|-------|-----|
-| Component is `null` | Not reachable from a root | Add `@Root` or inject a component that depends on it |
-| Mock not applied | `MockitoExtension` attached | Remove `@ExtendWith(MockitoExtension.class)` |
-| Slow initialization | `PER_METHOD` lifecycle | Use `@TestInstance(PER_CLASS)` |
-| Config conflict | Multiple `KoraAppTestConfigModifier` | One config modifier per class |
+|---|---|---|
+| `Cannot find generated Kora application graph` | The test `@KoraApp` was never processed | Add `testAnnotationProcessor "io.koraframework:annotation-processors"`; check `-proc:none` is not set on `compileTestJava` |
+| `No matching component was found in the application graph` | Node pruned, or the parent app's submodule is missing | Inject something that depends on it, mark it `@Root`, list it in `components`/`modules`; for a `TestApplication` add `-Akora.app.submodule.enabled=true` to the production module |
+| `Expected one matching graph component, but found N` | Several matching nodes | Add `@Tag` at the injection point |
+| `Entries in @KoraAppTest(modules = ...) must be interfaces` | A class was listed | List the `@Module` interface instead |
+| `Cannot use KoraAppTestConfigModifier with @KoraAppTest constructor injection` | Constructor injection | Use field or test-method injection |
+| `Application config source is ambiguous` | `config.file` and `config.resource` both set | One of `ofString` / `ofResourceFile` per class |
+| Slow class | Graph rebuilt per method | `@TestInstance(PER_CLASS)` when the tests do not mutate shared state |

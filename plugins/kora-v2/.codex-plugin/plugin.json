@@ -1,21 +1,23 @@
 {
-  "name": "kora-v1",
+  "name": "kora-v2",
   "version": "0.2.0",
-  "description": "Kora Framework development skill for building production-grade Java/Kotlin services — with compile-time DI, HTTP, Database, Kafka, gRPC, SOAP, OpenAPI, Telemetry, AOP. Zero reflection, zero proxies, AI agent friendly. For Kora version 1.x",
+  "description": "Kora Framework development skill for building production-grade Java/Kotlin services — with compile-time DI, HTTP, Database, Kafka, gRPC, SOAP, OpenAPI, Telemetry, AOP. Zero reflection, zero proxies, synchronous contracts on virtual threads, AI agent friendly. For Kora version 2.x",
   "author": {
     "name": "Anton Kurako",
     "url": "https://github.com/kora-projects"
   },
   "license": "Apache-2.0",
-  "homepage": "https://kora-projects.github.io/kora-docs",
+  "homepage": "https://github.com/kora-projects/kora",
   "keywords": [
     "kora",
-    "kora-v1",
-    "kora-1x",
-    "kora-1.x",
+    "kora-v2",
+    "kora-2x",
+    "kora-2.0",
+    "io.koraframework",
     "java",
     "kotlin",
     "compile-time-di",
+    "virtual-threads",
     "microservices",
     "http-server",
     "http-client",
@@ -30,9 +32,9 @@
   ],
   "skills": "skills",
   "interface": {
-    "displayName": "Kora 1.x",
-    "shortDescription": "Kora Framework 1.x Java/Kotlin microservice skills.",
-    "longDescription": "AI coding agent skills for building Kora Framework 1.x services with compile-time DI, HTTP, database, Kafka, gRPC, SOAP/WSDL, OpenAPI, telemetry, AOP, testing, and project setup guidance.",
+    "displayName": "Kora 2.x",
+    "shortDescription": "Kora Framework 2.x Java/Kotlin microservice skills.",
+    "longDescription": "AI coding agent skills for building Kora Framework 2.x services with compile-time DI, HTTP, database, Kafka, gRPC, SOAP/WSDL, OpenAPI, telemetry, AOP, testing, and project setup guidance. Kora 2.0 runs synchronous contracts on virtual threads under the io.koraframework group.",
     "developerName": "Kora Framework",
     "category": "Developer Tools",
     "capabilities": [
@@ -43,12 +45,12 @@
       "Kora documentation",
       "Testing"
     ],
-    "websiteURL": "https://kora-projects.github.io/kora-docs",
+    "websiteURL": "https://github.com/kora-projects/kora",
     "brandColor": "#ffc105",
     "defaultPrompt": [
-      "What is Kora Framework and why its good for enterprise grade development and coding agents?",
-      "Explain Kora Framework basics for a beginner? Can you build Kora learning lessons plan for me?",
-      "Setup Kora HelloWorld application and explain it to me"
+      "What is Kora Framework 2.0 and why is it good for enterprise grade development and coding agents?",
+      "Explain Kora Framework 2.0 basics for a beginner? Can you build Kora learning lessons plan for me?",
+      "Setup Kora 2.0 HelloWorld application and explain it to me"
     ]
   }
 }

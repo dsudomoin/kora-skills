@@ -1,10 +1,24 @@
 package ${package}
 
-import ru.tinkoff.kora.json.common.annotation.Json
-import ru.tinkoff.kora.json.common.annotation.JsonDiscriminatorValue
+import io.koraframework.json.common.annotation.Json
+import io.koraframework.json.common.annotation.JsonDiscriminatorValue
+${imports}
 
 /**
- * Implementation of ${sealed_interface_name} for the ${impl_name} case.
+ * [${sealed_interface_name}] case "${discriminator_value}".
+ *
+ * `@Json` is required here — the sealed mapper on `${sealed_interface_name}` is wired from
+ * the per-subtype mappers.
+ *
+ * `@JsonDiscriminatorValue` is optional: without it the discriminator value is this class's
+ * simple name. The attribute is a `String[]`, so aliases are passed as varargs —
+ * `@JsonDiscriminatorValue("${discriminator_value}", "alias")` — in which case the writer
+ * emits the first entry unless the class itself exposes the discriminator.
+ *
+ * Do not add a property for the discriminator "just because": the generated writer emits it.
+ * Add one only when the value must be visible on the model, and then make its JSON name
+ * match the discriminator field (via `@JsonField` if the names differ) — otherwise the
+ * output carries the key twice.
  *
  * @param ${fields_description}
  */
