@@ -9,22 +9,13 @@ AI coding agent skills for Kora Framework development.
 This repository ships skill packages for **Kora Framework**. There are two, one per framework line,
 and they are installed and versioned independently:
 
-| Package                      | Framework | Group              | Use it when                                  |
-|------------------------------|-----------|--------------------|----------------------------------------------|
-| [`kora-v2`](plugins/kora-v2) | Kora 2.x  | `io.koraframework` | New services, and any project already on 2.x |
-| [`kora-v1`](plugins/kora-v1) | Kora 1.x  | `ru.tinkoff.kora`  | Existing services still on 1.x               |
+| Package                      | Framework Version | Group              | Use it when                                  |
+|------------------------------|-------------------|--------------------|----------------------------------------------|
+| [`kora-v2`](plugins/kora-v2) | Kora 2.x          | `io.koraframework` | New services, and any project already on 2.x |
+| [`kora-v1`](plugins/kora-v1) | Kora 1.x          | `ru.tinkoff.kora`  | Existing services still on 1.x               |
 
 They can be installed side by side. Sub-skills are namespaced by plugin
 (`kora-v2:kora-http-server` vs `kora-v1:kora-http-server`), so nothing collides.
-
-**Which one do I want?** Look at the project's `build.gradle`. `ru.tinkoff.kora` → `kora-v1`.
-`io.koraframework` → `kora-v2`. Greenfield → `kora-v2`.
-
-Kora 2.0 is not a compatible upgrade of 1.x: the group changed, contracts became synchronous on
-virtual threads, `Context` was removed, R2DBC and Vert.x were dropped, and resilience moved from
-string names to typed specifications. Each package teaches its own line natively; neither is a
-migration tool. The upstream migration corpus lives in
-[kora-examples `migration/2.0`](https://github.com/kora-projects/kora-examples/tree/migration/2.0/migration).
 
 ## Quick Start
 
