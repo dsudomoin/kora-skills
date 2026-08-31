@@ -20,7 +20,7 @@ tags: ["http", "client", "auth", "oauth2"]  # Auto-generated or custom
 
 **Tags:** Auto-generated from title/problem/solution. Override with `--tags`:
 ```bash
-python kora-journal/scripts/kora_journal.py add "Title" \
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" add "Title" \
   --context "..." --problem "..." --solution "..." --files ... \
   --tags http client auth oauth2
 ```
@@ -237,5 +237,5 @@ Before adding an entry, verify:
 
 Update status with:
 ```bash
-python kora-journal/scripts/kora_journal.py integrate 2026-06-20_slug.md --status integrated
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" integrate 2026-06-20_slug.md --status integrated
 ```

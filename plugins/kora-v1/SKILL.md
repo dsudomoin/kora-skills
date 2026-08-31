@@ -141,7 +141,7 @@ Follow these steps for every Kora request. Do not compress them.
 3. **Search the journal** before implementing anything non-trivial:
    ```bash
    # path is relative to this skill's own directory, not the project you are working in
-   python skills/kora-journal/scripts/kora_journal.py search "http interceptor auth" --limit 5
+   python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" search "http interceptor auth" --limit 5
    ```
    Hit → apply it, then mark it applied with `integrate <entry-file>`.
    Miss → continue, and expect to add an entry afterwards under R3.

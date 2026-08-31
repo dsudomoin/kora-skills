@@ -108,13 +108,66 @@ def slugify(title):
     slug = title.lower()
     slug = re.sub(r'[^a-z0-9]+', '-', slug)
     slug = slug.strip('-')
-    return slug[:50]  # Limit length
+    # A title made only of punctuation would otherwise yield "<date>_.md"
+    return slug[:50] or 'entry'
 
 
-def get_entry_filename(title, date):
-    """Generate filename for entry: YYYY-MM-DD_slug.md"""
-    slug = slugify(title)
-    return f"{date}_{slug}.md"
+def get_entry_filename(slug, date, counter=None):
+    """Generate filename for entry: YYYY-MM-DD_slug.md, _slug_N.md on collision"""
+    suffix = f"_{counter}" if counter else ""
+    return f"{date}_{slug}{suffix}.md"
+
+
+def yaml_quote(value):
+    """
+    Quote a scalar for the entry frontmatter.
+
+    Titles are free-form user text, so a bare quote or newline would truncate
+    the frontmatter and every later `title:` read would return a partial value.
+    """
+    flat = ' '.join(str(value).split())
+    return '"' + flat.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
+def yaml_unquote(value):
+    """Reverse yaml_quote — drop the backslash from any escaped character."""
+    return re.sub(r'\\(.)', r'\1', value)
+
+
+def normalize_tag(tag):
+    """Tags are stored comma-separated inside [ ], so keep them to one token."""
+    return re.sub(r'[^\w.-]+', '-', str(tag).strip().lower()).strip('-')
+
+
+# One place for every frontmatter/metadata read, so the commands cannot drift
+# apart. The title pattern has to tolerate the \" escapes yaml_quote writes.
+TITLE_RE = re.compile(r'^title:\s*"((?:[^"\\]|\\.)*)"', re.MULTILINE)
+DATE_RE = re.compile(r'^date:\s*(\d{4}-\d{2}-\d{2})', re.MULTILINE)
+TAGS_RE = re.compile(r'^tags:\s*\[([^\]]*)\]', re.MULTILINE)
+STATUS_RE = re.compile(r'(Status:\**[ \t]*)(\w+)')
+
+
+def read_title(content, default=''):
+    match = TITLE_RE.search(content)
+    return yaml_unquote(match.group(1)) if match else default
+
+
+def read_date(content, default='unknown'):
+    match = DATE_RE.search(content)
+    return match.group(1) if match else default
+
+
+def read_status(content, default='pending'):
+    match = STATUS_RE.search(content)
+    return match.group(2) if match else default
+
+
+def read_tags(content):
+    match = TAGS_RE.search(content)
+    if not match:
+        return []
+    return [yaml_unquote(t.strip().strip('"').strip("'"))
+            for t in match.group(1).split(',') if t.strip()]
 
 
 def add_entry(title, context, problem, solution, files, author, tags=None):
@@ -123,15 +176,14 @@ def add_entry(title, context, problem, solution, files, author, tags=None):
     date = datetime.now().strftime('%Y-%m-%d')
     timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     
-    filename = get_entry_filename(title, date)
-    entry_path = journal_dir / filename
+    slug = slugify(title)
+    entry_path = journal_dir / get_entry_filename(slug, date)
     
     # Handle duplicate filenames (same title on same day)
-    counter = 1
+    counter = 0
     while entry_path.exists():
-        filename = f"{date}_{slug}_{counter}.md"
-        entry_path = journal_dir / filename
         counter += 1
+        entry_path = journal_dir / get_entry_filename(slug, date, counter)
     
     project = get_project_name()
     module = get_gradle_module()
@@ -163,10 +215,11 @@ def add_entry(title, context, problem, solution, files, author, tags=None):
                 tags.append(tag)
         tags = list(set(tags))[:10]  # Limit to 10 tags
     
-    tags_yaml = ', '.join(f'"{t}"' for t in tags) if tags else '[]'
+    tags = list(dict.fromkeys(t for t in map(normalize_tag, tags) if t))
+    tags_yaml = ', '.join(yaml_quote(t) for t in tags)
     
     content = f"""---
-title: "{title}"
+title: {yaml_quote(title)}
 date: {date}
 project: {project}
 module: {module}
@@ -237,18 +290,15 @@ def list_entries(limit=10, status=None):
     rows = []
     for entry_path in entries:
         content = entry_path.read_text(encoding='utf-8')
-        title_match = re.search(r'^title:\s*"([^"]+)"', content, re.MULTILINE)
-        date_match = re.search(r'^date:\s*(\d{4}-\d{2}-\d{2})', content, re.MULTILINE)
-        status_match = re.search(r'Status:\**\s*(\w+)', content, re.MULTILINE)
-        entry_status = status_match.group(1) if status_match else 'pending'
+        entry_status = read_status(content)
 
         if status and entry_status != status:
             continue
 
         rows.append((
             entry_path,
-            title_match.group(1) if title_match else entry_path.stem,
-            date_match.group(1) if date_match else 'unknown',
+            read_title(content, entry_path.stem),
+            read_date(content),
             entry_status,
         ))
 
@@ -279,21 +329,13 @@ def export_entries(since_date, status=None):
     for entry_path in entries:
         content = entry_path.read_text(encoding='utf-8')
         
-        # Extract date from frontmatter
-        date_match = re.search(r'^date:\s*(\d{4}-\d{2}-\d{2})', content, re.MULTILINE)
-        if not date_match:
-            continue
-        
-        entry_date = date_match.group(1)
-        if entry_date < since_date:
+        entry_date = read_date(content, default='')
+        if not entry_date or entry_date < since_date:
             continue
         
         # Filter by status if specified
-        if status:
-            status_match = re.search(r'Status:\**\s*(\w+)', content, re.MULTILINE)
-            entry_status = status_match.group(1) if status_match else 'pending'
-            if entry_status != status:
-                continue
+        if status and read_status(content) != status:
+            continue
         
         exported.append((entry_path, content))
     
@@ -327,22 +369,35 @@ def integrate_entry(entry_file, new_status='integrated'):
             return
     
     content = entry_path.read_text(encoding='utf-8')
+    old_status = read_status(content)
     
-    # Update status (tolerate the "**Status:**" markdown emphasis in entries)
-    today = datetime.now().strftime('%Y-%m-%d')
-    content = re.sub(
-        r'(Status:\**\s*)pending',
-        rf'\g<1>{new_status}',
-        content
+    if old_status == new_status:
+        print(f"Entry is already {new_status}: {entry_path.name}")
+        return
+    
+    # Match whatever status is written, not just "pending", so that the
+    # integrated -> archived transition works too.
+    content, replaced = STATUS_RE.subn(
+        lambda m: m.group(1) + new_status,
+        content,
+        count=1
     )
-    content = re.sub(
-        r'(\*\*Integrated:\*\*)[^\n]*',
-        rf'\g<1> {today}',
-        content
-    )
+    if not replaced:
+        print(f"No Status field found, entry left unchanged: {entry_path.name}")
+        return
+    
+    # "Integrated" records when the entry reached the skills; archiving later
+    # must not overwrite that date.
+    if new_status == 'integrated':
+        today = datetime.now().strftime('%Y-%m-%d')
+        content = re.sub(
+            r'(\*\*Integrated:\*\*)[^\n]*',
+            rf'\g<1> {today}',
+            content
+        )
     
     entry_path.write_text(content, encoding='utf-8')
-    print(f"✓ Entry marked as {new_status}: {entry_path.name}")
+    print(f"✓ Entry marked as {new_status} (was {old_status}): {entry_path.name}")
 
 
 def search_entries(query, limit=10, status=None, by_tags=False):
@@ -361,12 +416,7 @@ def search_entries(query, limit=10, status=None, by_tags=False):
         content = entry_path.read_text(encoding='utf-8')
         content_lower = content.lower()
         
-        # Extract tags from frontmatter
-        tags_match = re.search(r'^tags:\s*\[([^\]]*)\]', content, re.MULTILINE)
-        entry_tags = []
-        if tags_match:
-            tags_str = tags_match.group(1)
-            entry_tags = [t.strip().strip('"').strip("'") for t in tags_str.split(',') if t.strip()]
+        entry_tags = read_tags(content)
         
         # Search by tags if --by-tags flag is set
         if by_tags:
@@ -379,15 +429,8 @@ def search_entries(query, limit=10, status=None, by_tags=False):
                 continue
 
         # Filter by status if specified
-        if status and status != 'all':
-            status_match = re.search(r'Status:\**\s*(\w+)', content, re.MULTILINE)
-            entry_status = status_match.group(1) if status_match else 'pending'
-            if entry_status != status:
-                continue
-
-        # Extract metadata
-        title_match = re.search(r'^title:\s*"([^"]+)"', content, re.MULTILINE)
-        date_match = re.search(r'^date:\s*(\d{4}-\d{2}-\d{2})', content, re.MULTILINE)
+        if status and status != 'all' and read_status(content) != status:
+            continue
 
         # Calculate relevance
         if by_tags:
@@ -399,14 +442,14 @@ def search_entries(query, limit=10, status=None, by_tags=False):
 
         results.append({
             'path': entry_path,
-            'title': title_match.group(1) if title_match else entry_path.stem,
-            'date': date_match.group(1) if date_match else 'unknown',
+            'title': read_title(content, entry_path.stem),
+            'date': read_date(content),
             'relevance': relevance,
             'tags': entry_tags
         })
     
     # Sort by relevance (keyword matches) and date
-    results.sort(key=lambda x: (-x['relevance'], x['date']), reverse=False)
+    results.sort(key=lambda x: (x['relevance'], x['date']), reverse=True)
     
     if results:
         print(f"\nFound {len(results)} entries matching '{query}':\n")
@@ -441,10 +484,8 @@ def status():
         # Count by status
         status_counts = {'pending': 0, 'integrated': 0, 'archived': 0}
         for entry in entries:
-            content = entry.read_text(encoding='utf-8')
-            status_match = re.search(r'Status:\**\s*(\w+)', content, re.MULTILINE)
-            status = status_match.group(1) if status_match else 'pending'
-            status_counts[status] = status_counts.get(status, 0) + 1
+            entry_status = read_status(entry.read_text(encoding='utf-8'))
+            status_counts[entry_status] = status_counts.get(entry_status, 0) + 1
         
         print(f"Total entries: {len(entries)}")
         print(f"  - Pending:    {status_counts.get('pending', 0)}")
@@ -455,9 +496,7 @@ def status():
         if entries:
             print("\nRecent entries:")
             for entry in sorted(entries, reverse=True)[:5]:
-                content = entry.read_text(encoding='utf-8')
-                title_match = re.search(r'^title:\s*"([^"]+)"', content, re.MULTILINE)
-                title = title_match.group(1) if title_match else entry.stem
+                title = read_title(entry.read_text(encoding='utf-8'), entry.stem)
                 print(f"  - {entry.name}: {title}")
     else:
         print("Status: No journal yet (add first entry)")

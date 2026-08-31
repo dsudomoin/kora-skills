@@ -20,7 +20,7 @@ Continuous improvement journal for Kora skills — a centralized mechanism for c
 
 ```bash
 # From any Kora project directory
-python kora-journal/scripts/kora_journal.py add "Title" \
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" add "Title" \
   --context "What you were doing" \
   --problem "What went wrong / was unclear" \
   --solution "How you fixed it" \
@@ -48,13 +48,13 @@ python kora-journal/scripts/kora_journal.py add "Title" \
 
 ```bash
 # Last 10 pending entries
-python kora-journal/scripts/kora_journal.py list --limit 10 --status pending
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" list --limit 10 --status pending
 
 # All entries
-python kora-journal/scripts/kora_journal.py list
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" list
 
 # Only integrated entries
-python kora-journal/scripts/kora_journal.py list --status integrated
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" list --status integrated
 ```
 
 ---
@@ -63,7 +63,7 @@ python kora-journal/scripts/kora_journal.py list --status integrated
 
 ```bash
 # Export only pending entries from date
-python kora-journal/scripts/kora_journal.py export --since 2026-05-01 --status pending
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" export --since 2026-05-01 --status pending
 ```
 
 ---
@@ -81,14 +81,14 @@ Review exported entries and apply changes to:
 After applying changes:
 
 ```bash
-python kora-journal/scripts/kora_journal.py integrate 2026-06-20_fixed-http-client.md
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" integrate 2026-06-20_fixed-http-client.md
 ```
 
 Updates entry status: `pending` → `integrated`
 
 To mark as archived:
 ```bash
-python kora-journal/scripts/kora_journal.py integrate 2026-06-20_fixed-http-client.md --status archived
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" integrate 2026-06-20_fixed-http-client.md --status archived
 ```
 
 ---
@@ -96,7 +96,7 @@ python kora-journal/scripts/kora_journal.py integrate 2026-06-20_fixed-http-clie
 ### 6. Journal Status
 
 ```bash
-python kora-journal/scripts/kora_journal.py status
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" status
 ```
 
 Shows:
@@ -237,9 +237,9 @@ To override, rename the directory or edit the journal path manually.
 
 Export and integrate older entries:
 ```bash
-python kora-journal/scripts/kora_journal.py export --since 2026-01-01 --status pending
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" export --since 2026-01-01 --status pending
 # After integrating, mark each as integrated:
-python kora-journal/scripts/kora_journal.py integrate 2026-01-15_*.md
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" integrate 2026-01-15_*.md
 ```
 
 ### Entry file corrupted

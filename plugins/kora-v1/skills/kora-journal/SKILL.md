@@ -13,6 +13,23 @@ description: "Journal for incorrect Kora usage (kora_journal.py add/search/integ
 
 ---
 
+## Running the CLI
+
+Every command on this page runs the same script. Three things decide whether it works:
+
+| | |
+|---|---|
+| **Interpreter** | `python3` — a bare `python` does not exist on most macOS/Linux setups. On Windows use `python`. |
+| **Script path** | Absolute. Replace `<KORA_JOURNAL_SKILL_DIR>` with this skill's own directory, which Claude Code prints as *"Base directory for this skill"* when the skill loads (e.g. `~/.claude/plugins/cache/kora-framework/kora-v1/<version>/skills/kora-journal`). A relative path will not resolve, because the CLI is run from your project, not from the plugin. |
+| **Working directory** | The root of the project you are working on. `project` and `module` in every entry are derived from the current directory (git remote + `settings.gradle`), so running from anywhere else files the entry under the wrong project. |
+
+```bash
+cd /path/to/your/project
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" status
+```
+
+---
+
 ## ⚠️ READ FIRST — Purpose & Scope
 
 **Purpose:** Journal for recording **Kora Framework incorrect usage** discovered during development — when the agent used Kora incorrectly and realized it or the user pointed it out.
@@ -37,34 +54,34 @@ description: "Journal for incorrect Kora usage (kora_journal.py add/search/integ
 
 ```bash
 # Add entry (creates separate .md file, tags auto-generated)
-python kora-journal/scripts/kora_journal.py add "Fixed HTTP client example" \
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" add "Fixed HTTP client example" \
   --context "Implementing interceptor" \
   --problem "Example missing error handling" \
   --solution "Added try-catch and logging" \
   --files kora-http-client/references/interceptors-reference.md
 
 # Add entry with custom tags
-python kora-journal/scripts/kora_journal.py add "OAuth2 token refresh" \
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" add "OAuth2 token refresh" \
   --context "..." --problem "..." --solution "..." --files ... \
   --tags auth oauth2 client token
 
 # Search journal by keywords (use AFTER reading references)
-python kora-journal/scripts/kora_journal.py search "http interceptor auth" --limit 5
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" search "http interceptor auth" --limit 5
 
 # Search by tags only (more precise)
-python kora-journal/scripts/kora_journal.py search "auth oauth2" --by-tags
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" search "auth oauth2" --by-tags
 
 # View recent entries
-python kora-journal/scripts/kora_journal.py list --limit 10
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" list --limit 10
 
 # Export pending entries from date
-python kora-journal/scripts/kora_journal.py export --since 2026-05-01 --status pending
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" export --since 2026-05-01 --status pending
 
 # Mark entry as integrated after applying to skills
-python kora-journal/scripts/kora_journal.py integrate 2026-06-20_fixed-http-client.md
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" integrate 2026-06-20_fixed-http-client.md
 
 # Check status
-python kora-journal/scripts/kora_journal.py status
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" status
 ```
 
 ---
@@ -108,7 +125,7 @@ python kora-journal/scripts/kora_journal.py status
 When you fix a Kora issue or discover a pattern:
 
 ```bash
-python kora-journal/scripts/kora_journal.py add "Title" \
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" add "Title" \
   --context "What you were doing" \
   --problem "What went wrong / was unclear" \
   --solution "How you fixed it" \
@@ -121,17 +138,17 @@ Creates: `~/.kora-journal/<project>/<module>/YYYY-MM-DD_slug.md`
 
 ```bash
 # Last 10 pending entries
-python kora-journal/scripts/kora_journal.py list --limit 10 --status pending
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" list --limit 10 --status pending
 
 # All entries
-python kora-journal/scripts/kora_journal.py list
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" list
 ```
 
 ### 3. Export for Integration
 
 ```bash
 # Export only pending entries from date
-python kora-journal/scripts/kora_journal.py export --since 2026-05-01 --status pending
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" export --since 2026-05-01 --status pending
 ```
 
 ### 4. Apply Changes to Skills
@@ -145,7 +162,7 @@ Review exported entries and apply changes to:
 After applying changes:
 
 ```bash
-python kora-journal/scripts/kora_journal.py integrate 2026-06-20_fixed-http-client.md
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" integrate 2026-06-20_fixed-http-client.md
 ```
 
 Updates entry status: `pending` → `integrated`
@@ -256,14 +273,14 @@ pending ──→ integrated ──→ archived
 
 **Override auto-generated tags:**
 ```bash
-python kora-journal/scripts/kora_journal.py add "OAuth2 token refresh" \
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" add "OAuth2 token refresh" \
   --context "..." --problem "..." --solution "..." --files ... \
   --tags auth oauth2 client token
 ```
 
 **Search by tags (more precise than content search):**
 ```bash
-python kora-journal/scripts/kora_journal.py search "auth oauth2" --by-tags
+python3 "<KORA_JOURNAL_SKILL_DIR>/scripts/kora_journal.py" search "auth oauth2" --by-tags
 ```
 
 ---
