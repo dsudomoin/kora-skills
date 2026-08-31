@@ -23,25 +23,6 @@
 
 Пакет содержит **39 доменных скиллов и один Codex meta-skill**.
 
-## Что Изменилось в Kora 2.0
-
-Пакет учит писать и генерирует **нативный код Kora 2.0**. Это не инструмент миграции. Отличия,
-которые важнее всего при чтении вывода агента:
-
-| | Kora 1.x | Kora 2.0 |
-|---|---|---|
-| Group / BOM | `ru.tinkoff.kora` / `kora-parent` | `io.koraframework` / `kora-bom` |
-| Модель исполнения | реактивная, `CompletionStage`, Kotlin `suspend` | **синхронная, на виртуальных потоках** |
-| Java | 17+ | **25+** (артефакты — class-file 69) |
-| Kotlin | 1.9 | 2.4.10 с KSP 2.3.11 |
-| Нуллабельность (Java) | `jakarta.annotation.Nullable` | JSpecify, причём аннотации *type-use* |
-| Отказоустойчивость | `@Retry("name")` | `@Retryable(SpecType.class)` |
-| Реляционный доступ | JDBC, R2DBC, Vert.x | только JDBC — R2DBC и Vert.x удалены |
-| `Context` | есть | удалён из всего фреймворка |
-
-Для проектов, всё ещё живущих на `ru.tinkoff.kora`, используйте плагин **`kora-v1`** — он
-поддерживается отдельно и устанавливается рядом с этим.
-
 ## Установка
 
 ### Автоматический Установщик
@@ -131,10 +112,14 @@ npx skills add kora-projects/kora-v2
 Если вы AI coding agent, читающий этот файл, и пользователь просит установить скилл:
 
 1. Выполните `./plugins/kora-v2/install.sh` из корня репозитория или `./install.sh` внутри `plugins/kora-v2`.
-2. Если выполнение команд недоступно, скопируйте `SKILL.md`, `references/` и `skills/` в целевую директорию агента пользователя.
-3. Для Claude Code или OpenClaude используйте `/plugin`, добавьте репозиторий как marketplace из `.claude-plugin/marketplace.json`, затем установите `kora-v2`.
-4. Для Codex используйте `.agents/plugins/marketplace.json`, затем `codex plugin marketplace add .` и `codex plugin add kora-v2@kora-skills`.
-5. Сохраняйте имя установленной директории как `kora-v2`. Не перезаписывайте существующую установку `kora-v1` — это разные пакеты для разных версий фреймворка.
+2. Если выполнение команд недоступно, скопируйте `SKILL.md`, `references/` и `skills/` в целевую директорию агента
+   пользователя.
+3. Для Claude Code или OpenClaude используйте `/plugin`, добавьте репозиторий как marketplace из
+   `.claude-plugin/marketplace.json`, затем установите `kora-v2`.
+4. Для Codex используйте `.agents/plugins/marketplace.json`, затем `codex plugin marketplace add .` и
+   `codex plugin add kora-v2@kora-skills`.
+5. Сохраняйте имя установленной директории как `kora-v2`. Не перезаписывайте существующую установку `kora-v1` — это
+   разные пакеты для разных версий фреймворка.
 6. Попросите пользователя перезапустить или перезагрузить агента после установки.
 
 ## Использование
@@ -180,19 +165,19 @@ plugins/kora-v2/
 
 ## Карта Скиллов
 
-| Область | Скиллы |
-| --- | --- |
-| Core | `kora-di-compile`, `kora-di-runtime`, `kora-config-hocon`, `kora-config-yaml`, `kora-json` |
-| Project setup | `kora-project-setup-java`, `kora-project-setup-kotlin`, `kora-project-dependencies` |
-| HTTP и OpenAPI | `kora-http-server`, `kora-http-server-auth`, `kora-http-client`, `kora-http-client-auth`, `kora-openapi-generator-server`, `kora-openapi-generator-client`, `kora-openapi-management` |
-| Данные | `kora-database-jdbc`, `kora-database-cassandra`, `kora-database-migration` |
-| Messaging | `kora-kafka-producer`, `kora-kafka-consumer` |
-| gRPC и SOAP | `kora-grpc-server`, `kora-grpc-client`, `kora-soap-client` |
-| Telemetry | `kora-telemetry-tracing`, `kora-telemetry-metrics`, `kora-telemetry-logging` |
-| AOP | `kora-aop-caching`, `kora-aop-resilient`, `kora-aop-logging`, `kora-aop-scheduling-jdk`, `kora-aop-scheduling-quartz`, `kora-aop-validation` |
-| Тестирование | `kora-testing-junit-java`, `kora-testing-junit-kotlin`, `kora-testing-blackbox` |
-| Инструменты и обучение | `kora-s3`, `kora-mapstruct`, `kora-journal`, `kora-teacher` |
-| Совместимость с агентами | `kora-starter` |
+| Область                  | Скиллы                                                                                                                                                                                |
+|--------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Core                     | `kora-di-compile`, `kora-di-runtime`, `kora-config-hocon`, `kora-config-yaml`, `kora-json`                                                                                            |
+| Project setup            | `kora-project-setup-java`, `kora-project-setup-kotlin`, `kora-project-dependencies`                                                                                                   |
+| HTTP и OpenAPI           | `kora-http-server`, `kora-http-server-auth`, `kora-http-client`, `kora-http-client-auth`, `kora-openapi-generator-server`, `kora-openapi-generator-client`, `kora-openapi-management` |
+| Данные                   | `kora-database-jdbc`, `kora-database-cassandra`, `kora-database-migration`                                                                                                            |
+| Messaging                | `kora-kafka-producer`, `kora-kafka-consumer`                                                                                                                                          |
+| gRPC и SOAP              | `kora-grpc-server`, `kora-grpc-client`, `kora-soap-client`                                                                                                                            |
+| Telemetry                | `kora-telemetry-tracing`, `kora-telemetry-metrics`, `kora-telemetry-logging`                                                                                                          |
+| AOP                      | `kora-aop-caching`, `kora-aop-resilient`, `kora-aop-logging`, `kora-aop-scheduling-jdk`, `kora-aop-scheduling-quartz`, `kora-aop-validation`                                          |
+| Тестирование             | `kora-testing-junit-java`, `kora-testing-junit-kotlin`, `kora-testing-blackbox`                                                                                                       |
+| Инструменты и обучение   | `kora-s3`, `kora-mapstruct`, `kora-journal`, `kora-teacher`                                                                                                                           |
+| Совместимость с агентами | `kora-starter`                                                                                                                                                                        |
 
 ## Поддерживаемые Агенты
 
@@ -206,12 +191,12 @@ plugins/kora-v2/
 
 ## Требования
 
-| Компонент | Версия |
-| --- | --- |
-| Kora Framework | 2.x — на Maven Central опубликован `2.0.0.RC1` |
-| Java | 25+ (JDK, на котором запускается сам Gradle, тоже должен быть 25+, когда `openapi-generator` попадает в buildscript classpath) |
-| Kotlin | 2.4.10 с KSP 2.3.11 |
-| Gradle | 9+ (примеры Kora 2.0 фиксируют wrapper 9.5.1) |
+| Компонент      | Версия                                                                                                                         |
+|----------------|--------------------------------------------------------------------------------------------------------------------------------|
+| Kora Framework | 2.x — на Maven Central опубликован `2.0.0.RC1`                                                                                 |
+| Java           | 25+ (JDK, на котором запускается сам Gradle, тоже должен быть 25+, когда `openapi-generator` попадает в buildscript classpath) |
+| Kotlin         | 2.4.10 с KSP 2.3.11                                                                                                            |
+| Gradle         | 9+ (примеры Kora 2.0 фиксируют wrapper 9.5.1)                                                                                  |
 
 ## Источники
 
@@ -219,11 +204,11 @@ plugins/kora-v2/
 `kora-java-template` / `kora-kotlin-template` по-прежнему описывают Kora **1.x** — их нельзя
 использовать как источник истины по API 2.x. Авторитетные материалы:
 
-| Ресурс | Ссылка |
-| --- | --- |
-| Исходники фреймворка (релиз) | https://github.com/kora-projects/kora/tree/2.0.0.RC1 |
-| Исходники фреймворка (разработка) | https://github.com/kora-projects/kora/tree/master |
-| Мигрированные примеры приложений | https://github.com/kora-projects/kora-examples/tree/migration/2.0 |
-| Корпус миграции 1.x → 2.0 | https://github.com/kora-projects/kora-examples/tree/migration/2.0/migration |
-| Релизы | https://github.com/kora-projects/kora/releases |
-| Документация Kora 1.x (только как фон) | https://kora-projects.github.io/kora-docs |
+| Ресурс                                 | Ссылка                                                                      |
+|----------------------------------------|-----------------------------------------------------------------------------|
+| Исходники фреймворка (релиз)           | https://github.com/kora-projects/kora/tree/2.0.0.RC1                        |
+| Исходники фреймворка (разработка)      | https://github.com/kora-projects/kora/tree/master                           |
+| Мигрированные примеры приложений       | https://github.com/kora-projects/kora-examples/tree/migration/2.0           |
+| Корпус миграции 1.x → 2.0              | https://github.com/kora-projects/kora-examples/tree/migration/2.0/migration |
+| Релизы                                 | https://github.com/kora-projects/kora/releases                              |
+| Документация Kora 1.x (только как фон) | https://kora-projects.github.io/kora-docs                                   |

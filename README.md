@@ -2,17 +2,17 @@
 
 AI coding agent skills for Kora Framework development.
 
-> Russian version: [README.ru.md](README.ru.md)
+> Русская версия: [README.ru.md](README.ru.md)
 
 ## What Is This?
 
 This repository ships skill packages for **Kora Framework**. There are two, one per framework line,
 and they are installed and versioned independently:
 
-| Package | Framework | Group | Use it when |
-| --- | --- | --- | --- |
-| [`kora-v2`](plugins/kora-v2) | Kora 2.x | `io.koraframework` | New services, and any project already on 2.x |
-| [`kora-v1`](plugins/kora-v1) | Kora 1.x | `ru.tinkoff.kora` | Existing services still on 1.x |
+| Package                      | Framework | Group              | Use it when                                  |
+|------------------------------|-----------|--------------------|----------------------------------------------|
+| [`kora-v2`](plugins/kora-v2) | Kora 2.x  | `io.koraframework` | New services, and any project already on 2.x |
+| [`kora-v1`](plugins/kora-v1) | Kora 1.x  | `ru.tinkoff.kora`  | Existing services still on 1.x               |
 
 They can be installed side by side. Sub-skills are namespaced by plugin
 (`kora-v2:kora-http-server` vs `kora-v1:kora-http-server`), so nothing collides.
@@ -88,13 +88,13 @@ If Codex CLI plugin commands are unavailable in your build, use the shell instal
 
 The installer targets these local skill locations (`<pkg>` is `kora-v2` or `kora-v1`):
 
-| Agent | Target |
-| --- | --- |
-| Claude Code | `~/.claude/skills/<pkg>` |
-| OpenAI Codex | `~/.agents/skills/<pkg>` |
-| Pi Coding Agent | `~/.pi/skills/<pkg>` |
-| OMP | `~/.omp/skills/<pkg>` |
-| Cursor | `~/.cursor/skills/<pkg>` |
+| Agent                 | Target                       |
+|-----------------------|------------------------------|
+| Claude Code           | `~/.claude/skills/<pkg>`     |
+| OpenAI Codex          | `~/.agents/skills/<pkg>`     |
+| Pi Coding Agent       | `~/.pi/skills/<pkg>`         |
+| OMP                   | `~/.omp/skills/<pkg>`        |
+| Cursor                | `~/.cursor/skills/<pkg>`     |
 | OpenClaude / OpenClaw | `~/.openclaude/skills/<pkg>` |
 
 Manual fallback for any SKILL.md-compatible agent:
@@ -175,12 +175,14 @@ Each package contains **39 domain skills plus one Codex meta-skill**:
 
 - Core: `kora-di-compile`, `kora-di-runtime`, `kora-config-hocon`, `kora-config-yaml`, `kora-json`
 - Project setup: `kora-project-setup-java`, `kora-project-setup-kotlin`, `kora-project-dependencies`
-- HTTP and OpenAPI: `kora-http-server`, `kora-http-server-auth`, `kora-http-client`, `kora-http-client-auth`, `kora-openapi-generator-server`, `kora-openapi-generator-client`, `kora-openapi-management`
+- HTTP and OpenAPI: `kora-http-server`, `kora-http-server-auth`, `kora-http-client`, `kora-http-client-auth`,
+  `kora-openapi-generator-server`, `kora-openapi-generator-client`, `kora-openapi-management`
 - Data: `kora-database-jdbc`, `kora-database-cassandra`, `kora-database-migration`
 - Messaging: `kora-kafka-producer`, `kora-kafka-consumer`
 - gRPC and SOAP: `kora-grpc-server`, `kora-grpc-client`, `kora-soap-client`
 - Telemetry: `kora-telemetry-tracing`, `kora-telemetry-metrics`, `kora-telemetry-logging`
-- AOP: `kora-aop-caching`, `kora-aop-resilient`, `kora-aop-logging`, `kora-aop-scheduling-jdk`, `kora-aop-scheduling-quartz`, `kora-aop-validation`
+- AOP: `kora-aop-caching`, `kora-aop-resilient`, `kora-aop-logging`, `kora-aop-scheduling-jdk`,
+  `kora-aop-scheduling-quartz`, `kora-aop-validation`
 - Testing: `kora-testing-junit-java`, `kora-testing-junit-kotlin`, `kora-testing-blackbox`
 - Tools and learning: `kora-s3`, `kora-mapstruct`, `kora-journal`, `kora-teacher`
 - Agent compatibility: `kora-starter`
@@ -217,17 +219,10 @@ skill folders:
 
 ## Documentation
 
-| Resource | Line | Link |
-| --- | --- | --- |
-| Framework source (2.x release) | 2.x | https://github.com/kora-projects/kora/tree/2.0.0.RC1 |
-| Migrated example applications | 2.x | https://github.com/kora-projects/kora-examples/tree/migration/2.0 |
-| 1.x → 2.0 migration corpus | 2.x | https://github.com/kora-projects/kora-examples/tree/migration/2.0/migration |
-| Kora Framework docs | 1.x | https://kora-projects.github.io/kora-docs |
-| Official examples | 1.x | https://github.com/kora-projects/kora-examples |
-| Java template | 1.x | https://github.com/kora-projects/kora-java-template |
-| Kotlin template | 1.x | https://github.com/kora-projects/kora-kotlin-template |
-| SKILL.md specification | — | https://agentskills.io/specification |
-
-There is no Kora 2.0 documentation site yet. `kora-docs` and both `kora-*-template` repositories
-still describe 1.x, so they are listed under that line and must not be used as an API authority
-for 2.x.
+| Resource               | Line | Link                                                  |
+|------------------------|------|-------------------------------------------------------|
+| Kora Framework docs    | 1.x  | https://kora-projects.github.io/kora-docs             |
+| Official examples      | 1.x  | https://github.com/kora-projects/kora-examples        |
+| Java template          | 1.x  | https://github.com/kora-projects/kora-java-template   |
+| Kotlin template        | 1.x  | https://github.com/kora-projects/kora-kotlin-template |
+| SKILL.md specification | —    | https://agentskills.io/specification                  |

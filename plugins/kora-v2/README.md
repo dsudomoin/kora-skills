@@ -6,7 +6,7 @@ Kora Framework 2.x development skill package for AI coding agents.
 [![Java](https://img.shields.io/badge/java-25%2B-orange.svg)](https://adoptium.net)
 [![Kotlin](https://img.shields.io/badge/kotlin-2.4-purple.svg)](https://kotlinlang.org)
 
-> Russian version: [README.ru.md](README.ru.md)
+> Русская версия: [README.ru.md](README.ru.md)
 
 ## What It Does
 
@@ -22,25 +22,6 @@ Kora Framework 2.x development skill package for AI coding agents.
 - Project setup for Java/Kotlin Kora applications.
 
 The package contains **39 domain skills plus one Codex meta-skill**.
-
-## What changed in Kora 2.0
-
-This package teaches and generates **native Kora 2.0** code. It is not a migration tool. The
-differences that matter most when reading agent output:
-
-| | Kora 1.x | Kora 2.0 |
-|---|---|---|
-| Group / BOM | `ru.tinkoff.kora` / `kora-parent` | `io.koraframework` / `kora-bom` |
-| Execution model | reactive, `CompletionStage`, Kotlin `suspend` | **synchronous, on virtual threads** |
-| Java | 17+ | **25+** (artifacts are class-file 69) |
-| Kotlin | 1.9 | 2.4.10 with KSP 2.3.11 |
-| Nullability (Java) | `jakarta.annotation.Nullable` | JSpecify, and it is *type-use* |
-| Resilience | `@Retry("name")` | `@Retryable(SpecType.class)` |
-| Relational access | JDBC, R2DBC, Vert.x | JDBC only — R2DBC and Vert.x were removed |
-| `Context` | present | removed from the whole framework |
-
-A project still on `ru.tinkoff.kora` should use the **`kora-v1`** plugin, which is maintained
-separately and installs alongside this one.
 
 ## Installation
 
@@ -131,10 +112,14 @@ npx skills add kora-projects/kora-v2
 If you are an AI coding agent reading this file and the user asks you to install this skill:
 
 1. Run `./plugins/kora-v2/install.sh` from the repository root, or `./install.sh` from inside `plugins/kora-v2`.
-2. If command execution is not available, copy `SKILL.md`, `references/` and `skills/` into the target directory for the user's agent.
-3. For Claude Code or OpenClaude plugin flow, use `/plugin`, add this repository as the marketplace from `.claude-plugin/marketplace.json`, then install `kora-v2`.
-4. For Codex plugin flow, use `.agents/plugins/marketplace.json`, then run `codex plugin marketplace add .` and `codex plugin add kora-v2@kora-skills`.
-5. Keep the installed directory name as `kora-v2`. Do not overwrite an existing `kora-v1` installation — they are different packages for different framework versions.
+2. If command execution is not available, copy `SKILL.md`, `references/` and `skills/` into the target directory for the
+   user's agent.
+3. For Claude Code or OpenClaude plugin flow, use `/plugin`, add this repository as the marketplace from
+   `.claude-plugin/marketplace.json`, then install `kora-v2`.
+4. For Codex plugin flow, use `.agents/plugins/marketplace.json`, then run `codex plugin marketplace add .` and
+   `codex plugin add kora-v2@kora-skills`.
+5. Keep the installed directory name as `kora-v2`. Do not overwrite an existing `kora-v1` installation — they are
+   different packages for different framework versions.
 6. Ask the user to restart or reload their agent after installation.
 
 ## Usage
@@ -180,19 +165,19 @@ Codex discover the same high-level routing instructions that live in the root `S
 
 ## Skill Map
 
-| Area | Skills |
-| --- | --- |
-| Core | `kora-di-compile`, `kora-di-runtime`, `kora-config-hocon`, `kora-config-yaml`, `kora-json` |
-| Project setup | `kora-project-setup-java`, `kora-project-setup-kotlin`, `kora-project-dependencies` |
-| HTTP and OpenAPI | `kora-http-server`, `kora-http-server-auth`, `kora-http-client`, `kora-http-client-auth`, `kora-openapi-generator-server`, `kora-openapi-generator-client`, `kora-openapi-management` |
-| Data | `kora-database-jdbc`, `kora-database-cassandra`, `kora-database-migration` |
-| Messaging | `kora-kafka-producer`, `kora-kafka-consumer` |
-| gRPC and SOAP | `kora-grpc-server`, `kora-grpc-client`, `kora-soap-client` |
-| Telemetry | `kora-telemetry-tracing`, `kora-telemetry-metrics`, `kora-telemetry-logging` |
-| AOP | `kora-aop-caching`, `kora-aop-resilient`, `kora-aop-logging`, `kora-aop-scheduling-jdk`, `kora-aop-scheduling-quartz`, `kora-aop-validation` |
-| Testing | `kora-testing-junit-java`, `kora-testing-junit-kotlin`, `kora-testing-blackbox` |
-| Tools and learning | `kora-s3`, `kora-mapstruct`, `kora-journal`, `kora-teacher` |
-| Agent compatibility | `kora-starter` |
+| Area                | Skills                                                                                                                                                                                |
+|---------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Core                | `kora-di-compile`, `kora-di-runtime`, `kora-config-hocon`, `kora-config-yaml`, `kora-json`                                                                                            |
+| Project setup       | `kora-project-setup-java`, `kora-project-setup-kotlin`, `kora-project-dependencies`                                                                                                   |
+| HTTP and OpenAPI    | `kora-http-server`, `kora-http-server-auth`, `kora-http-client`, `kora-http-client-auth`, `kora-openapi-generator-server`, `kora-openapi-generator-client`, `kora-openapi-management` |
+| Data                | `kora-database-jdbc`, `kora-database-cassandra`, `kora-database-migration`                                                                                                            |
+| Messaging           | `kora-kafka-producer`, `kora-kafka-consumer`                                                                                                                                          |
+| gRPC and SOAP       | `kora-grpc-server`, `kora-grpc-client`, `kora-soap-client`                                                                                                                            |
+| Telemetry           | `kora-telemetry-tracing`, `kora-telemetry-metrics`, `kora-telemetry-logging`                                                                                                          |
+| AOP                 | `kora-aop-caching`, `kora-aop-resilient`, `kora-aop-logging`, `kora-aop-scheduling-jdk`, `kora-aop-scheduling-quartz`, `kora-aop-validation`                                          |
+| Testing             | `kora-testing-junit-java`, `kora-testing-junit-kotlin`, `kora-testing-blackbox`                                                                                                       |
+| Tools and learning  | `kora-s3`, `kora-mapstruct`, `kora-journal`, `kora-teacher`                                                                                                                           |
+| Agent compatibility | `kora-starter`                                                                                                                                                                        |
 
 ## Supported Agents
 
@@ -206,12 +191,12 @@ Codex discover the same high-level routing instructions that live in the root `S
 
 ## Requirements
 
-| Component | Version |
-| --- | --- |
-| Kora Framework | 2.x — `2.0.0.RC1` is the release on Maven Central |
-| Java | 25+ (the JDK running Gradle must also be 25+ when `openapi-generator` is on the buildscript classpath) |
-| Kotlin | 2.4.10 with KSP 2.3.11 |
-| Gradle | 9+ (the Kora 2.0 examples pin wrapper 9.5.1) |
+| Component      | Version                                                                                                |
+|----------------|--------------------------------------------------------------------------------------------------------|
+| Kora Framework | 2.x — `2.0.0.RC1` is the release on Maven Central                                                      |
+| Java           | 25+ (the JDK running Gradle must also be 25+ when `openapi-generator` is on the buildscript classpath) |
+| Kotlin         | 2.4.10 with KSP 2.3.11                                                                                 |
+| Gradle         | 9+ (the Kora 2.0 examples pin wrapper 9.5.1)                                                           |
 
 ## Sources
 
@@ -219,11 +204,11 @@ There is no Kora 2.0 documentation site yet. `kora-projects.github.io/kora-docs`
 `kora-java-template` / `kora-kotlin-template` repositories all still describe Kora **1.x** — they
 must not be used as an API authority for 2.x. The authoritative material is:
 
-| Resource | Link |
-| --- | --- |
-| Framework source (release) | https://github.com/kora-projects/kora/tree/2.0.0.RC1 |
-| Framework source (development) | https://github.com/kora-projects/kora/tree/master |
-| Migrated example applications | https://github.com/kora-projects/kora-examples/tree/migration/2.0 |
-| 1.x → 2.0 migration corpus | https://github.com/kora-projects/kora-examples/tree/migration/2.0/migration |
-| Releases | https://github.com/kora-projects/kora/releases |
-| Kora 1.x documentation (background only) | https://kora-projects.github.io/kora-docs |
+| Resource                                 | Link                                                                        |
+|------------------------------------------|-----------------------------------------------------------------------------|
+| Framework source (release)               | https://github.com/kora-projects/kora/tree/2.0.0.RC1                        |
+| Framework source (development)           | https://github.com/kora-projects/kora/tree/master                           |
+| Migrated example applications            | https://github.com/kora-projects/kora-examples/tree/migration/2.0           |
+| 1.x → 2.0 migration corpus               | https://github.com/kora-projects/kora-examples/tree/migration/2.0/migration |
+| Releases                                 | https://github.com/kora-projects/kora/releases                              |
+| Kora 1.x documentation (background only) | https://kora-projects.github.io/kora-docs                                   |

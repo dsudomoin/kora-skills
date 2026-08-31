@@ -3,7 +3,7 @@ name: kora-aop-caching
 description: "Kora 2.0 declarative caching via compile-time AOP — @Cacheable / @CachePut / @CacheInvalidate / @CacheInvalidateAll from io.koraframework.cache.annotation, with the args key attribute and CacheMode.SYNC|ASYNC. Covers the typed @Cache interface over CaffeineCache (io.koraframework:cache-caffeine) or RedisCache (io.koraframework:cache-redis-lettuce + LettuceRedisCacheModule), CacheKeyMapper + @Mapping, @Json Redis value types, LoadableCache, and stacked L1/L2 multi-level caching. Use when adding caching to a Kora service, choosing Caffeine vs Redis, porting Kora 1.x parameters= / invalidateAll=true, or debugging \"Config expected value, but got null at path: 'ROOT.<cache>.keyPrefix'\"."
 license: Apache-2.0
 metadata:
-  version: "0.2.0"
+  version: "0.1.0"
   kora-version: "2.x"
 ---
 

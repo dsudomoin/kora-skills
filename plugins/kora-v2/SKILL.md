@@ -3,7 +3,7 @@ name: kora-v2
 description: "Build and maintain Java/Kotlin services on the Kora Framework 2.0 (io.koraframework) — compile-time DI, zero reflection, synchronous contracts on virtual threads, annotation processors (Java) or KSP (Kotlin). Routes to 39 domain sub-skills. Use when the request mentions Kora, or uses Kora APIs: @KoraApp, @Component, @Module, @KoraSubmodule, @Root, @Tag, @Conditional, @FactoryModule, @HttpController, @HttpRoute, @HttpClient, @Repository, @Query, @EntityJdbc, @KafkaListener, @KafkaPublisher, gRPC, SOAP/WSDL, @S3.Client, @S3.Head, MapStruct, Konvert, @Json, @ConfigSource, @ConfigMapper (HOCON/YAML), OpenAPI codegen, @KoraAppTest, Testcontainers, @Valid, @Validate, @Log, @Mdc, @Retryable, @CircuitBreakable, @Timeout, @RateLimited, @Fallback, @Schedule*, @Cacheable, @CachePut, @CacheInvalidate, @CacheInvalidateAll, Micrometer/Prometheus metrics, OpenTelemetry/OTLP tracing, Undertow, Hikari. Also use for Kora project setup, Gradle/BOM dependencies, DI graph errors, or explaining Kora concepts. Do not use for Spring Boot, Micronaut, or Quarkus work. For projects still on Kora 1.x (ru.tinkoff.kora) use the kora-v1 plugin instead."
 license: Apache-2.0
 metadata:
-  version: "0.2.0"
+  version: "0.1.0"
   kora-version: "2.x"
 ---
 

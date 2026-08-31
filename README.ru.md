@@ -1,6 +1,6 @@
 # Kora Skills
 
-Скиллы для AI coding agents для разработки на Kora Framework.
+Скиллы для нейро-агентов для разработки на Kora Framework.
 
 > English version: [README.md](README.md)
 
@@ -9,10 +9,10 @@
 Репозиторий содержит пакеты скиллов для **Kora Framework**. Пакетов два — по одному на линейку
 фреймворка, они устанавливаются и версионируются независимо:
 
-| Пакет | Фреймворк | Group | Когда использовать |
-| --- | --- | --- | --- |
-| [`kora-v2`](plugins/kora-v2) | Kora 2.x | `io.koraframework` | Новые сервисы и любой проект уже на 2.x |
-| [`kora-v1`](plugins/kora-v1) | Kora 1.x | `ru.tinkoff.kora` | Существующие сервисы, оставшиеся на 1.x |
+| Пакет                        | Фреймворк | Group              | Когда использовать                      |
+|------------------------------|-----------|--------------------|-----------------------------------------|
+| [`kora-v2`](plugins/kora-v2) | Kora 2.x  | `io.koraframework` | Новые сервисы и любой проект уже на 2.x |
+| [`kora-v1`](plugins/kora-v1) | Kora 1.x  | `ru.tinkoff.kora`  | Существующие сервисы, оставшиеся на 1.x |
 
 Их можно держать установленными одновременно. Вложенные скиллы неймспейсятся именем плагина
 (`kora-v2:kora-http-server` против `kora-v1:kora-http-server`), поэтому конфликта нет.
@@ -88,13 +88,13 @@ codex plugin add kora-v1@kora-skills   # только если вы также �
 
 Установщик работает со следующими локальными директориями (`<pkg>` — это `kora-v2` или `kora-v1`):
 
-| Агент | Директория |
-| --- | --- |
-| Claude Code | `~/.claude/skills/<pkg>` |
-| OpenAI Codex | `~/.agents/skills/<pkg>` |
-| Pi Coding Agent | `~/.pi/skills/<pkg>` |
-| OMP | `~/.omp/skills/<pkg>` |
-| Cursor | `~/.cursor/skills/<pkg>` |
+| Агент                 | Директория                   |
+|-----------------------|------------------------------|
+| Claude Code           | `~/.claude/skills/<pkg>`     |
+| OpenAI Codex          | `~/.agents/skills/<pkg>`     |
+| Pi Coding Agent       | `~/.pi/skills/<pkg>`         |
+| OMP                   | `~/.omp/skills/<pkg>`        |
+| Cursor                | `~/.cursor/skills/<pkg>`     |
 | OpenClaude / OpenClaw | `~/.openclaude/skills/<pkg>` |
 
 Ручной запасной вариант для любого SKILL.md-совместимого агента:
@@ -111,7 +111,7 @@ cp -r plugins/kora-v2/SKILL.md plugins/kora-v2/references plugins/kora-v2/skills
 npx skills add kora-projects/kora-v2
 ```
 
-После установки перезапустите AI coding agent и спросите:
+После установки перезапустите нейро-агента и спросите:
 
 ```text
 Помоги создать микросервис на Kora с HTTP-эндпоинтами.
@@ -151,9 +151,9 @@ kora-skills/
     kora-v1/                  # пакет Kora 1.x, та же структура
 ```
 
-## Инструкции Для AI Агентов
+## Инструкции Для Нейро-Агентов
 
-Если вы AI coding agent, читающий этот README, и пользователь просит установить Kora-скиллы:
+Если вы нейро-агент (AI agent), читающий этот README, и пользователь просит установить Kora-скиллы:
 
 1. Сначала определите линейку фреймворка. `ru.tinkoff.kora` в build-файлах проекта → `kora-v1`.
    `io.koraframework` → `kora-v2`. Смотреть нечего (новый проект) → `kora-v2`. Если ситуация
@@ -175,12 +175,14 @@ kora-skills/
 
 - Core: `kora-di-compile`, `kora-di-runtime`, `kora-config-hocon`, `kora-config-yaml`, `kora-json`
 - Project setup: `kora-project-setup-java`, `kora-project-setup-kotlin`, `kora-project-dependencies`
-- HTTP и OpenAPI: `kora-http-server`, `kora-http-server-auth`, `kora-http-client`, `kora-http-client-auth`, `kora-openapi-generator-server`, `kora-openapi-generator-client`, `kora-openapi-management`
+- HTTP и OpenAPI: `kora-http-server`, `kora-http-server-auth`, `kora-http-client`, `kora-http-client-auth`,
+  `kora-openapi-generator-server`, `kora-openapi-generator-client`, `kora-openapi-management`
 - Данные: `kora-database-jdbc`, `kora-database-cassandra`, `kora-database-migration`
 - Messaging: `kora-kafka-producer`, `kora-kafka-consumer`
 - gRPC и SOAP: `kora-grpc-server`, `kora-grpc-client`, `kora-soap-client`
 - Telemetry: `kora-telemetry-tracing`, `kora-telemetry-metrics`, `kora-telemetry-logging`
-- AOP: `kora-aop-caching`, `kora-aop-resilient`, `kora-aop-logging`, `kora-aop-scheduling-jdk`, `kora-aop-scheduling-quartz`, `kora-aop-validation`
+- AOP: `kora-aop-caching`, `kora-aop-resilient`, `kora-aop-logging`, `kora-aop-scheduling-jdk`,
+  `kora-aop-scheduling-quartz`, `kora-aop-validation`
 - Тестирование: `kora-testing-junit-java`, `kora-testing-junit-kotlin`, `kora-testing-blackbox`
 - Инструменты и обучение: `kora-s3`, `kora-mapstruct`, `kora-journal`, `kora-teacher`
 - Совместимость с агентами: `kora-starter`
@@ -217,17 +219,10 @@ python scripts/version.py bump patch kora-v2
 
 ## Документация
 
-| Ресурс | Линейка | Ссылка |
-| --- | --- | --- |
-| Исходники фреймворка (релиз 2.x) | 2.x | https://github.com/kora-projects/kora/tree/2.0.0.RC1 |
-| Мигрированные примеры приложений | 2.x | https://github.com/kora-projects/kora-examples/tree/migration/2.0 |
-| Корпус миграции 1.x → 2.0 | 2.x | https://github.com/kora-projects/kora-examples/tree/migration/2.0/migration |
-| Документация Kora Framework | 1.x | https://kora-projects.github.io/kora-docs |
-| Официальные примеры | 1.x | https://github.com/kora-projects/kora-examples |
-| Java template | 1.x | https://github.com/kora-projects/kora-java-template |
-| Kotlin template | 1.x | https://github.com/kora-projects/kora-kotlin-template |
-| Спецификация SKILL.md | — | https://agentskills.io/specification |
-
-Сайта документации Kora 2.0 пока не существует. `kora-docs` и оба репозитория `kora-*-template`
-по-прежнему описывают 1.x, поэтому отнесены к этой линейке и не должны использоваться как источник
-истины по API 2.x.
+| Ресурс                      | Линейка | Ссылка                                                |
+|-----------------------------|---------|-------------------------------------------------------|
+| Документация Kora Framework | 1.x     | https://kora-projects.github.io/kora-docs             |
+| Официальные примеры         | 1.x     | https://github.com/kora-projects/kora-examples        |
+| Java template               | 1.x     | https://github.com/kora-projects/kora-java-template   |
+| Kotlin template             | 1.x     | https://github.com/kora-projects/kora-kotlin-template |
+| Спецификация SKILL.md       | —       | https://agentskills.io/specification                  |

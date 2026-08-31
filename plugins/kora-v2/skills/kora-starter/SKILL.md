@@ -5,7 +5,7 @@ license: Apache-2.0
 disable-model-invocation: true   # Claude Code: this is the Codex-only mirror of the root kora-v2 meta; stay dormant here
 user-invocable: false
 metadata:
-  version: "0.2.0"
+  version: "0.1.0"
   kora-version: "2.x"
 ---
 
