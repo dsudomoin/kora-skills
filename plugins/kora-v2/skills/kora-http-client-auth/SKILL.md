@@ -3,7 +3,7 @@ name: kora-http-client-auth
 description: "Authenticating outgoing Kora 2.0 HTTP clients — the built-in BasicAuthHttpClientInterceptor / ApiKeyHttpClientInterceptor / BearerAuthHttpClientInterceptor from io.koraframework:http-client-common, the synchronous HttpClientTokenProvider, hand-written HttpClientInterceptor, @InterceptWith wiring, OAuth2 client-credentials token caching and 401 retry. Use when a @HttpClient must send Basic / API-key / Bearer credentials, when porting a 1.x Context/CompletionStage token flow to the synchronous 2.0 contract, or when an outbound call returns 401. For inbound request auth see kora-http-server-auth."
 license: Apache-2.0
 metadata:
-  version: "0.2.0"
+  version: "0.1.0"
   kora-version: "2.x"
 ---
 

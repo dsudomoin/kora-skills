@@ -3,7 +3,7 @@ name: kora-project-setup-java
 description: "Scaffold a new Java Kora 2.0 service (Gradle) — io.koraframework:kora-bom, annotationProcessor io.koraframework:annotation-processors, the koraBom configuration, @KoraApp root and KoraApplication.run(ApplicationGraph::graph). Use when starting a Java Kora project, writing build.gradle/settings.gradle/gradle.properties, or fixing \"annotation processor did not run\", \"cannot find symbol ApplicationGraph\", or \"Dependency requires at least JVM runtime version 25\". For Kotlin see kora-project-setup-kotlin."
 license: Apache-2.0
 metadata:
-  version: "0.2.0"
+  version: "0.1.0"
   kora-version: "2.x"
 ---
 

@@ -3,7 +3,7 @@ name: kora-di-runtime
 description: "Runtime DI behaviour of the Kora 2.0 container (io.koraframework.application.graph) — @Root pruning, the synchronous Lifecycle init()/release() contract, LifecycleWrapper/Wrapped<T>, @Tag disambiguation incl. Tag.Any and Tag.Factory, All<T> collections, ValueOf<T>/PromiseOf<T>, @Nullable optional dependencies, GraphInterceptor afterInit/beforeRelease, GraphCondition + @Conditional, RefreshableGraph.refresh and RefreshListener. Use when a component must start although nothing depends on it, when writing init/release logic, when disambiguating or collecting components, when breaking a refresh chain or a dependency cycle, or when a component must be wrapped during graph build. For compile-time @KoraApp/@Module/@Component wiring see kora-di-compile."
 license: Apache-2.0
 metadata:
-  version: "0.2.0"
+  version: "0.1.0"
   kora-version: "2.x"
 ---
 

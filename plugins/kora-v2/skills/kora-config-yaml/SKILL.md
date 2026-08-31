@@ -3,7 +3,7 @@ name: kora-config-yaml
 description: "YAML typed config in Kora 2.0 — io.koraframework:config-yaml, YamlConfigModule, @ConfigSource / @ConfigMapper over application.yaml, ConfigValueMapper.mapOrThrow, ${VAR} substitution. Use when a service reads YAML config, when migrating @ConfigValueExtractor to @ConfigMapper, or when a YAML key silently has no effect. For application.conf see kora-config-hocon."
 license: Apache-2.0
 metadata:
-  version: "0.2.0"
+  version: "0.1.0"
   kora-version: "2.x"
 ---
 
