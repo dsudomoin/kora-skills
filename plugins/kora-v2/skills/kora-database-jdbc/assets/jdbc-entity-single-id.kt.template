@@ -1,0 +1,50 @@
+package ${package}
+
+import io.koraframework.database.common.annotation.Column
+import io.koraframework.database.common.annotation.Id
+import io.koraframework.database.common.annotation.Table
+import io.koraframework.database.jdbc.annotation.EntityJdbc
+import java.time.LocalDateTime
+
+/**
+ * Entity with a single-field id for a Kora 2.0 JDBC repository (Kotlin).
+ *
+ * Annotations and their packages:
+ * - @EntityJdbc  io.koraframework.database.jdbc.annotation  — generates the row/result-set mappers
+ * - @Table       io.koraframework.database.common.annotation — table name; without it the class
+ *                name is converted by the naming strategy (snake_case by default)
+ * - @Id          io.koraframework.database.common.annotation — required for %{...#where = @id},
+ *                for excluding the key from %{...#updates}, and for @Id-on-method generated keys
+ * - @Column      io.koraframework.database.common.annotation — only needed when the column name is
+ *                not the snake_case form of the property name
+ *
+ * Use `@field:` on data-class properties: Kora reads the field, so an annotation left on the
+ * constructor parameter is not seen.
+ *
+ * Nullability is the type (`String?`). Never carry JSpecify or jakarta @Nullable into Kotlin —
+ * those targets are invalid here.
+ *
+ * A database-assigned id is `${id_type}?` so the entity can exist before the insert returns it.
+ *
+ * Matching DDL:
+ *   CREATE TABLE ${table_name} (
+ *       id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ *       email      VARCHAR(255) NOT NULL UNIQUE,
+ *       name       VARCHAR(255) NOT NULL,
+ *       created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+ *       payload    TEXT
+ *   );
+ */
+@EntityJdbc
+@Table("${table_name}")
+data class ${entity_name}(
+    @field:Id val id: ${id_type}?,
+    val email: String,
+    val name: String,
+    val createdAt: LocalDateTime,
+    @field:Column("payload") val data: String? = null
+) {
+    /** Constructor for inserts where the database assigns the id. */
+    constructor(email: String, name: String) :
+        this(null, email, name, LocalDateTime.now(), null)
+}

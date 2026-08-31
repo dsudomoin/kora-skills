@@ -1,0 +1,63 @@
+package ${package}
+
+import io.koraframework.common.annotation.Component
+import java.time.Duration
+import java.time.Instant
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
+
+/**
+ * Single-flight, thread-safe store for one access token.
+ *
+ * Self-contained: no other generated file is required to compile this one.
+ *
+ * The fast path reads a volatile reference without locking. Only a caller that finds the token
+ * missing or inside the refresh margin takes the lock, and it re-checks after acquiring it, so a
+ * burst of concurrent requests produces exactly one token fetch.
+ *
+ * `getOrRefresh` is deliberately **not** `suspend`: it is called from a synchronous Kora contract
+ * that already runs on a virtual thread. Do not wrap it in `runBlocking` or `Dispatchers.IO`.
+ */
+@Component
+class TokenCache {
+
+    /** A token together with the absolute instant it stops being valid. */
+    data class Token(val value: String, val expiresAt: Instant) {
+
+        fun isFreshFor(margin: Duration): Boolean = Instant.now().plus(margin).isBefore(expiresAt)
+
+        companion object {
+            fun of(value: String, lifetime: Duration) = Token(value, Instant.now().plus(lifetime))
+        }
+    }
+
+    private val lock = ReentrantLock()
+
+    /** One volatile reference to an immutable value: token and expiry are published together. */
+    @Volatile
+    private var token: Token? = null
+
+    /**
+     * Returns the cached token, fetching a new one if it is missing or about to expire.
+     * The lambda must return the token *and* its real lifetime, taken from the authorization
+     * server's response — never an assumed one.
+     */
+    fun getOrRefresh(refresh: () -> Token): String {
+        token?.takeIf { it.isFreshFor(REFRESH_MARGIN) }?.let { return it.value }
+
+        return lock.withLock {
+            token?.takeIf { it.isFreshFor(REFRESH_MARGIN) }?.value
+                ?: refresh().also { token = it }.value
+        }
+    }
+
+    /** Drops the cached token so the next caller re-fetches. Call this after a 401. */
+    fun invalidate() {
+        token = null
+    }
+
+    private companion object {
+        /** Refresh this long before expiry so a token cannot expire while a request is in flight. */
+        val REFRESH_MARGIN: Duration = Duration.ofSeconds(60)
+    }
+}

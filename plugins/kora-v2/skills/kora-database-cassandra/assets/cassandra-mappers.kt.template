@@ -1,0 +1,118 @@
+package ${package}
+
+import com.datastax.oss.driver.api.core.cql.ResultSet
+import com.datastax.oss.driver.api.core.cql.Row
+import com.datastax.oss.driver.api.core.data.GettableByName
+import com.datastax.oss.driver.api.core.data.SettableByName
+import io.koraframework.common.annotation.Mapping
+import io.koraframework.database.cassandra.CassandraRepository
+import io.koraframework.database.cassandra.annotation.EntityCassandra
+import io.koraframework.database.cassandra.mapper.parameter.CassandraParameterColumnMapper
+import io.koraframework.database.cassandra.mapper.result.CassandraResultSetMapper
+import io.koraframework.database.cassandra.mapper.result.CassandraRowColumnMapper
+import io.koraframework.database.cassandra.mapper.result.CassandraRowMapper
+import io.koraframework.database.common.annotation.Column
+import io.koraframework.database.common.annotation.Query
+import io.koraframework.database.common.annotation.Repository
+
+/*
+ * TEMPLATE NOTES — delete this block after copying.
+ *
+ * DRIVER PACKAGES: Kora 2.0 resolves the driver from org.apache.cassandra:java-driver-core, but
+ * the Java packages are unchanged — com.datastax.oss.driver.api.* is CORRECT here.
+ *
+ * THE KOTLIN NULLABILITY TRAP. The mapper contracts are @NullMarked, so an override must match
+ * the declared nullability EXACTLY. CassandraParameterColumnMapper declares
+ *     void apply(SettableByName<?> stmt, int index, @Nullable T value)
+ * so the Kotlin override MUST take value: T?. With a non-null value: T the compiler reports
+ *     'apply' overrides nothing
+ * and never mentions nullability. The Java twin compiles either way, so a mechanically ported
+ * mapper fails only on the Kotlin side.
+ * Return types may be narrowed to non-null — apply(row: Row): T is fine even though the contract
+ * declares @Nullable T.
+ *
+ * NEVER write @field:Nullable or carry JSpecify annotations into Kotlin; nullability is the type.
+ *
+ * @Component OR NOT — decided by the constructor:
+ *   a class that is not open with a single no-arg constructor and an untagged @Mapping is
+ *       constructed by the generated repository itself; @Component is unnecessary (the migrated
+ *       Kora Kotlin example declares these mappers as plain top-level classes).
+ *   constructor dependencies, an open class, or a tagged @Mapping -> the mapper becomes a
+ *       constructor parameter and MUST be a @Component, or the build fails with
+ *       "No component found for dependency: ...".
+ * Declare AT MOST ONE component per mapper type; two give "Multiple components match dependency:".
+ */
+@Repository
+interface ${repository_name} : CassandraRepository {
+
+    @Query("SELECT * FROM ${table_name}")
+    fun findAll(): List<${entity_name}>
+
+    @Mapping(${entity_name}PartRowMapper::class)
+    @Query("SELECT id, field1 FROM ${table_name}")
+    fun findAllParts(): List<${entity_name}Part>
+
+    @Mapping(${entity_name}PartsResultSetMapper::class)
+    @Query("SELECT id, field1 FROM ${table_name}")
+    fun findAllPartsGrouped(): Map<Int, List<${entity_name}Part>>
+
+    @Query("UPDATE ${table_name} SET field1 = :fieldType WHERE id = :id")
+    fun updateFieldType(id: String, @Mapping(FieldTypeWriteMapper::class) fieldType: FieldType)
+}
+
+enum class FieldType(val code: Int) {
+    UNKNOWN(-10),
+    ONE(1),
+    TWO(2)
+}
+
+@EntityCassandra
+data class ${entity_name}(
+    val id: String,
+    @Mapping(FieldTypeReadMapper::class)
+    @Mapping(FieldTypeWriteMapper::class)
+    @field:Column("field1") val field1: FieldType,
+    val field2: String
+)
+
+// Projection mapped by a hand-written row mapper — no @EntityCassandra, no @Column needed.
+data class ${entity_name}Part(val id: String, val field1: Int)
+
+// Read one column: CQL int -> enum. Non-null return narrows the contract's @Nullable T — allowed.
+class FieldTypeReadMapper : CassandraRowColumnMapper<FieldType> {
+
+    override fun apply(row: GettableByName, index: Int): FieldType {
+        val code = row.getInt(index)
+        return FieldType.entries.firstOrNull { it.code == code } ?: FieldType.UNKNOWN
+    }
+}
+
+// Write one column: enum -> CQL int. value MUST be nullable or the override is not recognised.
+class FieldTypeWriteMapper : CassandraParameterColumnMapper<FieldType> {
+
+    override fun apply(stmt: SettableByName<*>, index: Int, value: FieldType?) {
+        if (value == null) {
+            stmt.setToNull(index)
+        } else {
+            stmt.setInt(index, value.code)
+        }
+    }
+}
+
+class ${entity_name}PartRowMapper : CassandraRowMapper<${entity_name}Part> {
+
+    override fun apply(row: Row): ${entity_name}Part =
+        ${entity_name}Part(row.getString(0)!!, row.getInt(1))
+}
+
+class ${entity_name}PartsResultSetMapper : CassandraResultSetMapper<Map<Int, List<${entity_name}Part>>> {
+
+    override fun apply(rows: ResultSet): Map<Int, List<${entity_name}Part>> {
+        val result = LinkedHashMap<Int, MutableList<${entity_name}Part>>()
+        for (row in rows.all()) {
+            val part = ${entity_name}Part(row.getString(0)!!, row.getInt(1))
+            result.computeIfAbsent(part.field1) { ArrayList() }.add(part)
+        }
+        return result
+    }
+}

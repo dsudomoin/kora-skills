@@ -1,0 +1,91 @@
+// Kora 2.0 resilience SPEC INTERFACES — start here.
+//
+// In Kora 2.0 a resilience annotation takes the Class of a spec interface, not a string name.
+// The spec interface carries the config path and IS the identity of the runtime instance.
+//
+// RULE: one spec interface per logical configuration name, shared by every class that uses it.
+//       Two interfaces on the same path are two INDEPENDENT instances with independent state.
+//
+// The annotation processor generates $<Spec>_Impl and $<Spec>_Module for each interface below.
+// Do NOT extend the generated module from @KoraApp — it is picked up automatically.
+//
+// Replace `com.example.app.resilience` with your package.
+
+package com.example.app.resilience;
+
+import io.koraframework.resilient.circuitbreaker.CircuitBreaker;
+import io.koraframework.resilient.circuitbreaker.annotation.CircuitBreakerSpec;
+import io.koraframework.resilient.ratelimiter.RateLimiter;
+import io.koraframework.resilient.ratelimiter.annotation.RateLimiterSpec;
+import io.koraframework.resilient.retry.Retry;
+import io.koraframework.resilient.retry.annotation.RetrySpec;
+import io.koraframework.resilient.timeout.Timeouter;
+import io.koraframework.resilient.timeout.annotation.TimeoutSpec;
+
+// ---------------------------------------------------------------- circuit breaker
+
+@CircuitBreakerSpec("resilient.circuitbreaker.payment")
+public interface PaymentCircuitBreaker extends CircuitBreaker {}
+
+// Optional: narrow what counts as a failure without a separate component.
+// A @Tag(PaymentCircuitBreaker.class) CircuitBreakerPredicate component overrides this.
+@CircuitBreakerSpec("resilient.circuitbreaker.catalog")
+interface CatalogCircuitBreaker extends CircuitBreaker {
+
+    @Override
+    default boolean isFailure(Throwable throwable) {
+        return !(throwable instanceof CatalogNotFoundException);
+    }
+}
+
+// ---------------------------------------------------------------- retry
+
+@RetrySpec("resilient.retry.payment")
+interface PaymentRetry extends Retry {}
+
+// ---------------------------------------------------------------- timeout
+
+// NOTE: the runtime contract is Timeouter, not Timeout (Timeout is the annotation).
+@TimeoutSpec("resilient.timeout.payment")
+interface PaymentTimeouter extends Timeouter {}
+
+// ---------------------------------------------------------------- rate limiter (new in 2.0)
+
+@RateLimiterSpec("resilient.ratelimiter.notifications")
+interface NotificationRateLimiter extends RateLimiter {}
+
+// ---------------------------------------------------------------- placeholder
+
+class CatalogNotFoundException extends RuntimeException {
+    CatalogNotFoundException(String id) {
+        super("Catalog entry not found: " + id);
+    }
+}
+
+// Matching configuration (application.conf):
+//
+// resilient {
+//   circuitbreaker {
+//     payment {
+//       type = FIXED_WINDOW              # default is STRIPED_APPROX
+//       countBased.windowSize = 50       # REQUIRED — was slidingWindowSize in Kora 1.x
+//       minimumRequiredCalls = 25        # REQUIRED — no default
+//       failureRateThreshold = 50        # REQUIRED — percent, 1..100
+//       waitDurationInOpenState = "25s"  # REQUIRED
+//       permittedCallsInHalfOpenState = 10  # REQUIRED
+//     }
+//     catalog {
+//       type = RING_BUFFER
+//       countBased.windowSize = 100
+//       minimumRequiredCalls = 20
+//       failureRateThreshold = 40
+//       waitDurationInOpenState = "10s"
+//       permittedCallsInHalfOpenState = 5
+//     }
+//   }
+//   retry.payment       { delay = "100ms", attempts = 3, delayStep = "100ms" }
+//   timeout.payment     { duration = "5s" }
+//   ratelimiter.notifications { limitForPeriod = 100, limitRefreshPeriod = "1s" }
+// }
+//
+// Named sections do NOT inherit `default` in Kora 2.0 — fill each one completely.

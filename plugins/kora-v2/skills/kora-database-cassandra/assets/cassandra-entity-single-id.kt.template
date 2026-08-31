@@ -1,0 +1,27 @@
+package ${package}
+
+import io.koraframework.database.cassandra.annotation.EntityCassandra
+import io.koraframework.database.common.annotation.Column
+import io.koraframework.database.common.annotation.Id
+import io.koraframework.database.common.annotation.Table
+
+/*
+ * TEMPLATE NOTES — delete this block after copying.
+ *
+ * @EntityCassandra  generates $<Entity>_CassandraRowMapper and the matching
+ *                   result-set mappers at compile time.
+ * @Table / @Id      consumed only by SQL macros. Hand-written CQL ignores both.
+ * @field:           required use-site target — KSP reads @Column/@Id/@Embedded off the
+ *                   property declaration, not off the constructor parameter.
+ * Nullability       is the Kotlin type (String?). Never carry JSpecify annotations into Kotlin.
+ *
+ * ${id_type}: String, UUID, Long, ... — must match the CQL partition key type.
+ */
+@EntityCassandra
+@Table("${table_name}")
+data class ${entity_name}(
+    @field:Id val id: ${id_type},
+    @field:Column("field1") val field1: String,
+    @field:Column("field2") val field2: String,
+    @field:Column("field3") val field3: String?
+)

@@ -1,0 +1,92 @@
+// @CircuitBreakable + a @Tag-bound CircuitBreakerPredicate (Kora 2.0).
+// Replace `com.example.app.resilience` with your package.
+
+package com.example.app.resilience;
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Tag;
+import io.koraframework.http.client.common.exception.HttpClientResponseException;
+import io.koraframework.resilient.circuitbreaker.CircuitBreaker;
+import io.koraframework.resilient.circuitbreaker.CircuitBreakerPredicate;
+import io.koraframework.resilient.circuitbreaker.annotation.CircuitBreakable;
+import io.koraframework.resilient.circuitbreaker.annotation.CircuitBreakerSpec;
+
+// The spec interface IS the circuit breaker's identity. Every class that must trip together
+// annotates with THIS class — never a per-class copy pointing at the same config path.
+@CircuitBreakerSpec("resilient.circuitbreaker.order")
+public interface OrderCircuitBreaker extends CircuitBreaker {}
+
+@Component
+class OrderClient {                                                     // NOT final
+
+    private final OrderHttpClient httpClient;
+
+    OrderClient(OrderHttpClient httpClient) {
+        this.httpClient = httpClient;
+    }
+
+    // Throws CallNotPermittedException while the breaker is OPEN, or HALF_OPEN with its
+    // probe budget already spent.
+    @CircuitBreakable(OrderCircuitBreaker.class)
+    public Order getOrder(String orderId) {
+        return httpClient.get(orderId);
+    }
+}
+
+// Same breaker, different class: the two share one window and one state.
+@Component
+class OrderAdminClient {
+
+    private final OrderHttpClient httpClient;
+
+    OrderAdminClient(OrderHttpClient httpClient) {
+        this.httpClient = httpClient;
+    }
+
+    @CircuitBreakable(OrderCircuitBreaker.class)
+    public Order forceReload(String orderId) {
+        return httpClient.get(orderId);
+    }
+}
+
+// Failure predicate. In Kora 2.0 this is a single-method interface bound by @Tag(<Spec>.class);
+// the 1.x name() + test(Throwable) pair and the `failurePredicateName` config key are both gone.
+// WITHOUT the @Tag the component is never found and the predicate silently does nothing.
+@Tag(OrderCircuitBreaker.class)
+@Component
+final class OrderFailurePredicate implements CircuitBreakerPredicate {
+
+    @Override
+    public boolean isCircuitBreakerFailure(Throwable throwable) {
+        if (throwable instanceof HttpClientResponseException e) {
+            return e.getCode() >= 500;   // 4xx are business errors, not an outage
+        }
+        return true;
+    }
+}
+
+// ---------------------------------------------------------------- placeholders
+
+record Order(String id, String customerId) {}
+
+@Component
+class OrderHttpClient {
+    Order get(String orderId) {
+        return new Order(orderId, "customer-1");
+    }
+}
+
+// Config (HOCON):
+//
+// resilient.circuitbreaker.order {
+//   type = FIXED_WINDOW                 # default STRIPED_APPROX (approximate statistics)
+//                                       # RING_BUFFER is the closest match to a 1.x sliding window
+//   countBased.windowSize = 50          # REQUIRED — was slidingWindowSize in Kora 1.x
+//   minimumRequiredCalls = 25           # REQUIRED
+//   failureRateThreshold = 30           # REQUIRED — percent, 1..100
+//   waitDurationInOpenState = "60s"     # REQUIRED
+//   permittedCallsInHalfOpenState = 5   # REQUIRED
+// }
+//
+// Omitting countBased is NOT a config error — the graph fails at startup with
+// IllegalArgumentException: CircuitBreaker 'OrderCircuitBreaker' property 'countBased' is not configured

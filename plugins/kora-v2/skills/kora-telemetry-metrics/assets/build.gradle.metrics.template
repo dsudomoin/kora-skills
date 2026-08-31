@@ -1,0 +1,77 @@
+// Kora 2.0 metrics dependencies (Java, Groovy DSL).
+// Merge into your existing build.gradle.
+//
+// Put the version in gradle.properties, not here:
+//     koraVersion=2.0.0.RC1
+// Kora 2.0 is published on Maven Central under the io.koraframework group; the 1.x
+// ru.tinkoff.kora coordinates and the kora-parent BOM no longer exist.
+// Kora 2.0 artifacts are built for Java 25 -- an older toolchain fails to read them.
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+// The BOM must reach every configuration that resolves Kora artifacts, including the
+// annotation processor path, or the processor is resolved without a version.
+configurations {
+    koraBom
+    annotationProcessor.extendsFrom(koraBom)
+    compileOnly.extendsFrom(koraBom)
+    implementation.extendsFrom(koraBom)
+    api.extendsFrom(koraBom)
+    testImplementation.extendsFrom(koraBom)
+    testAnnotationProcessor.extendsFrom(koraBom)
+}
+
+dependencies {
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+
+    // Mandatory: generates ApplicationGraph and the module wiring
+    annotationProcessor "io.koraframework:annotation-processors"
+
+    // Registers the PrometheusMeterRegistry, publishes MeterRegistry and MetricsScraper,
+    // and brings micrometer-registry-prometheus (1.17.0) plus the io.prometheus client
+    // (1.8.0) transitively. Do NOT add a registry artifact yourself.
+    implementation "io.koraframework:micrometer-module"
+
+    // Required for the /metrics endpoint: UndertowPublicHttpServerModule extends
+    // UndertowSystemHttpServerModule, which registers the MetricsHandler on the
+    // system server (httpServer.system, default port 8085).
+    implementation "io.koraframework:http-server-undertow"
+
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
+}
+
+/*
+Kotlin (build.gradle.kts) equivalent:
+
+    plugins {
+        kotlin("jvm") version "2.4.10"
+        id("com.google.devtools.ksp") version "2.3.11"
+    }
+
+    repositories { mavenCentral() }
+
+    kotlin { jvmToolchain(25) }
+
+    dependencies {
+        implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+        ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
+
+        implementation("io.koraframework:micrometer-module")
+        implementation("io.koraframework:http-server-undertow")
+        implementation("io.koraframework:config-hocon")
+        implementation("io.koraframework:logging-logback")
+    }
+
+Adding the dependencies is only half the job -- component metrics stay off until
+application.conf sets telemetry.metrics.enabled = true per component. See
+application.metrics.conf.template.
+*/

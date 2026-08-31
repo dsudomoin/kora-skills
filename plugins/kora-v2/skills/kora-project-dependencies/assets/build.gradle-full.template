@@ -1,0 +1,116 @@
+// Kora 2.0 full-featured service - build.gradle template.
+// Enable only the modules you actually use; uncomment the rest as needed.
+
+plugins {
+    id "java"
+    id "application"
+}
+
+repositories {
+    mavenCentral()
+    // io.koraframework:kora-bom:2.0.0.RC1 is on Maven Central; nothing else is needed.
+    // Only the 2.0.0-SNAPSHOT development line also needs:
+    // maven { url = "https://central.sonatype.com/repository/maven-snapshots" }
+}
+
+java {
+    toolchain {
+        // Kora 2.0 artifacts are built at JVM 25 - 25 is the floor.
+        // The migration guides recommend the latest GA feature release; re-derive it rather than
+        // copying this number. Gradle ITSELF must also run on 25+ when openapi-generator is on the
+        // buildscript classpath.
+        languageVersion = JavaLanguageVersion.of(25)
+        vendor = JvmVendorSpec.ADOPTIUM
+    }
+}
+
+configurations {
+    koraBom
+    annotationProcessor.extendsFrom(koraBom)
+    compileOnly.extendsFrom(koraBom)
+    implementation.extendsFrom(koraBom)
+    api.extendsFrom(koraBom)
+    testImplementation.extendsFrom(koraBom)
+    testAnnotationProcessor.extendsFrom(koraBom)
+}
+
+dependencies {
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+    annotationProcessor "io.koraframework:annotation-processors"
+
+    // Core modules (always needed)
+    implementation "io.koraframework:logging-logback"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:json-common"
+
+    // HTTP server. Extending UndertowPublicHttpServerModule also gives the system server
+    // (metrics / readiness / liveness) on httpServer.system.
+    implementation "io.koraframework:http-server-undertow"
+
+    // HTTP client (outbound calls) - pick one transport
+    implementation "io.koraframework:http-client-ok"
+    // implementation "io.koraframework:http-client-jdk"
+    // implementation "io.koraframework:http-client-apache"
+
+    // Database (JDBC). Config section is `jdbc`. Transactions are part of database-jdbc.
+    implementation "io.koraframework:database-jdbc"
+    implementation "org.postgresql:postgresql:42.7.7"   // JDBC driver (external version)
+    // implementation "io.koraframework:database-flyway"
+    // implementation "org.flywaydb:flyway-database-postgresql:13.1.0"  // dialect - flyway ships core only
+    // implementation "io.koraframework:database-liquibase"
+    // implementation "io.koraframework:database-cassandra"
+
+    // Messaging
+    implementation "io.koraframework:kafka"
+    // implementation "io.koraframework:jms"
+
+    // Telemetry. Metrics are OFF by default - enable per component in the config.
+    implementation "io.koraframework:micrometer-module"
+    // implementation "io.koraframework:opentelemetry-tracing-exporter-grpc"
+    // implementation "io.koraframework:opentelemetry-tracing-exporter-http"
+
+    // AOP
+    // implementation "io.koraframework:resilient-kora"    // @CircuitBreakable, @Retryable, @Timeout, @RateLimited, @Fallback
+    // implementation "io.koraframework:validation-module" // @Valid, @Validate
+    // implementation "io.koraframework:scheduling-jdk"    // @ScheduleAtFixedRate, @ScheduleWithFixedDelay, @ScheduleOnce
+    // implementation "io.koraframework:scheduling-quartz" // @ScheduleWithCron, @ScheduleWithTrigger
+    // implementation "io.koraframework:cache-caffeine"    // in-process cache
+    // implementation "io.koraframework:cache-redis-lettuce" // distributed cache (cache-redis-common alone has no client)
+
+    // gRPC
+    // implementation "io.koraframework:grpc-server"
+    // implementation "io.koraframework:grpc-client"
+
+    // OpenAPI spec + Swagger UI / Scalar
+    // implementation "io.koraframework:openapi-management"
+
+    // S3 - two different artifacts in two different groups, pick one
+    // implementation "io.koraframework:s3-client-aws"                // AWS SDK wrapper, NOT experimental
+    // implementation "io.koraframework.experimental:s3-client-kora"  // declarative @S3 client
+
+    // Testing. test-junit5 declares Mockito/MockK compileOnly - bring your own.
+    testAnnotationProcessor "io.koraframework:annotation-processors"
+    testImplementation "io.koraframework:test-junit5"
+    // testImplementation "org.mockito:mockito-core:5.23.0"
+    // testImplementation "org.testcontainers:junit-jupiter:1.21.4"
+}
+
+application {
+    applicationName = "application"
+    mainClass = "${packagePath}.Application"
+    applicationDefaultJvmArgs = ["-Dfile.encoding=UTF-8"]
+}
+
+compileJava {
+    options.encoding = "UTF-8"
+    options.incremental = true
+    options.fork = false
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events "passed", "skipped", "failed"
+        showStandardStreams = true
+    }
+}

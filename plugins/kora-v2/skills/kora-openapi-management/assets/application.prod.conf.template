@@ -1,0 +1,32 @@
+# Production profile - raw document stays available for tooling, interactive viewers are off.
+
+openapi {
+  management {
+    files = [
+      "openapi/api-v1.yaml",
+      "openapi/api-v2.yaml"
+    ]
+    enabled = true
+    path = "/openapi"
+
+    # Both viewers off by default here; flip either one on per environment without a redeploy.
+    swaggerui {
+      enabled = false
+      enabled = ${?SWAGGER_UI_ENABLED}
+    }
+
+    scalar {
+      enabled = false
+      enabled = ${?SCALAR_ENABLED}
+    }
+  }
+}
+
+# To keep a viewer enabled in production, gate the routes instead: register the interceptor from
+# SwaggerUiSecurityInterceptor.java.template (@Tag(HttpServer.class), NOT @Tag(HttpServerModule.class),
+# which compiles and silently never runs).
+
+httpServer {
+  telemetry.logging.enabled = false
+  telemetry.metrics.enabled = true
+}

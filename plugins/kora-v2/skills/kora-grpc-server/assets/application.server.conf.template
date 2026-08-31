@@ -1,0 +1,48 @@
+grpcServer {
+    # Default 8090. The literal is the fallback; the ${?VAR} line overrides it when set.
+    port = 8090
+    port = ${?GRPC_PORT}
+
+    maxMessageSize = "4MiB"          # default 4MiB
+    reflectionEnabled = false        # default false; ALSO needs io.grpc:grpc-services on the classpath,
+                                     # otherwise the flag is ignored without any warning
+    reflectionEnabled = ${?GRPC_REFLECTION_ENABLED}
+
+    shutdownWait = "30s"             # default 30s
+
+    # maxConnectionAge, maxConnectionAgeGrace, keepAliveTime and keepAliveTimeout have NO default
+    # and are applied only when present. "0s" is a literal zero duration, not "unlimited" —
+    # omit the key instead of writing "0s".
+    # maxConnectionAge = "30m"
+    # maxConnectionAgeGrace = "10s"
+    # keepAliveTime = "1m"
+    # keepAliveTimeout = "20s"
+
+    telemetry {
+        logging {
+            enabled = true           # DEFAULT false in Kora 2.0 — must be set explicitly
+        }
+        metrics {
+            enabled = true           # DEFAULT false in Kora 2.0 — must be set explicitly.
+                                     # Also requires io.koraframework:micrometer-module in the graph.
+            slo = [ 1, 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000, 90000 ]
+            # tags { "service" = "${service_name}" }
+        }
+        tracing {
+            enabled = true           # default true (requires io.koraframework:opentelemetry-tracing)
+            # attributes { "deployment.environment" = "prod" }
+        }
+    }
+}
+
+logging {
+    levels {
+        "ROOT" = "WARN"
+        "io.koraframework" = "INFO"
+        "${package}" = "INFO"
+
+        # DEBUG adds request headers; TRACE adds protobuf bodies to the logs.
+        # "io.koraframework.grpc.server.GrpcServer.request" = "DEBUG"
+        # "io.koraframework.grpc.server.GrpcServer.response" = "DEBUG"
+    }
+}

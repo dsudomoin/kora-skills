@@ -1,0 +1,396 @@
+{
+  "evals": [
+    {
+      "id": "kora-teacher-first-session",
+      "skills": [
+        "kora-teacher"
+      ],
+      "query": "I'm brand new to Kora and to compile-time DI frameworks. Teach me from scratch.",
+      "expected_behavior": [
+        "Asks whether the learner is on Java or Kotlin, and whether they are coming from Kora 1.x, before choosing a starting point",
+        "Checks the environment first: JDK 25 or newer on the PATH and running Gradle, Gradle 9.x wrapper",
+        "Grounds the session on the Kora 2.0 refs (framework source at tag 2.0.0.RC1 and kora-examples at branch migration/2.0) per R0, or says explicitly that it could not and is therefore teaching unverified",
+        "Starts from the smallest runnable service - the getting-started guide app - rather than an arbitrary topic",
+        "Teaches @KoraApp on an interface, the generated ApplicationGraph named after that interface, KoraApplication.run(ApplicationGraph::graph), and constructor-only injection",
+        "Has the learner compile with ./gradlew clean classes and open build/generated to see what was generated",
+        "Does not teach Kora through Spring/Micronaut/Quarkus analogies and does not invent behaviour"
+      ],
+      "anti_behavior": [
+        "Tells the learner to clone kora-docs, or points them at kora-projects.github.io/kora-docs, as the source of Kora 2.0 answers",
+        "Uses ru.tinkoff.kora imports, the kora-parent BOM, or a 1.x version",
+        "States Java 21 (or anything below 25) is enough for a Kora 2.0 project"
+      ],
+      "tags": [
+        "teacher",
+        "onboarding",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-teacher-docs-site-regression",
+      "skills": [
+        "kora-teacher"
+      ],
+      "query": "Where's the official Kora 2.0 documentation? Just give me the link so I can read it myself this weekend.",
+      "expected_behavior": [
+        "States plainly that Kora 2.0 has no documentation site of its own",
+        "Explains that kora-docs describes Kora 1.x on every branch, including feature/kora-2.0 whose docs/v2 is a byte-identical copy of the 1.x pages",
+        "Points the learner at the framework source at tag 2.0.0.RC1 (github.com/kora-projects/kora/tree/2.0.0.RC1) and the migrated examples at kora-examples branch migration/2.0 instead",
+        "Warns that even in the migrated examples the per-app README prose still links to the 1.x site and names removed modules, so the code and build files are the thing to read",
+        "Offers kora-docs only as explicitly-labelled 1.x conceptual background, if at all"
+      ],
+      "anti_behavior": [
+        "Hands over a kora-docs URL as the Kora 2.0 documentation",
+        "Claims a v2 section of the documentation site exists and is current",
+        "Says the documentation is 'mostly still accurate' for 2.0"
+      ],
+      "tags": [
+        "teacher",
+        "grounding",
+        "regression-docs-site"
+      ]
+    },
+    {
+      "id": "kora-teacher-kotlin-suspend-regression",
+      "skills": [
+        "kora-teacher"
+      ],
+      "query": "I'm learning Kora with Kotlin. Show me the idiomatic way to write a repository method and a controller handler that calls it - I assume everything should be suspend and I should wrap the DB call in Dispatchers.IO?",
+      "expected_behavior": [
+        "Corrects the premise: Kora 2.0 contracts are synchronous, executed on virtual threads, so a plain non-suspending function is the idiomatic form",
+        "States that suspend repositories, controllers and HTTP clients are not Kora 2.0 contracts at all",
+        "Explains that wrapping a Kora call in withContext(Dispatchers.IO) is pointless overhead on a virtual thread",
+        "Shows a plain blocking Kotlin repository method and controller handler with io.koraframework imports",
+        "If parallel fan-out comes up, points at Java StructuredTaskScope and states the rule of using the preview iteration of the chosen latest GA JDK rather than a copied signature"
+      ],
+      "anti_behavior": [
+        "Writes suspend fun on a @Repository, @HttpController or @HttpClient method",
+        "Recommends withContext(Dispatchers.IO) or runBlocking around Kora calls",
+        "Presents Mono/Flux or CompletionStage as a Kora 2.0 return type",
+        "Presents a StructuredTaskScope signature as fixed without naming the JDK it belongs to"
+      ],
+      "tags": [
+        "teacher",
+        "kotlin",
+        "regression-execution-model"
+      ]
+    },
+    {
+      "id": "kora-teacher-context-regression",
+      "skills": [
+        "kora-teacher"
+      ],
+      "query": "In my old Kora service I carried a correlation id and the tenant through Kora's Context so every layer could read it. Teach me how to do that in Kora 2.0.",
+      "expected_behavior": [
+        "States that Kora's Context no longer exists anywhere in the framework - removed, not moved or renamed",
+        "Says the pattern must be redesigned rather than mechanically ported",
+        "Recommends passing the value explicitly as a parameter as the default answer, and explains why that is cheap on virtual threads and fits the compile-time model",
+        "Names JDK ScopedValue as the primitive that replaced Context inside the framework, citing io.koraframework.common.Principal (ScopedValue<Principal> VALUE, Principal.current(), Principal.with(...)) and the same idiom for MDC and telemetry",
+        "States the ScopedValue lifetime: the binding lasts exactly as long as the call it wraps (chain.process(request)), is visible on the request thread and on StructuredTaskScope forks inside that scope, and is not visible on an arbitrary executor",
+        "For genuinely ambient concerns, points at the mechanism that owns them - MDC via kora-aop-logging for log correlation, or an HttpServerInterceptor that sets and clears state around chain.process(request)",
+        "For an authenticated principal, points at HttpServerPrincipalExtractor and kora-http-server-auth rather than rebuilding a context object"
+      ],
+      "anti_behavior": [
+        "Shows an import of a Kora Context type in any package",
+        "Claims Context merely moved to io.koraframework.common or was renamed",
+        "Proposes a ThreadLocal holder as the lesson's answer without stating what it costs, or presents ThreadLocal rather than ScopedValue as the 2.0 replacement for ambient state",
+        "Claims a ScopedValue binding is visible to work submitted to an arbitrary executor"
+      ],
+      "tags": [
+        "teacher",
+        "concepts",
+        "regression-context"
+      ]
+    },
+    {
+      "id": "kora-teacher-compiles-is-not-correct",
+      "skills": [
+        "kora-teacher"
+      ],
+      "query": "My Kora 2.0 service builds green with ./gradlew clean build. That means it's correct, right? What else is there to check before I call this lesson done?",
+      "expected_behavior": [
+        "Rejects the premise directly: in Kora 2.0 compilation is necessary but not sufficient",
+        "Names concrete silent failures - @Tag(HttpServerModule.class) on a global interceptor compiles but is never invoked; stale 1.x port keys are ignored without warning so the service listens on 8080/8085; telemetry metrics and logging are off by default; a tracing exporter with no endpoint exports nothing while tracing.enabled defaults to true",
+        "States that for anything on that list the acceptance criterion is a test or an observed response, never a successful build",
+        "Proposes a concrete exercise the learner can run, such as setting a stale port key and observing that the service answers on the default port instead",
+        "Points at @KoraAppTest / black-box testing as the tool for proving these"
+      ],
+      "anti_behavior": [
+        "Confirms that a green build means the service is correct",
+        "Lists only compile-time errors as the things that can go wrong",
+        "Claims stale port keys cause a loud 'Address already in use' failure as the normal symptom"
+      ],
+      "tags": [
+        "teacher",
+        "silent-failures",
+        "regression-green-build"
+      ]
+    },
+    {
+      "id": "kora-teacher-explain-korapp-graph",
+      "skills": [
+        "kora-teacher"
+      ],
+      "query": "Explain how @KoraApp and Module interfaces build the application graph.",
+      "expected_behavior": [
+        "Explains that @KoraApp goes on an interface whose extends clause names the modules the application is composed of",
+        "Names io.koraframework.common.annotation as the package for @KoraApp, @Component, @Module, @Root, @Tag",
+        "States that the graph class is generated at compile time and named after the interface (Application -> ApplicationGraph), and does not exist before the first ./gradlew classes",
+        "Explains the entry point KoraApplication.run(ApplicationGraph::graph), which takes a Supplier<ApplicationGraphDraw>",
+        "Explains that no reflection, classpath scanning or dynamic proxying is involved, and invites the learner to read build/generated to confirm",
+        "Points at a runnable companion app (getting-started guide app or kora-java-helloworld) and hands off to kora-di-compile for depth"
+      ],
+      "anti_behavior": [
+        "Puts @KoraApp on a class",
+        "Describes runtime component scanning or a runtime container",
+        "Uses ru.tinkoff.kora package names"
+      ],
+      "tags": [
+        "teacher",
+        "concepts",
+        "di"
+      ]
+    },
+    {
+      "id": "kora-teacher-first-endpoint-walkthrough",
+      "skills": [
+        "kora-teacher"
+      ],
+      "query": "Walk me through building a first HTTP server endpoint in Kora, explaining every line.",
+      "expected_behavior": [
+        "Follows the getting-started or http-server guide app rather than improvising a shape",
+        "Explains @Component, @HttpController and @HttpRoute as each is introduced, with correct packages: @HttpRoute/@Path/@Query from io.koraframework.http.common.annotation, @HttpController and the response types from io.koraframework.http.server.common.*",
+        "Shows a working return - HttpServerResponse.of(200, HttpBody.plaintext(...)) or a @Json record - and notes that UndertowPublicHttpServerModule must be in the @KoraApp extends clause",
+        "Has the learner run ./gradlew clean classes and look at the generated <Controller>Module",
+        "Suggests deliberately breaking it (removing the module from the extends clause) and reading the compile-time graph error together",
+        "Hands off to kora-http-server for anything beyond the lesson"
+      ],
+      "anti_behavior": [
+        "Returns Mono, Flux, CompletableFuture, or declares the handler suspend",
+        "Imports Spring or Jakarta REST annotations",
+        "Uses ru.tinkoff.kora imports or the 1.x UndertowHttpServerModule name without flagging it as 1.x"
+      ],
+      "tags": [
+        "teacher",
+        "walkthrough",
+        "http"
+      ]
+    },
+    {
+      "id": "kora-teacher-curriculum-companion-apps",
+      "skills": [
+        "kora-teacher"
+      ],
+      "query": "Give me a 5-week plan for learning Kora with a runnable project at every step. I'm on Java.",
+      "expected_behavior": [
+        "Lays out an ordered path starting with getting-started, then dependency injection, then config, then JSON/HTTP, then database and testing",
+        "Names real companion apps from kora-examples branch migration/2.0, using the actual directory shapes guides/java/kora-java-guide-<name>-app and examples/java/kora-java-<name>",
+        "Places testing early enough that the learner can prove the silent-failure cases, rather than at the very end",
+        "Notes which topics have no guide app (scheduling, SOAP) and points at the plain examples for those instead of inventing a guide app name",
+        "Offers to record progress in ~/.kora-teacher-progress.md and to read it back at the start of the next session"
+      ],
+      "anti_behavior": [
+        "Invents companion apps that do not exist, such as kora-java-guide-scheduling-app or kora-java-guide-di-app",
+        "Builds the plan around kora-docs guide markdown files as the primary material",
+        "Includes removed integrations (R2DBC, Vert.x SQL, MinIO S3 client) as learning stops"
+      ],
+      "tags": [
+        "teacher",
+        "curriculum",
+        "planning"
+      ]
+    },
+    {
+      "id": "kora-teacher-coordinates-and-jdk",
+      "skills": [
+        "kora-teacher"
+      ],
+      "query": "What do I need installed and what goes in build.gradle before my first Kora lesson?",
+      "expected_behavior": [
+        "Requires JDK 25 or newer, and states that the JVM running Gradle itself must also be 25+ because io.koraframework:openapi-generator resolves on the buildscript classpath",
+        "Uses the platform \"io.koraframework:kora-bom:$koraVersion\" with koraVersion=2.0.0.RC1 from mavenCentral()",
+        "Java: annotationProcessor \"io.koraframework:annotation-processors\". Kotlin: ksp \"io.koraframework:symbol-processors\" with Kotlin 2.4.10 and KSP 2.3.11",
+        "Names Gradle 9.x (the examples pin the 9.5.1 wrapper)",
+        "Explains that Java 25 is a hard floor because the artifacts are class-file major version 69"
+      ],
+      "anti_behavior": [
+        "Uses ru.tinkoff.kora:kora-parent or any ru.tinkoff.kora coordinate",
+        "Pins 2.0.0-SNAPSHOT or 2.0.0.alpha6 for a new project",
+        "Says Kotlin learners can stay on JDK 21",
+        "Tells the learner to add --enable-preview as a blanket Kora requirement"
+      ],
+      "tags": [
+        "teacher",
+        "setup",
+        "regression-coordinates"
+      ]
+    },
+    {
+      "id": "kora-teacher-generated-code-lesson",
+      "skills": [
+        "kora-teacher"
+      ],
+      "query": "You keep saying Kora generates everything at compile time. Show me where to actually look.",
+      "expected_behavior": [
+        "Names the output directories: build/generated/sources/annotationProcessor/ for Java and build/generated/ksp/ for Kotlin",
+        "Gives concrete generated names to look for - <App>Graph for @KoraApp, $Type_JsonReader / $Type_JsonWriter for @Json, $Repository_Impl for @Repository, <Controller>Module for @HttpController",
+        "Tells the learner to run ./gradlew clean classes first, because nothing exists before the processors run",
+        "States that generated code must never be edited as a fix - regenerate instead",
+        "Mentions that stale generated output is the cause of phantom ru.tinkoff.kora errors, fixed by clean plus --no-build-cache"
+      ],
+      "anti_behavior": [
+        "Suggests editing generated sources to fix a problem",
+        "Claims the wiring happens at runtime via reflection or a runtime container"
+      ],
+      "tags": [
+        "teacher",
+        "concepts",
+        "generated-code"
+      ]
+    },
+    {
+      "id": "kora-teacher-validation-not-jsr380",
+      "skills": [
+        "kora-teacher"
+      ],
+      "query": "Teach me validation in Kora. I already know Bean Validation, so I'll just use the jakarta.validation annotations, right?",
+      "expected_behavior": [
+        "Corrects the assumption: Kora validation is Kora's own, in io.koraframework.validation.common.annotation, and is not Jakarta Bean Validation / JSR-380",
+        "States that a jakarta.validation annotation is simply ignored by Kora - nothing in the framework reads it",
+        "Names real Kora constraints such as @NotBlank, @NotEmpty, @Pattern, @Range, @Size, @Min, @Max, @Positive, @Past, @Future, @OneOf, @Url, @UUID",
+        "Explains @Valid on a type (generates a Validator<T>) versus @Validate on a method",
+        "Points at the validation guide app as the runnable companion and hands off to kora-aop-validation"
+      ],
+      "anti_behavior": [
+        "Imports jakarta.validation.constraints.* as the way to validate in Kora",
+        "Calls Kora validation an implementation of JSR-380",
+        "Uses ru.tinkoff.kora.validation package names"
+      ],
+      "tags": [
+        "teacher",
+        "validation",
+        "regression-jsr380"
+      ]
+    },
+    {
+      "id": "kora-teacher-transactions",
+      "skills": [
+        "kora-teacher"
+      ],
+      "query": "Next lesson: database. How do I run two writes in one transaction in Kora 2.0?",
+      "expected_behavior": [
+        "Teaches executor().inTx(...) on the repository's JDBC executor as the way to run a transaction",
+        "States clearly that Kora 2.0 has no @Transaction annotation",
+        "Notes the config section is jdbc, not db, and names the symptom of getting it wrong (ConfigValueException at path ROOT.jdbc.username)",
+        "Mentions that repository contracts are synchronous - there is no reactive or suspend variant to reach for",
+        "For Kotlin, notes that inTx needs an explicit SAM constructor such as JdbcExecutor.SqlSupplier { ... }",
+        "Points at the database-jdbc guide app and hands off to kora-database-jdbc"
+      ],
+      "anti_behavior": [
+        "Introduces an @Transaction or @Transactional annotation",
+        "Uses getJdbcConnectionFactory() instead of executor()",
+        "Suggests R2DBC or a reactive transaction API"
+      ],
+      "tags": [
+        "teacher",
+        "database",
+        "regression-transactions"
+      ]
+    },
+    {
+      "id": "kora-teacher-telemetry-defaults",
+      "skills": [
+        "kora-teacher"
+      ],
+      "query": "I followed the observability lesson, hit /metrics, and I only see JVM metrics. Did I break something?",
+      "expected_behavior": [
+        "Explains that component metrics and logging are disabled by default in Kora 2.0 while tracing is enabled, so nothing is broken",
+        "Shows enabling them per component, e.g. httpServer { telemetry.logging.enabled = true; telemetry.metrics.enabled = true }",
+        "Points at the observability guide app, whose own application.conf enables metrics explicitly for exactly this reason",
+        "Notes the system server exposes metrics and probes under httpServer.system with metricsPath / readinessPath / livenessPath",
+        "Uses this as a teaching moment for the wider rule that a green build proves nothing about telemetry"
+      ],
+      "anti_behavior": [
+        "Claims metrics are on by default and the learner must have misconfigured something",
+        "Uses the 1.x privateApiHttpMetricsPath key",
+        "Suggests adding a third-party metrics library instead of enabling the Kora telemetry switch"
+      ],
+      "tags": [
+        "teacher",
+        "telemetry",
+        "regression-telemetry-defaults"
+      ]
+    },
+    {
+      "id": "kora-teacher-interceptor-tag-lesson",
+      "skills": [
+        "kora-teacher"
+      ],
+      "query": "Teach me global error handling for my Kora HTTP endpoints. In the project I copied from, the handler is tagged @Tag(HttpServerModule.class) but it never seems to run.",
+      "expected_behavior": [
+        "Identifies the cause: 2.0 collects global interceptors by @Tag(HttpServer.class) from io.koraframework.http.server.common; HttpServerModule still exists so the 1.x tag compiles and is simply never looked up",
+        "Shows a correct handler: @Tag(HttpServer.class) @Component implementing HttpServerInterceptor with HttpServerResponse intercept(HttpServerRequest request, InterceptChain chain)",
+        "Uses this as the canonical example of a Kora 2.0 mistake that compiles cleanly and fails silently",
+        "Insists on a test that proves the interceptor fires, not just a successful build",
+        "Points at the http-server-advanced guide app and hands off to kora-http-server"
+      ],
+      "anti_behavior": [
+        "Leaves @Tag(HttpServerModule.class) in place or calls it merely deprecated",
+        "Claims the build would have failed if the tag were wrong",
+        "Uses @InterceptWith when the learner asked for a global interceptor, without explaining the difference"
+      ],
+      "tags": [
+        "teacher",
+        "http",
+        "regression-interceptor-tag"
+      ]
+    },
+    {
+      "id": "kora-teacher-progress-and-handoff",
+      "skills": [
+        "kora-teacher"
+      ],
+      "query": "We finished the DI and config lessons last week. Pick up where we left off, and by the way I now need to add real Kafka consumers to my actual service.",
+      "expected_behavior": [
+        "Reads ~/.kora-teacher-progress.md to recover where the learner stopped, and updates it at the end of the session",
+        "Resumes at the next curriculum stop rather than restarting",
+        "Separates the two requests: continues teaching, and for the production Kafka work hands off to kora-kafka-consumer rather than improvising a lesson",
+        "Names the handoff explicitly so the learner learns the map of sub-skills too",
+        "Offers a project-local ./.kora-teacher-progress.md instead if the learner prefers, confirming it is git-ignored first"
+      ],
+      "anti_behavior": [
+        "Invents progress the learner never reported",
+        "Teaches production Kafka code from memory instead of routing to the domain sub-skill",
+        "Renames or relocates the progress file without saying so"
+      ],
+      "tags": [
+        "teacher",
+        "session-management",
+        "handoff"
+      ]
+    },
+    {
+      "id": "kora-teacher-skip-ahead",
+      "skills": [
+        "kora-teacher"
+      ],
+      "query": "Skip the dependency injection stuff, it's boring. Just get me straight to writing REST endpoints.",
+      "expected_behavior": [
+        "States concretely what they will hit without it - 'No component found for dependency' and 'Multiple components match' are the errors they will meet most often, and both are sentences about the graph",
+        "Offers the choice rather than refusing outright, with a short time estimate for the prerequisite",
+        "If the learner still wants to skip, proceeds with the HTTP stop and flags the DI concepts inline as they appear",
+        "Keeps the code correct regardless: @Component, constructor injection, correct io.koraframework packages"
+      ],
+      "anti_behavior": [
+        "Flatly refuses to continue until the learner does the prerequisite",
+        "Skips ahead silently without saying what was skipped or what it will cost",
+        "Drops correctness to move faster - field injection, invented annotations, or 1.x imports"
+      ],
+      "tags": [
+        "teacher",
+        "pedagogy",
+        "session-management"
+      ]
+    }
+  ]
+}

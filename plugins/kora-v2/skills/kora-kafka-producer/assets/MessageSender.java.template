@@ -1,0 +1,56 @@
+package ${packagePath}.service;
+
+import org.apache.kafka.common.errors.SerializationException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Root;
+import io.koraframework.kafka.common.exceptions.KafkaPublishException;
+import ${packagePath}.publisher.MessagePublisher;
+
+// Error handling around Kora Kafka sends.
+//
+// Blocking signatures (void, RecordMetadata) throw:
+//   - SerializationException  — the payload never reached the producer, nothing was sent
+//   - KafkaPublishException   — the broker or transport failed; the real cause is getCause()
+// Future/CompletionStage signatures throw neither: the failure lands on the returned handle.
+//
+// @Root because Kora prunes every graph node no root depends on, and in this template set
+// nothing depends on this class. In a real service the root is the @HttpController or
+// @KafkaListener that calls it, and this class is a plain @Component. Without a root in the
+// chain the publisher is never instantiated, and @KoraAppTest fails with
+// "No matching component was found in the application graph" — @KoraAppTest(components = ...)
+// does not bring a pruned node back.
+@Root
+@Component
+public final class MessageSender {
+
+    private static final Logger log = LoggerFactory.getLogger(MessageSender.class);
+
+    private final MessagePublisher publisher;
+
+    public MessageSender(MessagePublisher publisher) {
+        this.publisher = publisher;
+    }
+
+    public void send(String event) {
+        try {
+            publisher.send(event);
+        } catch (SerializationException e) {
+            log.error("Cannot serialize event, dropping it", e);
+            throw e;
+        } catch (KafkaPublishException e) {
+            log.error("Publish failed", e.getCause());
+            throw e;
+        }
+    }
+
+    public void sendAsync(String event) {
+        publisher.sendStage(event)
+            .thenAccept(meta -> log.info("Sent to {}-{}@{}", meta.topic(), meta.partition(), meta.offset()))
+            .exceptionally(e -> {
+                log.error("Publish failed", e);
+                return null;
+            });
+    }
+}

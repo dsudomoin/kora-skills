@@ -1,0 +1,44 @@
+package com.example.interceptor;
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Tag;
+import io.koraframework.http.server.common.HttpServer;
+import io.koraframework.http.server.common.interceptor.HttpServerInterceptor;
+import io.koraframework.http.server.common.request.HttpServerRequest;
+import io.koraframework.http.server.common.response.HttpServerResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * Server-scoped request logging interceptor — Kora 2.0.
+ *
+ * - @Tag(HttpServer.class) is what makes it server-scoped. The 1.x tag
+ *   @Tag(HttpServerModule.class) still COMPILES but is collected by nothing, so the
+ *   interceptor is pruned from the graph and silently never runs. An untagged
+ *   @Component interceptor is dropped the same way.
+ * - Any number of server-scoped interceptors may be registered. They run ordered by
+ *   class simple name, not by declaration order.
+ * - Does not apply to the system server (probes, metrics) — that router collects
+ *   @Tag(SystemApi.class) interceptors, not @Tag(HttpServer.class) ones.
+ * - intercept() is synchronous and declares `throws Exception`, so try/finally works.
+ */
+@Tag(HttpServer.class)
+@Component
+public final class LoggingInterceptor implements HttpServerInterceptor {
+
+    private static final Logger log = LoggerFactory.getLogger(LoggingInterceptor.class);
+
+    @Override
+    public HttpServerResponse intercept(HttpServerRequest request, InterceptChain chain) throws Exception {
+        long started = System.nanoTime();
+        int code = 500;
+        try {
+            HttpServerResponse response = chain.process(request);
+            code = response.code();
+            return response;
+        } finally {
+            log.info("{} {} -> {} ({} ms)",
+                    request.method(), request.path(), code, (System.nanoTime() - started) / 1_000_000);
+        }
+    }
+}

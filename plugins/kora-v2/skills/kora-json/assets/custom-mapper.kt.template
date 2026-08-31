@@ -1,0 +1,86 @@
+package ${package}
+
+import io.koraframework.common.annotation.Module
+import io.koraframework.json.common.JsonReader
+import io.koraframework.json.common.JsonWriter
+import tools.jackson.core.JsonGenerator
+import tools.jackson.core.JsonParser
+import tools.jackson.core.JsonToken
+import tools.jackson.core.exc.StreamReadException
+${imports}
+
+/**
+ * Custom JSON mappers for `${type_name}`.
+ *
+ * Supply a `JsonReader<T>` / `JsonWriter<T>` component when the type cannot carry `@Json`
+ * itself: third-party classes, a non-standard wire format for a built-in type, or your own
+ * value types.
+ *
+ * A plain factory method is an ordinary component and **wins** over the `@DefaultComponent`
+ * factories in `JsonModule` — that is how a built-in mapper is replaced. Add
+ * `@DefaultComponent` only to make your own mapper overridable in turn.
+ *
+ * Wire it in:
+ * ```
+ * @KoraApp
+ * interface Application : JsonModule, ${mapper_module_name}
+ * ```
+ *
+ * Kora 2.0 runs on Jackson 3 (`tools.jackson.core`). Name and value are written as two calls
+ * — `writeName("x")` then `writeString(...)`; strings are read with `getString()` /
+ * `valueAsString`, not `getText()`.
+ */
+@Module
+interface ${mapper_module_name} {
+
+    /**
+     * Reader for `${type_name}`. Returns `null` for `JsonToken.VALUE_NULL` — that is how
+     * every built-in reader behaves and how nullable properties decode.
+     */
+    fun ${reader_method_name}(): JsonReader<${type_name}> = object : JsonReader<${type_name}> {
+        override fun read(parser: JsonParser): ${type_name}? = when (parser.currentToken()) {
+            JsonToken.VALUE_NULL -> null
+            JsonToken.VALUE_STRING -> ${default_value}
+            else -> throw StreamReadException(
+                parser,
+                "Expecting VALUE_STRING token for ${type_name}, got " + parser.currentToken()
+            )
+        }
+    }
+
+    /**
+     * Writer for `${type_name}`.
+     *
+     * The contract is `@NullMarked` with a `@Nullable` value parameter, so the override MUST
+     * declare `value: ${type_name}?`. Declaring it non-null fails with
+     * `'write' overrides nothing`, a message that says nothing about nullability.
+     */
+    fun ${writer_method_name}(): JsonWriter<${type_name}> = object : JsonWriter<${type_name}> {
+        override fun write(generator: JsonGenerator, value: ${type_name}?) {
+            if (value == null) {
+                generator.writeNull()
+            } else {
+                generator.writeString(value.toString())
+            }
+        }
+    }
+}
+
+/*
+ * Object-shaped value instead of a scalar:
+ *
+ *   generator.writeStartObject()
+ *   generator.writeName("amount")
+ *   generator.writeNumber(value.amount)
+ *   generator.writeName("currency")
+ *   generator.writeString(value.currency)
+ *   generator.writeEndObject()
+ *
+ * Per-field instead of per-type: annotate the property with
+ * @Mapping(MyReader::class) @Mapping(MyWriter::class) (io.koraframework.common.annotation),
+ * or @field:Mapping(...). Kotlin classes are final, so a mapper with a no-arg constructor is
+ * instantiated by the generated code and does not need to be a DI component.
+ *
+ * Anything expensive — DateTimeFormatter, lookup tables, regexes — belongs outside the
+ * read/write body.
+ */

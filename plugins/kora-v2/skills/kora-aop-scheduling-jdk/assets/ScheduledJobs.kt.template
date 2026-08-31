@@ -1,0 +1,125 @@
+// Kora 2.x JDK scheduled jobs (Kotlin) — artifact io.koraframework:scheduling-jdk.
+//
+// Requires on the @KoraApp interface:  SchedulingJdkModule
+// Requires in the build:               ksp("io.koraframework:symbol-processors")
+//
+// The class does NOT need to be `open`: the generated module calls it through ValueOf<T>, not
+// through a proxy. `open` is only needed if you add a proxy-based aspect (@Log, @Retryable,
+// @Timeout, @Cacheable) to the same class.
+//
+// Scheduled functions must be members, take no arguments, and must NOT be `suspend` — KSP rejects
+// a suspend function with "Suspend methods are not supported by the scheduling generator".
+//
+// Replace `com.example.app.jobs` with your package.
+
+package com.example.app.jobs
+
+import io.koraframework.common.annotation.Component
+import io.koraframework.scheduling.jdk.annotation.ScheduleAtFixedRate
+import io.koraframework.scheduling.jdk.annotation.ScheduleOnce
+import io.koraframework.scheduling.jdk.annotation.ScheduleWithCron
+import io.koraframework.scheduling.jdk.annotation.ScheduleWithFixedDelay
+import org.slf4j.LoggerFactory
+import java.time.Duration
+import java.time.Instant
+import java.time.temporal.ChronoUnit
+
+@Component
+class ScheduledJobs {
+
+    private val log = LoggerFactory.getLogger(ScheduledJobs::class.java)
+
+    /**
+     * Fixed rate — the period is measured start-to-start. If a run overruns the period the next run
+     * starts late; runs of the same job never overlap.
+     * Use for: heartbeat, metric scrape, health poll.
+     */
+    @ScheduleAtFixedRate(initialDelay = 30, period = 60, unit = ChronoUnit.SECONDS)
+    fun heartbeat() {
+        log.debug("heartbeat")
+    }
+
+    /**
+     * Fixed delay — a full delay of idle time after the previous run returned.
+     * Use for: batch processing, data sync, cleanup, anything whose duration varies.
+     *
+     * Timings come from the config path; the annotation carries none, so `delay` is required there.
+     */
+    @ScheduleWithFixedDelay(config = "scheduling.jobs.cleanup")
+    fun cleanup() {
+        // Shutdown waits for this function to return — it is never interrupted.
+        // Bound the run so shutdown latency stays predictable.
+        val deadline = Instant.now().plus(Duration.ofSeconds(20))
+
+        while (Instant.now().isBefore(deadline)) {
+            if (purgeExpiredBatch(500) == 0) {
+                return
+            }
+        }
+        log.info("cleanup yielding at deadline, resuming next run")
+    }
+
+    /**
+     * One shot — runs once, [ScheduleOnce.delay] after startup.
+     * Use for: cache warm-up, late binding, work that must not block graph initialisation.
+     */
+    @ScheduleOnce(delay = 5, unit = ChronoUnit.MINUTES)
+    fun warmup() {
+        log.info("warming caches")
+    }
+
+    /**
+     * Cron — in-process, no Quartz. 5, 6 or 7 fields, JVM default time zone.
+     * Quartz-only modifiers L, W, # and C are not supported here.
+     */
+    @ScheduleWithCron("0 0 3 * * ?")
+    fun nightlyCompaction() {
+        log.info("nightly compaction")
+    }
+
+    private fun purgeExpiredBatch(limit: Int): Int {
+        // ... delete up to `limit` expired rows, return how many were removed ...
+        return 0
+    }
+}
+
+// ============== CONFIGURATION ==============
+
+// application.conf (HOCON):
+//
+// scheduling {
+//   jdk.shutdownWait = 30s          # executor termination budget; default 30s.
+//                                   # NOTE: there is no `threads` key in Kora 2.x — the pool size is
+//                                   # the number of jobs declared with `config = "..."`.
+//   telemetry {
+//     logging.enabled = false       # default false
+//     metrics.enabled = false       # default false — job metrics are OFF unless you enable them
+//     tracing.enabled = true        # default true (no-op without a Tracer component)
+//   }
+//
+//   jobs.cleanup {
+//     initialDelay = 30s
+//     delay        = 5m
+//     telemetry.logging.enabled = true   # per-job override of the block above
+//   }
+// }
+
+// application.yaml (YAML):
+//
+// scheduling:
+//   jdk:
+//     shutdownWait: "30s"
+//   telemetry:
+//     logging:
+//       enabled: false
+//     metrics:
+//       enabled: false
+//     tracing:
+//       enabled: true
+//   jobs:
+//     cleanup:
+//       initialDelay: "30s"
+//       delay: "5m"
+//       telemetry:
+//         logging:
+//           enabled: true

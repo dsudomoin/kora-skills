@@ -1,0 +1,24 @@
+package ${package};
+
+import io.koraframework.database.cassandra.annotation.UDT;
+import io.koraframework.database.common.annotation.Column;
+
+/*
+ * TEMPLATE NOTES — delete this block after copying.
+ *
+ * A @UDT may contain another @UDT, to any depth. EVERY level needs its own @UDT — an
+ * un-annotated nested record fails with
+ * "No component found for dependency: CassandraRowColumnMapper<${child_udt_name}>".
+ *
+ * CQL:
+ *   CREATE TYPE IF NOT EXISTS ${child_udt_name} (latitude DOUBLE, longitude DOUBLE);
+ *   CREATE TYPE IF NOT EXISTS ${parent_udt_name} (
+ *       name        TEXT,
+ *       coordinates FROZEN<${child_udt_name}>
+ *   );
+ */
+@UDT
+public record ${parent_udt_name}(
+    @Column("name") String name,
+    @Column("coordinates") ${child_udt_name} coordinates
+) {}

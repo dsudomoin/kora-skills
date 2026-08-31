@@ -1,0 +1,93 @@
+package ${packagePath}.listener;
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.kafka.common.annotation.KafkaListener;
+import io.koraframework.kafka.common.exceptions.KafkaSkipRecordException;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * Kafka consumer for topics: ${topics}
+ *
+ * Config path: kafka.consumer.${listenerNameLower}
+ *
+ * ONE @KafkaListener method per config path. Every additional @KafkaListener on the same path
+ * starts an additional consumer sharing the same group, which is almost never what you want —
+ * give each listener its own config section.
+ *
+ * This listener uses the ConsumerRecord signature: full metadata, Kora commits the offset after
+ * the method returns. Other accepted signatures (see references/kafka-listener-reference.md):
+ *
+ *   void process(String value)
+ *   void process(String key, String value)
+ *   void process(String key, String value, Headers headers)
+ *   void process(ConsumerRecords<K, V> records)                      // whole poll batch
+ *   void process(ConsumerRecord<K, V> r, Consumer<K, V> c)           // you commit
+ *   void process(@Nullable String value, @Nullable Exception e)      // deserialization errors
+ *
+ * Declaring a Consumer<K, V> parameter turns Kora's automatic commit OFF for this listener.
+ */
+@Component
+public final class ${listenerName} {
+
+    private static final Logger log = LoggerFactory.getLogger(${listenerName}.class);
+
+    private final AtomicInteger processed = new AtomicInteger();
+    private final AtomicInteger skipped = new AtomicInteger();
+
+    @KafkaListener("kafka.consumer.${listenerNameLower}")
+    void process(ConsumerRecord<String, String> record) {
+        // Lazy deserialization: value() throws RecordValueDeserializationException on bad payloads.
+        var value = record.value();
+
+        if (value == null || value.isBlank()) {
+            skipped.incrementAndGet();
+            // Reported to telemetry, offset committed, next record processed.
+            throw new KafkaSkipRecordException(new IllegalArgumentException(
+                "Blank payload at %s-%d@%d".formatted(record.topic(), record.partition(), record.offset())));
+        }
+
+        log.debug("Consuming {}-{}@{}", record.topic(), record.partition(), record.offset());
+        handle(value);
+        processed.incrementAndGet();
+    }
+
+    private void handle(String value) {
+        // TODO business logic — runs on the poll thread, keep it under max.poll.interval.ms
+    }
+
+    public int processedCount() {
+        return processed.get();
+    }
+
+    public int skippedCount() {
+        return skipped.get();
+    }
+}
+
+/*
+ * Manual commit variant — put it in its own class with its own config section.
+ *
+ * @Component
+ * public final class ${listenerName}ManualCommit {
+ *
+ *     @KafkaListener("kafka.consumer.${listenerNameLower}Manual")
+ *     void process(ConsumerRecord<String, String> record, Consumer<String, String> consumer) {
+ *         repository.insert(record.value());
+ *         consumer.commitSync();
+ *     }
+ * }
+ *
+ * Rebalance callbacks — bind by tag (references/kafka-rebalance-reference.md):
+ *
+ * @Tag(${listenerName}Module.${listenerName}ProcessTag.class)
+ * @Component
+ * public final class ${listenerName}RebalanceListener implements ConsumerAwareRebalanceListener {
+ *     public void onPartitionsRevoked(Consumer<?, ?> c, Collection<TopicPartition> p) { }
+ *     public void onPartitionsAssigned(Consumer<?, ?> c, Collection<TopicPartition> p) { }
+ *     public void onPartitionsLost(Consumer<?, ?> c, Collection<TopicPartition> p) { }  // never commit here
+ * }
+ */

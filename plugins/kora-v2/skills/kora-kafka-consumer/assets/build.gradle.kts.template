@@ -1,0 +1,58 @@
+plugins {
+    id("application")
+    kotlin("jvm") version ("2.4.10")
+    // KSP runs the Kora symbol processors — mandatory for Kotlin, kapt is not used
+    id("com.google.devtools.ksp") version ("2.3.11")
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // koraVersion=2.0.0.RC1 in gradle.properties
+    implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+    ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
+
+    implementation("io.koraframework:kafka")
+    implementation("io.koraframework:json-common")
+    implementation("io.koraframework:config-hocon")
+    implementation("io.koraframework:logging-logback")
+
+    // Telemetry — required for telemetry.metrics.enabled / telemetry.tracing.enabled to do anything
+    // implementation("io.koraframework:micrometer-module")
+    // implementation("io.koraframework:opentelemetry-tracing")
+    // implementation("io.koraframework:opentelemetry-tracing-exporter-grpc")
+
+    // Retry / circuit breaker on listener methods
+    // implementation("io.koraframework:resilient-kora")
+
+    testImplementation("io.koraframework:test-junit5")
+    // Testcontainers 2.x module names: testcontainers-kafka, NOT kafka
+    testImplementation("io.goodforgod:testcontainers-extensions-kafka:0.15.0")
+    // Not managed by kora-bom; these are the versions the migrated examples pin.
+    testImplementation("org.awaitility:awaitility:4.2.0")
+    testImplementation("org.json:json:20231013")
+
+    // Only when the test sources declare their own @KoraApp:
+    // kspTest("io.koraframework:symbol-processors:${property("koraVersion")}")
+}
+
+// Kora 2.0 artifacts are compiled to class-file 69 — JDK 25 is the floor.
+kotlin {
+    jvmToolchain {
+        languageVersion.set(JavaLanguageVersion.of(25))
+    }
+}
+
+application {
+    mainClass.set("${packagePath}.ApplicationKt")
+}
+
+tasks.withType<JavaExec> {
+    environment("KAFKA_BOOTSTRAP", System.getenv("KAFKA_BOOTSTRAP") ?: "localhost:9092")
+}
+
+tasks.test {
+    useJUnitPlatform()
+}

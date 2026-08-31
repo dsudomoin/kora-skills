@@ -1,0 +1,66 @@
+package ${package};
+
+import io.koraframework.database.common.UpdateCount;
+import io.koraframework.database.common.annotation.Batch;
+import io.koraframework.database.common.annotation.Query;
+import io.koraframework.database.common.annotation.Repository;
+import io.koraframework.database.jdbc.JdbcRepository;
+import org.jspecify.annotations.Nullable;
+
+import java.util.List;
+
+/**
+ * CRUD repository for an entity with a composite primary key.
+ *
+ * The key is a nested record flattened with @Id @Embedded on the entity — see
+ * jdbc-entity-composite-id.java.template.
+ *
+ * Macros used here:
+ *   %{id#where}             WHERE over the parameter named `id`, expanding every key column:
+ *                             ${id1_column} = ? AND ${id2_column} = ?
+ *   %{entity#where = @id}   the same, reached through the entity parameter
+ *   %{entity#inserts}       table(columns) VALUES (:entity.field, ...)
+ *   %{entity#updates}       column = :entity.field, ... — @Id fields excluded automatically
+ *   %{entity#selects = @id} the key columns, for an ON CONFLICT target
+ *
+ * `%{entity#table}` needs a parameter called `entity`; the delete-by-id and delete-all queries
+ * have none, so they name the table literally.
+ *
+ * ON CONFLICT must list every column of the composite key — %{entity#selects = @id} does that,
+ * so the clause stays correct if the key gains a column.
+ */
+@Repository
+public interface ${repository_name} extends JdbcRepository {
+
+    @Query("SELECT %{return#selects} FROM %{return#table} WHERE %{id#where}")
+    @Nullable
+    ${entity_name} findById(${entity_name}.ID id);
+
+    @Query("SELECT %{return#selects} FROM %{return#table}")
+    List<${entity_name}> findAll();
+
+    /** Composite keys are supplied by the caller, so there is no generated-key variant. */
+    @Query("INSERT INTO %{entity#inserts}")
+    UpdateCount insert(${entity_name} entity);
+
+    @Query("INSERT INTO %{entity#inserts}")
+    UpdateCount insertBatch(@Batch List<${entity_name}> entity);
+
+    @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
+    UpdateCount update(${entity_name} entity);
+
+    @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
+    UpdateCount updateBatch(@Batch List<${entity_name}> entity);
+
+    @Query("INSERT INTO %{entity#inserts} ON CONFLICT (%{entity#selects = @id}) DO UPDATE SET %{entity#updates}")
+    UpdateCount upsert(${entity_name} entity);
+
+    @Query("INSERT INTO %{entity#inserts} ON CONFLICT (%{entity#selects = @id}) DO UPDATE SET %{entity#updates}")
+    UpdateCount upsertBatch(@Batch List<${entity_name}> entity);
+
+    @Query("DELETE FROM ${table_name} WHERE %{id#where}")
+    UpdateCount deleteById(${entity_name}.ID id);
+
+    @Query("DELETE FROM ${table_name}")
+    UpdateCount deleteAll();
+}

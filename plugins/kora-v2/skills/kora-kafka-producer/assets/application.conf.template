@@ -1,0 +1,59 @@
+kafka {
+  producer {
+
+    # Matches @KafkaPublisher("kafka.producer.myPublisher").
+    # Mapped to KafkaPublisherConfig: driverProperties (required) + telemetry (optional).
+    # Unknown keys are ignored, which is why the topic section can be nested here.
+    myPublisher {
+
+      # Plain Apache Kafka 4.x producer properties, passed through untouched.
+      # Never set key.serializer / value.serializer — Kora always uses ByteArraySerializer
+      # underneath and applies the graph-resolved Serializer<T> itself.
+      driverProperties {
+        "bootstrap.servers" = ${KAFKA_BOOTSTRAP_SERVERS}
+        "acks" = "all"
+        "enable.idempotence" = true
+        "linger.ms" = 5
+        "batch.size" = 16384
+        "delivery.timeout.ms" = 120000
+      }
+
+      # Matches @Topic(".topic") on a method of that publisher.
+      # An absolute @Topic("kafka.producer.myTopic") pointing at a sibling section
+      # works equally well — pick one layout and stay consistent.
+      topic {
+        topic = "my-topic"
+        # partition = 0   # optional: pin every record to one partition
+      }
+
+      # Kora 2.0 defaults: logging.enabled = false, metrics.enabled = false,
+      # tracing.enabled = true. Producer logs and meters stay silent until turned on.
+      telemetry {
+        logging.enabled = true
+        metrics {
+          enabled = true
+          driverMetrics = true    # binds Micrometer KafkaClientMetrics to the raw producer
+          # slo  = [...]          # duration histogram buckets, defaults to 1ms..90s
+          # tags { app = "my-service" }
+        }
+        tracing.enabled = true
+      }
+    }
+
+    # Matches @KafkaPublisher("kafka.producer.myTransactional") on an interface extending
+    # TransactionalPublisher<MyPublisher>. Mapped to KafkaPublisherConfig.TransactionConfig,
+    # which declares ONLY these three keys — a driverProperties block here is dead config:
+    # transactional producers are built from the wrapped publisher's driverProperties plus
+    # a generated transactional.id of "<idPrefix>-<random UUID>".
+    myTransactional {
+      idPrefix = "my-service"
+      maxPoolSize = 10
+      maxWaitTime = "10s"
+    }
+  }
+}
+
+logging.levels {
+  "root" = "INFO"
+  "io.koraframework" = "INFO"
+}

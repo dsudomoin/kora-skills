@@ -1,0 +1,150 @@
+package com.example.client;
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.http.client.common.annotation.HttpClient;
+import io.koraframework.http.client.common.response.HttpClientResponse;
+import io.koraframework.http.client.common.response.HttpClientResponseMapper;
+import io.koraframework.http.common.HttpMethod;
+import io.koraframework.http.common.HttpResponseEntity;
+import io.koraframework.http.common.annotation.Cookie;
+import io.koraframework.http.common.annotation.Header;
+import io.koraframework.http.common.annotation.HttpRoute;
+import io.koraframework.http.common.annotation.Path;
+import io.koraframework.http.common.annotation.Query;
+import io.koraframework.json.common.annotation.Json;
+import org.jspecify.annotations.Nullable;
+
+import java.io.IOException;
+import java.util.List;
+
+/**
+ * Declarative Kora 2.0 HTTP client for a User API.
+ *
+ * Build (gradle.properties: koraVersion=2.0.0.RC1):
+ * <pre>
+ * koraBom platform("io.koraframework:kora-bom:$koraVersion")
+ * annotationProcessor "io.koraframework:annotation-processors"
+ * implementation "io.koraframework:http-client-ok"
+ * implementation "io.koraframework:json-common"
+ * implementation "io.koraframework:config-hocon"
+ * </pre>
+ *
+ * The @KoraApp interface must extend OkHttpClientModule and JsonModule.
+ *
+ * Configuration (application.conf) — the path matches the @HttpClient value:
+ * <pre>
+ * httpClient {
+ *   userApi {
+ *     url = "http://localhost:8080"
+ *     url = ${?USER_API_URL}
+ *     requestTimeout = 10s
+ *
+ *     telemetry.logging.enabled = true
+ *     telemetry.metrics.enabled = true   # both default to false in Kora 2.0
+ *
+ *     getUser { requestTimeout = 3s }    # per-method override, keyed by method name
+ *   }
+ * }
+ * </pre>
+ *
+ * Contracts are synchronous: no CompletionStage, no Mono. Calls block the (virtual) caller thread.
+ */
+@HttpClient("httpClient.userApi")
+public interface UserApiClient {
+
+    /** GET /users/{userId} — 2xx decodes, anything else throws HttpClientResponseException. */
+    @HttpRoute(method = HttpMethod.GET, path = "/users/{userId}")
+    @Json
+    UserResponse getUser(@Path String userId);
+
+    /** GET /users — nullable parameters are omitted from the query string when null. */
+    @HttpRoute(method = HttpMethod.GET, path = "/users")
+    @Json
+    List<UserResponse> listUsers(@Nullable @Query("page") Integer page,
+                                 @Nullable @Query("size") Integer size,
+                                 @Nullable @Query("sort") String sort);
+
+    /** POST /users — HttpResponseEntity exposes code() and headers() next to the body. */
+    @HttpRoute(method = HttpMethod.POST, path = "/users")
+    @Json
+    HttpResponseEntity<UserResponse> createUser(@Json CreateUserRequest request,
+                                                @Nullable @Header("X-Request-ID") String requestId,
+                                                @Nullable @Cookie("sessionId") String sessionId);
+
+    /** PUT /users/{userId} */
+    @HttpRoute(method = HttpMethod.PUT, path = "/users/{userId}")
+    @Json
+    UserResponse updateUser(@Path String userId, @Json UpdateUserRequest request);
+
+    /**
+     * Kora 2.0 ships concrete response mappers for String, byte[], ByteBuffer and HttpBodyInput
+     * only; HttpResponseEntity<T> is a template that needs a mapper for the payload T. A body-less
+     * response whose status code still matters therefore has to say how Void is produced, or the
+     * graph fails with:
+     *
+     *   No component found for dependency: HttpClientResponseMapper<java.lang.Void> (no tags)
+     *
+     * The framework wraps this mapper into the entity itself, which is why it is declared as a
+     * component and never referenced with @Mapping. Wiring it through @Mapping instead produces
+     * "incompatible types: Void cannot be converted to HttpResponseEntity<Void>".
+     */
+    @Component
+    final class VoidResponseMapper implements HttpClientResponseMapper<Void> {
+
+        @Override
+        public Void apply(HttpClientResponse response) throws IOException {
+            try (var body = response.body()) {
+                body.asInputStream().readAllBytes();
+            }
+            return null;
+        }
+    }
+
+    /** DELETE /users/{userId} — status only. Drop HttpResponseEntity and return void if the code is not needed. */
+    @HttpRoute(method = HttpMethod.DELETE, path = "/users/{userId}")
+    HttpResponseEntity<Void> deleteUser(@Path String userId);
+
+    // ====================================
+    // DTOs — replace with your own. @Json on the type is what generates the reader/writer.
+    // ====================================
+
+    @Json
+    record UserResponse(String id, String email, String name, String createdAt) {}
+
+    @Json
+    record CreateUserRequest(String email, String name, String password) {}
+
+    @Json
+    record UpdateUserRequest(String email, String name) {}
+
+    // ====================================
+    // Usage
+    // ====================================
+    //
+    // @Component
+    // public final class UserService {
+    //
+    //     private final UserApiClient client;
+    //
+    //     public UserService(UserApiClient client) {
+    //         this.client = client;
+    //     }
+    //
+    //     public UserResponse getUser(String id) {
+    //         try {
+    //             return this.client.getUser(id);
+    //         } catch (HttpClientResponseException e) {
+    //             // 2.0 accessors are getCode() / getHeaders() / getBytes()
+    //             if (e.getCode() == 404) {
+    //                 throw new UserNotFoundException(id);
+    //             }
+    //             throw e;
+    //         }
+    //     }
+    //
+    //     public String createUser(CreateUserRequest request) {
+    //         var response = this.client.createUser(request, UUID.randomUUID().toString(), null);
+    //         return response.headers().getFirst("location");
+    //     }
+    // }
+}

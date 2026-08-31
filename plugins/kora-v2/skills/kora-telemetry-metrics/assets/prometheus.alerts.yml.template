@@ -1,0 +1,129 @@
+# Prometheus alert rules for a Kora 2.0 service.
+#
+# BEFORE USING:
+#
+# 1. Every http_server_* / db_* rule below needs the matching component to have
+#    telemetry.metrics.enabled = true in application.conf. In Kora 2.0 that flag defaults
+#    to FALSE, so an un-migrated service satisfies none of these rules -- and the "absent"
+#    guard at the bottom is what tells you that, instead of the alerts just staying green.
+#
+# 2. Confirm the exact series names against your deployment before relying on them:
+#        curl -s http://HOST:8085/metrics | grep '^# TYPE'
+#    Micrometer derives the Prometheus name from the meter name plus a base-unit suffix,
+#    so the Timer http.server.request.duration is exported as
+#    http_server_request_duration_seconds_{count,sum,bucket,max}. Latency thresholds below
+#    are therefore in SECONDS, not milliseconds.
+#
+# 3. Kora 2.0 puts NO status-code label on the HTTP SERVER duration timer. Its tags are
+#    server.name, server.port, http.request.method, http.route, url.scheme, server.address
+#    and error.type. A 1.x rule filtering http_response_status_code=~"5.." matches nothing
+#    and stays silently green. The HTTP CLIENT timer does carry http_response_status_code.
+#
+# 4. Scrape the SYSTEM port (httpServer.system.port, default 8085), not the public one.
+
+groups:
+  - name: kora-application-alerts
+    interval: 30s
+    rules:
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_server_request_duration_seconds_count{error_type!=""}[5m]))
+          / sum(rate(http_server_request_duration_seconds_count[5m])) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate detected"
+          description: "{{ $value | humanizePercentage }} of requests failed over the last 5 minutes"
+
+      - alert: HighLatency
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_server_request_duration_seconds_bucket[5m])) by (le, http_route)
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High latency detected"
+          description: "p99 latency is {{ $value | humanizeDuration }} for route {{ $labels.http_route }}"
+
+      - alert: DatabaseLatencyHigh
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(db_client_operation_duration_seconds_bucket[5m])) by (le, db_operation_name)
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow database operations"
+          description: "p99 of {{ $labels.db_operation_name }} is {{ $value | humanizeDuration }}"
+
+      - alert: ServiceDown
+        expr: |
+          up{job="my-service"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Service is down"
+          description: "{{ $labels.instance }} has been unreachable for more than 1 minute"
+
+      - alert: HighHeapUsage
+        expr: |
+          sum by (instance) (jvm_memory_used_bytes{area="heap"})
+          / sum by (instance) (jvm_memory_max_bytes{area="heap"}) > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High JVM heap usage"
+          description: "Heap usage on {{ $labels.instance }} is {{ $value | humanizePercentage }}"
+
+  - name: kora-instrumentation-health
+    interval: 60s
+    rules:
+      # Catches the Kora 2.0 silent-failure mode: the scrape succeeds and kora_up is
+      # present, but no component metric is being recorded because
+      # httpServer.telemetry.metrics.enabled was never set to true (or MetricsModule is
+      # missing from the @KoraApp interface). Without this rule the outage looks like
+      # "no traffic".
+      - alert: HttpServerMetricsMissing
+        expr: |
+          count(kora_up) > 0
+          unless
+          count(http_server_request_duration_seconds_count)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Kora HTTP server metrics are not being emitted"
+          description: >-
+            kora_up is present but no http_server_request_duration series exists.
+            Check that MetricsModule is on the @KoraApp interface and that
+            httpServer.telemetry.metrics.enabled = true in application.conf.
+
+  - name: business-metrics-alerts
+    interval: 30s
+    rules:
+      - alert: HighPaymentFailureRate
+        expr: |
+          sum(rate(payment_processed_total{status="failed"}[5m]))
+          / sum(rate(payment_processed_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High payment failure rate"
+          description: "Payment failure rate is {{ $value | humanizePercentage }}"
+
+      - alert: LowUserRegistration
+        expr: |
+          sum(rate(user_creation_total[1h])) * 3600 < 10
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "Low user registration rate"
+          description: "Only {{ $value | humanize }} registrations per hour"

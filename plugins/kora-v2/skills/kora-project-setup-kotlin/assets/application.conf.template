@@ -1,0 +1,39 @@
+httpServer {
+  # Public API. 1.x publicApiHttpPort -> port
+  port = 8080
+
+  # System API. 1.x privateApiHttpPort -> system.port
+  # Defaults below are what SystemHttpServerConfig already returns; they are
+  # written out so probes, scrapers and load balancers can be pointed at them.
+  system {
+    port = 8085
+    # readinessPath = "/system/readiness"   # 1.x privateApiHttpReadinessPath
+    # livenessPath  = "/system/liveness"    # 1.x privateApiHttpLivenessPath
+    # metricsPath   = "/metrics"            # 1.x privateApiHttpMetricsPath
+  }
+
+  # Component telemetry defaults in Kora 2.x: logging = false, metrics = false,
+  # tracing = true. Enable explicitly what you want to see.
+  telemetry.logging.enabled = true
+
+  # Metrics additionally require io.koraframework:micrometer-module on the
+  # classpath; without it the flag is accepted and nothing is recorded.
+  # telemetry.metrics.enabled = true
+
+  # Under httpServer.system tracing is the exception: SystemHttpServerTracingConfig
+  # overrides enabled() to false, so probe traffic is not traced unless asked.
+  # system.telemetry.tracing.enabled = true
+}
+
+# 1.x logging.level -> logging.levels
+logging.levels {
+  "root": "WARN"
+  "root": ${?LOGGING_LEVEL_ROOT}
+
+  "io.koraframework": "INFO"
+  "io.koraframework": ${?LOGGING_LEVEL_KORA}
+  "io.koraframework.http": ${?LOGGING_LEVEL_KORA_HTTP}
+
+  "com.example": "INFO"
+  "com.example": ${?LOGGING_LEVEL_APP}
+}

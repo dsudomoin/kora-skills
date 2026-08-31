@@ -1,0 +1,94 @@
+package ${package};
+
+import io.koraframework.common.annotation.Component;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+
+import java.time.Duration;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * High-throughput metrics service with cached meter instances (Kora 2.0).
+ *
+ * Use this pattern when a meter carries tags whose values vary at runtime, and the hot
+ * path cannot afford a builder + registry lookup per call.
+ *
+ * Kora's own instrumentation is built exactly this way -- see the requestDurationCache
+ * and activeRequestsCache maps in DefaultHttpServerMetricsFactory, and the guard comment
+ * it repeats above every builder method:
+ *
+ *     DO NOT ADD DYNAMIC TAGS IN BUILDER, use metric key instead of metric collision will happen
+ *
+ * That is the rule to respect here: the cache key must contain EVERY tag that varies.
+ * If it does not, two different tag sets collapse onto one cache entry, the
+ * first-registered meter wins, and later calls are recorded under the wrong labels.
+ *
+ * Tag values must still be bounded. Caching an unbounded tag only moves the memory leak
+ * from Micrometer's map into yours.
+ */
+@Component
+public final class CachedMetricsService {
+
+    /** Key for custom.operation.duration -- both of its dynamic tags. */
+    private record DurationKey(String operation, String status) {}
+
+    /** Key for custom.operation.count -- both of its dynamic tags. */
+    private record CountKey(String operation, String type) {}
+
+    private final MeterRegistry registry;
+    private final ConcurrentHashMap<DurationKey, Timer> timers = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<CountKey, Counter> counters = new ConcurrentHashMap<>();
+
+    public CachedMetricsService(MeterRegistry registry) {
+        this.registry = registry;
+    }
+
+    /**
+     * Runs the action, records its duration under status=success or status=failed, and
+     * rethrows whatever it threw. The metric is recorded exactly once on either path.
+     */
+    public <T> T recordOperation(String operation, Callable<T> action) throws Exception {
+        var startedAt = System.nanoTime();
+        try {
+            var result = action.call();
+            recordOperationDuration(operation, System.nanoTime() - startedAt, true);
+            return result;
+        } catch (Exception e) {
+            recordOperationDuration(operation, System.nanoTime() - startedAt, false);
+            throw e;
+        }
+    }
+
+    /** Records a duration you measured yourself. */
+    public void recordOperationDuration(String operation, long durationNanos, boolean success) {
+        var key = new DurationKey(operation, success ? "success" : "failed");
+        var timer = this.timers.computeIfAbsent(key, k ->
+                Timer.builder("custom.operation.duration")
+                        .description("Duration of custom operations")
+                        .tag("operation", k.operation())
+                        .tag("status", k.status())
+                        .serviceLevelObjectives(
+                                Duration.ofMillis(50),
+                                Duration.ofMillis(100),
+                                Duration.ofMillis(250),
+                                Duration.ofMillis(500),
+                                Duration.ofSeconds(1))
+                        .register(this.registry));
+
+        timer.record(durationNanos, TimeUnit.NANOSECONDS);
+    }
+
+    public void incrementCounter(String operation, String type) {
+        var key = new CountKey(operation, type);
+        var counter = this.counters.computeIfAbsent(key, k ->
+                Counter.builder("custom.operation.count")
+                        .tag("operation", k.operation())
+                        .tag("type", k.type())
+                        .register(this.registry));
+
+        counter.increment();
+    }
+}

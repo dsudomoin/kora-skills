@@ -1,0 +1,54 @@
+-- =============================================================================
+-- Liquibase master changelog (formatted SQL) — Kora 2.0
+-- Copy to: src/main/resources/db/changelog/db.changelog-master.sql
+--
+-- Wiring required for this file to run on startup:
+--
+--   build.gradle
+--     implementation "io.koraframework:database-jdbc"
+--     implementation "io.koraframework:database-liquibase"
+--     // no per-database artifact is needed: liquibase-core bundles
+--     // liquibase-standard, which carries the mainstream dialects
+--
+--   @KoraApp extends JdbcDatabaseModule, LiquibaseJdbcDatabaseModule
+--
+--   application.conf
+--     jdbc { jdbcUrl = ..., username = ..., password = ... }
+--     liquibase { changelog = "db/changelog/db.changelog-master.sql" }
+--
+-- `changelog` is a CLASSPATH resource path (ClassLoaderResourceAccessor),
+-- relative to src/main/resources/ — not a filesystem path, no leading slash.
+-- The default is db/changelog/db.changelog-master.xml, so pointing at a .sql
+-- master always requires the config key above.
+--
+-- LiquibaseConfig has NO `enabled` key: the interceptor runs update()
+-- unconditionally. To stop in-app migration, remove LiquibaseJdbcDatabaseModule
+-- from the @KoraApp interface.
+--
+-- This master must stay SELF-CONTAINED. `--include` / `--includeAll` inside a
+-- formatted-SQL changelog are Pro-only in Liquibase 5 and the Community parser
+-- aborts the changelog ("requires a valid Liquibase license key"), which fails
+-- graph initialization. To split across files, use an XML master instead —
+-- see assets/002-orders-table.sql.template.
+--
+-- The first line below is mandatory for formatted-SQL changelogs. Each change
+-- is declared with --changeset <author>:<id> and may carry --rollback
+-- directives (one per statement, in reverse order of application).
+-- =============================================================================
+
+--liquibase formatted sql
+
+--changeset developer:1
+CREATE TABLE users (
+    id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    email      VARCHAR(255) NOT NULL UNIQUE,
+    first_name VARCHAR(100),
+    last_name  VARCHAR(100),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_created_at ON users(created_at DESC);
+--rollback DROP INDEX idx_users_created_at;
+--rollback DROP INDEX idx_users_email;
+--rollback DROP TABLE users;

@@ -1,0 +1,256 @@
+{
+  "evals": [
+    {
+      "id": "kora-openapi-generator-server-quickstart-java",
+      "skills": [
+        "kora-openapi-generator-server"
+      ],
+      "query": "Scaffold a contract-first Kora 2.x HTTP server in Java from an OpenAPI spec with GET /pets/{petId}. Wire the Gradle generation and implement the delegate so it returns the pet or 404.",
+      "expected_behavior": [
+        "Puts io.koraframework:openapi-generator:$koraVersion on the buildscript classpath and applies the org.openapi.generator Gradle plugin, treating the two versions as separate things",
+        "Uses koraVersion=2.0.0.RC1 from plain mavenCentral() and the io.koraframework:kora-bom platform, never ru.tinkoff.kora:kora-parent",
+        "Registers a GenerateTask with generatorName = \"kora\", configOptions mode = \"java-server\", and a unique outputDir wired into sourceSets.main and compileJava.dependsOn",
+        "Adds annotationProcessor \"io.koraframework:annotation-processors\" and implementation \"io.koraframework:http-server-undertow\" plus json-common",
+        "Implements PetApiDelegate as an @Component (io.koraframework.common.annotation.Component) returning PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse or ...GetPetById404ApiResponse",
+        "Plugs UndertowPublicHttpServerModule and JsonModule into @KoraApp",
+        "Does not return ResponseEntity, does not hand-write @HttpController/@HttpRoute for the generated API, and does not edit build/generated"
+      ],
+      "tags": [
+        "openapi",
+        "java",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-openapi-generator-server-quickstart-kotlin",
+      "skills": [
+        "kora-openapi-generator-server"
+      ],
+      "query": "Same contract, but generate a Kotlin Kora 2.x server and implement the delegate.",
+      "expected_behavior": [
+        "Sets configOptions mode = \"kotlin-server\"; does not offer kotlin-suspend-server or kotlin-reactive-server",
+        "Adds the KSP plugin and ksp(\"io.koraframework:symbol-processors\") together with the io.koraframework:kora-bom platform",
+        "Makes BOTH the ksp tasks and compileKotlin depend on the generate task, and adds the outputDir to kotlin.sourceSets.main",
+        "Implements the delegate as a plain (non-suspend) fun returning the sealed PetApiResponses type, annotated with @Component",
+        "Does not use ksp(\"ru.tinkoff.kora:symbol-processors\") and does not mark any delegate function suspend"
+      ],
+      "tags": [
+        "openapi",
+        "kotlin",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-openapi-generator-server-removed-mode",
+      "skills": [
+        "kora-openapi-generator-server"
+      ],
+      "query": "Our Kora 1.x build used configOptions mode = \"java-reactive-server\" and the Kotlin service used \"kotlin-suspend-server\". Port both to Kora 2.0.",
+      "expected_behavior": [
+        "States that only java-client, java-server, kotlin-client and kotlin-server remain in Kora 2.0",
+        "Maps java-reactive-server and java-async-server to java-server, kotlin-suspend-server to kotlin-server, and the corresponding client modes to java-client / kotlin-client",
+        "Explains that generation fails outright with \"Invalid OpenAPI generator `mode`\" listing the supported values",
+        "Rewrites the delegate implementations as synchronous methods returning the sealed *ApiResponses type directly",
+        "Removes Mono/Flux/CompletionStage return types, the reactor-core dependency added for the reactive mode, and any suspend modifier",
+        "Does not suggest keeping a reactive mode, does not reintroduce Context, and does not claim a compatibility flag exists"
+      ],
+      "tags": [
+        "modes",
+        "migration",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-openapi-generator-server-enum-fromvalue",
+      "skills": [
+        "kora-openapi-generator-server"
+      ],
+      "query": "The contract has status: type string with enum [available, pending, sold]. In the delegate I wrote Pet.StatusEnum.valueOf(status) and it throws for \"available\". Fix it, in Java and Kotlin.",
+      "expected_behavior": [
+        "Uses Pet.StatusEnum.fromValue(status), the static factory the Kora generator emits on every enum",
+        "Explains that the generated constant is AVAILABLE while the wire value is \"available\", so Enum.valueOf compares against the wrong string and fails only on real data, never at compile time",
+        "Catches IllegalArgumentException and returns the contract's declared 400 response record",
+        "Rejects a hand-written statusOf helper, a values() scan by name(), and valueOf(raw.toUpperCase())",
+        "Mentions getValue() for serialising back to the wire value",
+        "Does not edit the generated enum and does not add a Jackson annotation to work around it"
+      ],
+      "tags": [
+        "models",
+        "enums",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-openapi-generator-server-security-tag",
+      "skills": [
+        "kora-openapi-generator-server"
+      ],
+      "query": "After migrating to Kora 2.0 every request to a secured route returns 401. My extractor is annotated @Tag(ApiSecurity.SecurityRequirementTag1.class) and the contract declares a BearerAuth securityScheme.",
+      "expected_behavior": [
+        "Identifies the ordinal SecurityRequirementTagN name as Kora 1.x — it does not exist in 2.0, so the extractor is never matched and the generated interceptor always answers 401",
+        "Changes the tag to the marker named after the security scheme: @Tag(ApiSecurity.BearerAuth.class) / @Tag(ApiSecurity.BearerAuth::class)",
+        "Explains the naming rule: the key under components.securitySchemes, PascalCased (oAuth2ClientCredentials becomes ApiSecurity.OAuth2ClientCredentials)",
+        "Imports ApiSecurity from the configured apiPackage, not from a Kora framework package",
+        "Supplies HttpServerPrincipalExtractor<String, Principal> whose extract returns null for an unauthenticated request, using PrincipalWithScopes only for oauth2 schemes",
+        "Does not add ApiSecurity to the @KoraApp extends list — it is a @Module and is discovered automatically",
+        "Does not return CompletableFuture from the extractor and does not introduce a non-Kora security framework"
+      ],
+      "tags": [
+        "auth",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-openapi-generator-server-kotlin-positional-model",
+      "skills": [
+        "kora-openapi-generator-server"
+      ],
+      "query": "In my Kotlin Kora 2.0 delegate I construct the generated model positionally: Pet(1L, \"Fido\", \"dog\"). After a contract change the values ended up in the wrong fields. What is the rule?",
+      "expected_behavior": [
+        "States that generated Kotlin models keep the spec property order with optional properties (carrying defaults) interleaved among required ones, so positional arguments are not stable",
+        "Requires named arguments for both construction and copy(): Pet(id = 1L, name = \"Fido\", tag = \"dog\") and pet.copy(name = newName)",
+        "Explains that a positional call can still compile when the shifted types happen to line up, so the failure is silent",
+        "Mentions the Java counterpart: the generated required-only constructor and the withX(...) copy methods",
+        "Does not suggest editing the generated model, reordering the schema, or adding an @JvmOverloads-style workaround"
+      ],
+      "tags": [
+        "models",
+        "kotlin",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-openapi-generator-server-no-handwritten-controller",
+      "skills": [
+        "kora-openapi-generator-server"
+      ],
+      "query": "I want to add a response header and some logging to GET /pets, so I wrote my own @HttpController with @HttpRoute(method = \"GET\", path = \"/pets\") next to the generated one. Requests behave inconsistently.",
+      "expected_behavior": [
+        "Explains that two handlers are now registered for the same method and path, so which one wins is non-deterministic",
+        "Directs the work to the generated *ApiDelegate as the only implementation point, and never to build/generated",
+        "For the header: declares it under that response in the contract so it becomes a component of the generated response record",
+        "For logging/cross-cutting behaviour: an HttpServerInterceptor wired through configOptions.extensions (interceptorType/interceptorTag), or globally with @Tag(HttpServer.class)",
+        "Mentions that the 1.x global tag @Tag(HttpServerModule.class) still compiles but is never looked up, so the interceptor silently never runs",
+        "Mentions the supported escape hatch of replacing a generated @DefaultComponent HttpServerResponseMapper with your own @Component one",
+        "Does not suggest keeping the duplicate controller or removing the generated one"
+      ],
+      "tags": [
+        "controllers",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-openapi-generator-server-gradle-jvm-25",
+      "skills": [
+        "kora-openapi-generator-server"
+      ],
+      "query": "Gradle configuration fails with: Dependency requires at least JVM runtime version 25. This build uses a Java 21 JVM. My build already sets toolchain languageVersion 25.",
+      "expected_behavior": [
+        "Explains that io.koraframework:openapi-generator is on the buildscript classpath, which is resolved by the JVM running Gradle, not by the project toolchain",
+        "States that a Java 25 toolchain block cannot fix it",
+        "Fixes the Gradle JVM itself: JAVA_HOME, org.gradle.java.home in gradle.properties, or the IDE's Gradle JVM setting",
+        "Notes that Kora 2.0 artifacts are compiled to class-file 69 (Java 25), so 25+ is a hard floor",
+        "Does not suggest downgrading Kora, removing the buildscript dependency, or adding --add-opens/--enable-preview as a workaround"
+      ],
+      "tags": [
+        "build",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-openapi-generator-server-stale-generated-packages",
+      "skills": [
+        "kora-openapi-generator-server"
+      ],
+      "query": "I renamed apiPackage and modelPackage. Now the build fails with \"package ru.tinkoff.kora.example.api does not exist\" and the errors point at files under build/generated. Should I just fix those files?",
+      "expected_behavior": [
+        "Says no — never edit anything under build/generated; the next generation run overwrites it and the error returns",
+        "Explains the cause: the generator writes output but never deletes files from a previous run, and the Gradle build-cache key ignores apiPackage/modelPackage, so old and new package trees coexist in one source set",
+        "Prescribes ./gradlew clean build --no-build-cache on the first build after such a rename",
+        "Recommends one outputDir per spec so tasks cannot overwrite each other",
+        "Does not suggest excluding files from the source set, deleting individual generated files by hand, or adding them to .gitignore as a fix"
+      ],
+      "tags": [
+        "build",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-openapi-generator-server-validation",
+      "skills": [
+        "kora-openapi-generator-server"
+      ],
+      "query": "Add server-side validation to a Kora 2.x OpenAPI POST /pets endpoint: name 1-64 chars, weight between 0 and 500. Return HTTP 400 with our own error body.",
+      "expected_behavior": [
+        "Sets configOptions enableServerValidation = \"true\" and notes it is read only in a server mode",
+        "Adds implementation \"io.koraframework:validation-module\" and ValidationModule (io.koraframework.validation.module.ValidationModule) to @KoraApp",
+        "Explains the generated annotations come from io.koraframework.validation.common.annotation (@Size, @Range, @Valid, @Validate) and that the controller, not the delegate, carries them",
+        "Supplies a ViolationExceptionHttpServerResponseMapper as a @KoraApp default method, keeping enableServerValidationInterceptor at its default true",
+        "Warns that only one constraint annotation is generated per property, so a string with both maxLength and pattern gets @Size only",
+        "Does not use Jakarta Bean Validation or Hibernate Validator, and does not add annotations to generated files"
+      ],
+      "tags": [
+        "validation",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-openapi-generator-server-discriminator",
+      "skills": [
+        "kora-openapi-generator-server"
+      ],
+      "query": "My OpenAPI schema uses a discriminator with oneOf/allOf. What does the Kora 2.x generator produce and how do I handle it in the delegate?",
+      "expected_behavior": [
+        "Describes the output: a @Json @JsonDiscriminatorField(\"<propertyName>\") sealed interface, with each mapped variant a record/data class carrying @JsonDiscriminatorValue({...})",
+        "Requires the discriminator property to exist on the base schema and be listed in required",
+        "Handles the value with an exhaustive switch pattern match (Java) or when (Kotlin) over the sealed type, without a default branch",
+        "Notes that several mapping keys may resolve to one variant, which then carries multiple @JsonDiscriminatorValue entries",
+        "Treats openapiNormalizer DISABLE_ALL as an escape hatch for a mangled spec, not as a required default",
+        "Does not rely on reflection-based polymorphism, Jackson subtype annotations, or invented generator options"
+      ],
+      "tags": [
+        "models",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-openapi-generator-server-configoptions",
+      "skills": [
+        "kora-openapi-generator-server"
+      ],
+      "query": "Our migrated build still passes configOptions interceptors, additionalContractAnnotations and enableJsonNullable, plus delegateMethodBodyMode: \"throw-exception\". Nothing seems to happen. Fix the task.",
+      "expected_behavior": [
+        "Explains that the Kora generator reads a fixed set of configOptions keys and silently ignores anything else, so a stale key produces no error and no effect",
+        "Replaces interceptors with configOptions.extensions, using interceptorType and/or interceptorTag under \"*\", \"tags\" or \"operations\"",
+        "Replaces additionalContractAnnotations with extensions.*.additionalMethodAnnotations",
+        "Drops enableJsonNullable: JsonNullable<T> is applied automatically to fields that are nullable and not required",
+        "Corrects delegateMethodBodyMode to \"throwException\", and warns that the generated *ApiModule default delegate is not @DefaultComponent, so it collides with a hand-written @Component delegate",
+        "Does not invent option names and does not claim Mustache templateDir overrides still customise output"
+      ],
+      "tags": [
+        "build",
+        "advanced",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-openapi-generator-server-multi-spec",
+      "skills": [
+        "kora-openapi-generator-server"
+      ],
+      "query": "I need two OpenAPI contracts generated into one Kora 2.x application, both with security schemes. How do I configure that without conflicts?",
+      "expected_behavior": [
+        "Registers a separate GenerateTask per contract, each with a unique outputDir",
+        "Gives each task its own apiPackage and modelPackage and wires both output directories into the source set",
+        "Adds compileJava.dependsOn (Java) or both ksp and compileKotlin dependsOn (Kotlin) for each task",
+        "Notes each spec produces its own ApiSecurity, so principal-extractor tags must be qualified by the right apiPackage",
+        "Implements one @Component delegate per generated *ApiDelegate",
+        "Does not reuse a single outputDir and does not edit files under build/generated"
+      ],
+      "tags": [
+        "build",
+        "advanced"
+      ]
+    }
+  ]
+}

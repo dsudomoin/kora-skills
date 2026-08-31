@@ -1,0 +1,52 @@
+plugins {
+    id("application")
+    kotlin("jvm") version "2.4.10"
+    id("com.google.devtools.ksp") version "2.3.11"
+}
+
+repositories {
+    mavenCentral()
+    // io.koraframework:kora-bom:2.0.0.RC1 is on Maven Central; nothing else is needed.
+    // Only the 2.0.0-SNAPSHOT development line also needs:
+    // maven { url = uri("https://central.sonatype.com/repository/maven-snapshots") }
+}
+
+dependencies {
+    // Kotlin puts the BOM straight on implementation - no koraBom configuration, no extendsFrom.
+    implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+    // The BOM does not constrain the `ksp` configuration, so the processor keeps its version.
+    ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
+
+    // Core dependencies - always needed
+    implementation("io.koraframework:logging-logback")
+    implementation("io.koraframework:config-hocon")
+
+    // Add more Kora modules as needed (no versions - the BOM owns them):
+    // implementation("io.koraframework:json-common")
+    // implementation("io.koraframework:http-server-undertow")
+    // implementation("io.koraframework:http-client-ok")
+    // implementation("io.koraframework:database-jdbc")
+    // implementation("io.koraframework:kafka")
+    // implementation("io.koraframework:micrometer-module")
+}
+
+kotlin {
+    jvmToolchain {
+        languageVersion.set(JavaLanguageVersion.of(25))
+        vendor.set(JvmVendorSpec.ADOPTIUM)
+    }
+}
+
+application {
+    applicationName = "application"
+    mainClass.set("${packagePath}.ApplicationKt")
+    applicationDefaultJvmArgs = listOf("-Dfile.encoding=UTF-8")
+}
+
+tasks.test {
+    useJUnitPlatform()
+    testLogging {
+        events("passed", "skipped", "failed")
+        showStandardStreams = true
+    }
+}

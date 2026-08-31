@@ -1,0 +1,128 @@
+package ${package}
+
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import org.slf4j.LoggerFactory
+import org.testcontainers.containers.PostgreSQLContainer
+import org.testcontainers.containers.output.Slf4jLogConsumer
+import org.testcontainers.junit.jupiter.Container
+import org.testcontainers.junit.jupiter.Testcontainers
+import io.koraframework.test.extension.junit5.KoraAppTest
+import io.koraframework.test.extension.junit5.KoraAppTestConfigModifier
+import io.koraframework.test.extension.junit5.KoraConfigModification
+import io.koraframework.test.extension.junit5.TestComponent
+import java.time.Duration
+
+// Integration test using the TestApplication submodule pattern (Kotlin, Kora 2.x).
+//
+// The production @KoraApp does not declare a repository with findAll()/deleteAll(), so the test
+// source set extends the graph with one (see TestApplication.kt.template). @KoraAppTest must point
+// at TestApplication, not Application, and the added components must be reachable from a @Root or
+// the compile-time graph builder prunes them.
+//
+// Build wiring — two independent settings, often in two different modules:
+//   module whose src/test declares @KoraApp:   kspTest("io.koraframework:symbol-processors:${property("koraVersion")}")
+//   module compiling the production @KoraApp:  ksp { arg("kora.app.submodule.enabled", "true") }
+//                                              — only when that is a DIFFERENT Gradle module
+//
+//   tasks.test {
+//       exclude("**/\$*")          // generated classes start with $ and confuse JUnit discovery
+//       failOnNoDiscoveredTests = false
+//   }
+@Testcontainers
+@KoraAppTest(TestApplication::class)
+class ${repositoryName}Test : KoraAppTestConfigModifier {
+
+    companion object {
+        @Container
+        @JvmStatic
+        val POSTGRES = PostgreSQLContainer("postgres:16-alpine")
+            .withStartupTimeout(Duration.ofSeconds(30))
+            .withLogConsumer(Slf4jLogConsumer(LoggerFactory.getLogger(PostgreSQLContainer::class.java)))
+    }
+
+    @TestComponent
+    lateinit var ${repositoryVarName}: ${repositoryName}
+
+    @TestComponent
+    lateinit var testRepository: TestApplication.Test${entityName}Repository
+
+    // "jdbc", not the 1.x "db". Telemetry logging/metrics default to false — enable them here if a
+    // test asserts on them.
+    override fun config(): KoraConfigModification =
+        KoraConfigModification.ofString(
+            """
+            jdbc {
+              jdbcUrl = ${'$'}{POSTGRES_JDBC_URL}
+              username = ${'$'}{POSTGRES_USER}
+              password = ${'$'}{POSTGRES_PASS}
+              poolName = "kora-test"
+            }
+            flyway {
+              locations = "db/migration"
+            }
+            """.trimIndent()
+        )
+            .withSystemProperty("POSTGRES_JDBC_URL", POSTGRES.jdbcUrl)
+            .withSystemProperty("POSTGRES_USER", POSTGRES.username)
+            .withSystemProperty("POSTGRES_PASS", POSTGRES.password)
+
+    @BeforeEach
+    fun cleanup() = testRepository.deleteAll()
+
+    @Test
+    fun `should save and find`() {
+        // given
+        val entity = ${entityName}("test-data")
+
+        // when
+        val id = ${repositoryVarName}.insert(entity)
+
+        // then
+        val found = ${repositoryVarName}.findById(id)
+        assertNotNull(found)
+        assertEquals(entity.data, found?.data)
+    }
+
+    @Test
+    fun `should update`() {
+        // given
+        val id = ${repositoryVarName}.insert(${entityName}("original-data"))
+
+        // when
+        ${repositoryVarName}.update(${entityName}(id, "updated-data"))
+
+        // then
+        assertEquals("updated-data", ${repositoryVarName}.findById(id)?.data)
+    }
+
+    @Test
+    fun `should delete`() {
+        // given
+        val id = ${repositoryVarName}.insert(${entityName}("test-data"))
+
+        // when
+        ${repositoryVarName}.deleteById(id)
+
+        // then
+        assertNull(${repositoryVarName}.findById(id))
+        assertEquals(0, testRepository.findAll().size)
+    }
+
+    @Test
+    fun `should find all`() {
+        // given
+        ${repositoryVarName}.insert(${entityName}("data-1"))
+        ${repositoryVarName}.insert(${entityName}("data-2"))
+        ${repositoryVarName}.insert(${entityName}("data-3"))
+
+        // when
+        val all = testRepository.findAll()
+
+        // then
+        assertEquals(3, all.size)
+    }
+}

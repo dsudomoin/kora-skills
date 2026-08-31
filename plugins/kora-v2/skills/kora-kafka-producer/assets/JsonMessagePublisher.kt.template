@@ -1,0 +1,27 @@
+package ${packagePath}.publisher
+
+import java.time.Instant
+import io.koraframework.json.common.annotation.Json
+import io.koraframework.kafka.common.annotation.KafkaPublisher
+import io.koraframework.kafka.common.annotation.KafkaPublisher.Topic
+
+// @Json on the DTO generates a JsonWriter at compile time; @Json on the parameter tells
+// the publisher processor to resolve the JSON Serializer<T> for that parameter.
+// Requires io.koraframework:json-common and JsonModule in the @KoraApp.
+@KafkaPublisher("kafka.producer.jsonPublisher")
+interface JsonMessagePublisher {
+
+    @Json
+    data class MyEvent(
+        val id: String,
+        val name: String,
+        val code: Int,
+        val timestamp: Instant
+    )
+
+    @Topic(".topic")
+    fun sendEvent(@Json event: MyEvent)
+
+    @Topic(".topic")
+    fun sendEvent(key: String, @Json event: MyEvent)
+}

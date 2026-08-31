@@ -1,0 +1,61 @@
+// Outbound call wrapped with @Fallback + @CircuitBreakable + @Retryable + @Timeout (Kora 2.0).
+// Requires the spec interfaces from ResilientSpecs.kt.template.
+// The class AND every annotated method must be `open` — otherwise KSP fails the build with
+// "AOP aspect cannot be applied to class ... because the class is not open".
+// Replace `com.example.app.resilience` with your package.
+
+package com.example.app.resilience
+
+import io.koraframework.common.annotation.Component
+import io.koraframework.resilient.circuitbreaker.annotation.CircuitBreakable
+import io.koraframework.resilient.fallback.annotation.Fallback
+import io.koraframework.resilient.retry.annotation.Retryable
+import io.koraframework.resilient.timeout.annotation.Timeout
+
+@Component
+open class PaymentService(private val gateway: PaymentGateway) {
+
+    // Declaration order IS nesting order: the FIRST annotation listed is the OUTERMOST wrapper,
+    // the LAST is innermost and calls the real body.
+    //   1. @Timeout (innermost) bounds ONE attempt.
+    //   2. @Retryable repeats that timed attempt.
+    //   3. @CircuitBreakable short-circuits before any retry runs once it is OPEN.
+    //   4. @Fallback (outermost) catches CallNotPermittedException, RetryExhaustedException,
+    //      TimeoutExhaustedException and the business exception alike.
+    //
+    // Moving @Fallback to the bottom makes it innermost: it would swallow the failure before the
+    // circuit breaker records it, and the breaker would never open.
+    @Fallback(method = "chargeFallback(request)")
+    @CircuitBreakable(PaymentCircuitBreaker::class)
+    @Retryable(PaymentRetry::class)
+    @Timeout(PaymentTimeouter::class)
+    open fun charge(request: PaymentRequest): PaymentResult = gateway.charge(request)
+
+    // Overall budget instead of a per-attempt bound: @Timeout above @Retryable.
+    // Make the budget larger than the whole retry schedule or later attempts never run.
+    @Timeout(PaymentTimeouter::class)
+    @Retryable(PaymentRetry::class)
+    open fun chargeWithOverallBudget(request: PaymentRequest): PaymentResult = gateway.charge(request)
+
+    // Fallback method: same class, non-private, parameters exactly as referenced above,
+    // plus at most one @Fallback.Reason parameter. It does not have to be `open` itself.
+    protected open fun chargeFallback(request: PaymentRequest): PaymentResult =
+        PaymentResult.pendingManualReview(request.id)
+}
+
+// ---------------------------------------------------------------- placeholders
+
+data class PaymentRequest(val id: String, val amountMinor: Long)
+
+data class PaymentResult(val id: String, val status: String) {
+    companion object {
+        fun pendingManualReview(id: String) = PaymentResult(id, "PENDING_MANUAL_REVIEW")
+    }
+}
+
+@Component
+open class PaymentGateway {
+    open fun charge(request: PaymentRequest): PaymentResult = PaymentResult(request.id, "CHARGED")
+}
+
+// See ResilientSpecs.kt.template for the spec interfaces and the matching HOCON.

@@ -1,0 +1,30 @@
+# Development profile - both viewers open, no gating.
+
+openapi {
+  management {
+    files = [
+      "openapi/api-v1.yaml",
+      "openapi/api-v2.yaml"
+    ]
+    enabled = true
+    path = "/openapi"
+
+    # Two files => the specs move to /openapi/api-v1 and /openapi/api-v2, and both viewers show a
+    # selector. Basenames must stay unique: the handler keys specs by basename with the directory
+    # and extension stripped, so two files named api.yaml would collapse into one route.
+    swaggerui {
+      enabled = true
+      path = "/swagger-ui"
+    }
+
+    scalar {
+      enabled = true
+      path = "/scalar"
+    }
+  }
+}
+
+# Telemetry logging defaults to false in Kora 2.0, so request logging has to be asked for.
+httpServer {
+  telemetry.logging.enabled = true
+}

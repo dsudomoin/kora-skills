@@ -1,0 +1,22 @@
+// HOCON config for a Kora 2.0 service. Typed access is through @ConfigSource interfaces
+// (see the kora-config-hocon skill); nothing here is read reflectively.
+
+// Every value below is a plain component in the graph once a @ConfigSource maps it, which is why
+// a component can depend on it and why refreshing the config node rebuilds its dependents.
+// Dollar-brace is HOCON substitution syntax, reserved for environment lookups: ${VARIABLE} is
+// required, the ${?VARIABLE} form below overrides the preceding value only when the variable is
+// set. Ordinary keys, including your own package names, are written literally.
+export {
+  enabled = true
+  enabled = ${?EXPORT_ENABLED}
+}
+
+// Levels are applied at runtime by LoggingModule; logback.xml only wires appenders.
+logging.levels {
+  "root": "WARN"
+  "io.koraframework": "INFO"
+}
+
+// The application config is watched for changes and the graph is refreshed on modification.
+// Disable with KORA_CONFIG_WATCHER_ENABLED=false or -Dkora.config.watcher.enabled=false.
+// Components that must survive such a refresh depend on ValueOf<T> rather than T.

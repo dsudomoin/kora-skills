@@ -1,0 +1,7 @@
+rootProject.name = '${projectName}'
+
+// Kora's DI graph does not require a multi-module layout. Split only when module boundaries are
+// real; @KoraSubmodule then exposes a module's factories to the @KoraApp that aggregates them.
+//
+// include ':common'
+// include ':app'

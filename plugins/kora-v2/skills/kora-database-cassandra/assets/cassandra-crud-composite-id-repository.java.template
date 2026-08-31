@@ -1,0 +1,54 @@
+package ${package};
+
+import io.koraframework.database.cassandra.CassandraRepository;
+import io.koraframework.database.common.annotation.Batch;
+import io.koraframework.database.common.annotation.Query;
+import io.koraframework.database.common.annotation.Repository;
+import org.jspecify.annotations.Nullable;
+
+import java.util.List;
+
+/*
+ * TEMPLATE NOTES — delete this block after copying.
+ *
+ * Pair with cassandra-entity-composite-id.java.template: ${entity_name} carries
+ * @Id @Embedded ID id, and ID is a plain nested record.
+ *
+ * - A parameter of type ${entity_name}.ID is treated as an entity parameter, so it binds per
+ *   field: :id.${id1_field}, :id.${id2_field}.
+ * - An entity's nested key binds through the full path: :entity.id.${id1_field}.
+ * - Cassandra requires the full partition key in every WHERE clause; clustering columns may be
+ *   restricted only after all partition-key columns are bound.
+ * - IF NOT EXISTS / IF is a lightweight transaction, not a transaction.
+ */
+@Repository
+public interface ${repository_name} extends CassandraRepository {
+
+    @Query("SELECT * FROM ${table_name} WHERE ${id1_field} = :id.${id1_field} AND ${id2_field} = :id.${id2_field}")
+    @Nullable
+    ${entity_name} findById(${entity_name}.ID id);
+
+    @Query("SELECT * FROM ${table_name} WHERE ${id1_field} = :${id1_field}")
+    List<${entity_name}> findByPartition(${id1_type} ${id1_field});
+
+    @Query("INSERT INTO ${table_name}(${id1_field}, ${id2_field}, name, field1, field2) VALUES (:entity.id.${id1_field}, :entity.id.${id2_field}, :entity.name, :entity.field1, :entity.field2)")
+    void insert(${entity_name} entity);
+
+    @Query("INSERT INTO ${table_name}(${id1_field}, ${id2_field}, name, field1, field2) VALUES (:entity.id.${id1_field}, :entity.id.${id2_field}, :entity.name, :entity.field1, :entity.field2)")
+    void insertBatch(@Batch List<${entity_name}> entity);
+
+    @Query("INSERT INTO ${table_name}(${id1_field}, ${id2_field}, name, field1, field2) VALUES (:entity.id.${id1_field}, :entity.id.${id2_field}, :entity.name, :entity.field1, :entity.field2) IF NOT EXISTS")
+    boolean insertIfNotExists(${entity_name} entity);
+
+    @Query("UPDATE ${table_name} SET name = :entity.name, field1 = :entity.field1, field2 = :entity.field2 WHERE ${id1_field} = :entity.id.${id1_field} AND ${id2_field} = :entity.id.${id2_field}")
+    void update(${entity_name} entity);
+
+    @Query("UPDATE ${table_name} SET name = :entity.name, field1 = :entity.field1, field2 = :entity.field2 WHERE ${id1_field} = :entity.id.${id1_field} AND ${id2_field} = :entity.id.${id2_field}")
+    void updateBatch(@Batch List<${entity_name}> entity);
+
+    @Query("DELETE FROM ${table_name} WHERE ${id1_field} = :id.${id1_field} AND ${id2_field} = :id.${id2_field}")
+    void deleteById(${entity_name}.ID id);
+
+    @Query("TRUNCATE ${table_name}")
+    void deleteAll();
+}

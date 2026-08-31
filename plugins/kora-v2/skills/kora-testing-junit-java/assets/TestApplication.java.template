@@ -1,0 +1,66 @@
+package ${package};
+
+import java.util.List;
+
+import io.koraframework.common.annotation.KoraApp;
+import io.koraframework.common.annotation.Root;
+import io.koraframework.common.annotation.Tag;
+import io.koraframework.database.common.annotation.Query;
+import io.koraframework.database.common.annotation.Repository;
+import io.koraframework.database.jdbc.JdbcRepository;
+import ${package}.model.dao.${entityName};
+
+/**
+ * Kora 2.0 test application graph: a second @KoraApp in src/test that extends the production one
+ * and adds test-only components, such as a repository used for cleanup and assertions.
+ *
+ * This variant keeps the repository a plain @Repository and pulls it into the graph through a
+ * @Root default method that consumes it — otherwise nothing depends on it and the trimmed test
+ * graph drops it. See TestApplicationWithCleanup.java.template for the @Root @Component variant.
+ *
+ * The Kora maintainers recommend black-box testing of the packaged image as the primary source of
+ * truth. Use this pattern when component/integration tests need direct repository access.
+ *
+ * Build requirements — note that they live in TWO DIFFERENT modules:
+ *
+ * 1. The PRODUCTION module that declares the original @KoraApp must generate a submodule:
+ *        tasks.named("compileJava", JavaCompile) {
+ *            options.compilerArgs += ["-Akora.app.submodule.enabled=true"]
+ *        }
+ *    Without it the processor only prints a WARNING —
+ *        Expected @KoraApp as SubModule, but Submodule implementation not found for: ...
+ *    the build stays green, and the parent application's components are silently missing from the
+ *    test graph. That surfaces later as "No matching component was found in the application graph".
+ *
+ * 2. The module owning these test sources needs the annotation processor and a JUnit filter:
+ *        dependencies {
+ *            testAnnotationProcessor "io.koraframework:annotation-processors"
+ *        }
+ *        test {
+ *            filter {
+ *                excludeTestsMatching '*$*'
+ *                excludeTestsMatching "*TestApplication"
+ *            }
+ *        }
+ *    Watch out for a module-wide options.compilerArgs += ["-proc:none"], which silently disables
+ *    the processor you just declared.
+ */
+@KoraApp
+public interface TestApplication extends Application {
+
+    @Repository
+    interface Test${entityName}Repository extends JdbcRepository {
+
+        @Query("SELECT %{return#selects} FROM %{return#table}")
+        List<${entityName}> findAll();
+
+        @Query("DELETE FROM ${tableName}")
+        void deleteAll();
+    }
+
+    @Tag(TestApplication.class)
+    @Root
+    default String testRoot(Test${entityName}Repository ignored) {
+        return "test-root";
+    }
+}

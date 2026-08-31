@@ -46,8 +46,8 @@
     "websiteURL": "https://kora-projects.github.io/kora-docs",
     "brandColor": "#ffc105",
     "defaultPrompt": [
-      "What is Kora Framework and why its good for coding agents?",
-      "Explain Kora Framework basics for a beginner?",
+      "What is Kora Framework and why its good for enterprise grade development and coding agents?",
+      "Explain Kora Framework basics for a beginner? Can you build Kora learning lessons plan for me?",
       "Setup Kora HelloWorld application and explain it to me"
     ]
   }

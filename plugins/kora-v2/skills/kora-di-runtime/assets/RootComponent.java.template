@@ -1,0 +1,46 @@
+package ${packagePath};
+
+import io.koraframework.application.graph.Lifecycle;
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Root;
+
+/**
+ * A component that must run although nothing depends on it.
+ *
+ * <p>Kora resolves the graph from the root set outwards. Without {@code @Root} this class has no
+ * dependents, is never instantiated, and {@link #init()} never runs — with a green build and no
+ * error anywhere. Implementing {@link Lifecycle} does <b>not</b> make a component reachable.
+ *
+ * <p>Typical roots: bucket/topic/index initialisers, bootstrap and warm-up tasks, listeners you
+ * start by hand. Kora's own HTTP server, Kafka consumers and schedulers already declare their own
+ * roots and must not be re-rooted here.
+ */
+@Root
+@Component
+public final class ${ComponentName} implements Lifecycle {
+
+    private final ${DependencyType} ${dependencyName};
+
+    public ${ComponentName}(${DependencyType} ${dependencyName}) {
+        this.${dependencyName} = ${dependencyName};
+    }
+
+    /**
+     * Runs once the instance exists and before any dependent is created.
+     * Throwing here aborts startup — which is the correct behaviour when the component cannot
+     * reach what it needs.
+     */
+    @Override
+    public void init() throws Exception {
+        ${dependencyName}.start();
+    }
+
+    /**
+     * Runs during graceful shutdown (SIGTERM), after everything depending on this component has
+     * been released. Bound every wait so shutdown cannot hang.
+     */
+    @Override
+    public void release() throws Exception {
+        ${dependencyName}.stop();
+    }
+}

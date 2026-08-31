@@ -1,0 +1,77 @@
+package ${package};
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.Mock;
+
+import io.koraframework.test.extension.junit5.KoraAppTest;
+import io.koraframework.test.extension.junit5.KoraAppTestConfigModifier;
+import io.koraframework.test.extension.junit5.KoraConfigModification;
+import io.koraframework.test.extension.junit5.TestComponent;
+
+/**
+ * Kora 2.0 component test: one real component from the application graph, its dependency mocked.
+ *
+ * Template placeholders are ${...} tokens such as ${componentName}. HOCON substitutions inside the
+ * config text block (${SOME_ENV}) are Kora config placeholders — leave them as they are.
+ *
+ * Build requirements (see the skill's Quick Start):
+ *   annotationProcessor     "io.koraframework:annotation-processors"
+ *   testAnnotationProcessor "io.koraframework:annotation-processors"
+ *   testImplementation      "io.koraframework:test-junit5"
+ *   testImplementation      "org.mockito:mockito-core:5.23.0"   // older Byte Buddy fails on Java 25
+ */
+@KoraAppTest(Application.class)
+class ${componentName}Test implements KoraAppTestConfigModifier {
+
+    @Mock
+    @TestComponent
+    private ${dependencyName} ${dependencyVarName};
+
+    @TestComponent
+    private ${componentName} ${componentVarName};
+
+    /**
+     * ofString REPLACES application.conf for this test, so every key the graph needs must be here.
+     * Use Kora 2.0 keys: jdbc { }, httpServer.port, httpServer.system.port,
+     * resilient.circuitbreaker.<name> { type, countBased.windowSize, ... }.
+     * Telemetry logging/metrics default to false — enable them if the test asserts on them.
+     *
+     * When the production config already reads ${SOME_ENV} placeholders, prefer
+     * KoraConfigModification.ofSystemProperty("SOME_ENV", value) instead of an inline block.
+     */
+    @Override
+    public KoraConfigModification config() {
+        // port = 0 binds an ephemeral port, so parallel test classes never collide on 8080/8085;
+        // the injected HttpServer component's port() reports the port actually bound.
+        return KoraConfigModification.ofString("""
+            httpServer {
+              port = 0
+              system.port = 0
+            }
+            """);
+    }
+
+    @BeforeEach
+    void setup() {
+        // Stub the mocked dependency; contracts are synchronous, so stub plain values.
+        // when(${dependencyVarName}.findById(any())).thenReturn(Optional.of(TEST_ENTITY));
+    }
+
+    @Test
+    void shouldDoSomething() {
+        // given
+        // when(${dependencyVarName}.findById("1")).thenReturn(Optional.of(TEST_ENTITY));
+
+        // when
+        var result = ${componentVarName}.doSomething();
+
+        // then
+        assertNotNull(result);
+        verify(${dependencyVarName}).findById(any());
+    }
+}

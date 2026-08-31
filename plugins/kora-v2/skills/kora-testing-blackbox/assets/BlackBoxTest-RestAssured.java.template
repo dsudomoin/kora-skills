@@ -1,0 +1,211 @@
+package ${package};
+
+import static io.restassured.RestAssured.given;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.notNullValue;
+
+import io.restassured.RestAssured;
+import io.restassured.http.ContentType;
+import java.net.URI;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.UUID;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.Network;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.containers.output.Slf4jLogConsumer;
+import org.testcontainers.containers.wait.strategy.Wait;
+import org.testcontainers.images.builder.ImageFromDockerfile;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.utility.DockerImageName;
+
+/**
+ * Black-box tests for ${className} using the RestAssured DSL.
+ *
+ * <p>Runs the packaged application image and exercises it only through its HTTP API.
+ * Add the test dependency:
+ * <pre>
+ * testImplementation "io.rest-assured:rest-assured:5.5.0"
+ * testImplementation "org.testcontainers:junit-jupiter:1.21.4"
+ * testImplementation "org.testcontainers:testcontainers:1.21.4"
+ * testImplementation "org.testcontainers:postgresql:1.21.4"
+ * </pre>
+ *
+ * <p>Requires a running Docker daemon and a distribution archive built beforehand
+ * ({@code test { dependsOn ":my-service-app:distTar" }}).
+ */
+@Testcontainers
+class ${className} {
+
+    @Container
+    private static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine")
+            .withNetwork(Network.SHARED)
+            .withNetworkAliases("postgres")
+            .withStartupTimeout(Duration.ofSeconds(30));
+
+    @Container
+    private static final AppContainer APP = AppContainer.build()
+            .withNetwork(Network.SHARED)
+            .dependsOn(POSTGRES)
+            // container port over the shared network, not the host-mapped one
+            .withEnv("POSTGRES_JDBC_URL", "jdbc:postgresql://postgres:5432/" + POSTGRES.getDatabaseName())
+            .withEnv("POSTGRES_USER", POSTGRES.getUsername())
+            .withEnv("POSTGRES_PASS", POSTGRES.getPassword());
+
+    /**
+     * Assigned here rather than in a field initialiser: getMappedPort is only meaningful once
+     * the container is running, and @Container fields are started before @BeforeAll.
+     */
+    @BeforeAll
+    static void setup() {
+        RestAssured.baseURI = APP.getURI().toString();
+    }
+
+    @Test
+    void systemReadiness_ShouldBe200() {
+        given()
+                .baseUri(APP.getSystemURI().toString())
+        .when()
+                .get("/system/readiness")
+        .then()
+                .statusCode(200);
+    }
+
+    /**
+     * A 200 from /metrics proves nothing: without a MetricsScraper in the graph the handler
+     * still answers 200 with the body "# Metric Scraper disabled". This assertion needs
+     * io.koraframework:micrometer-module on the application classpath and
+     * httpServer.telemetry.metrics.enabled = true (component metrics default to false in 2.0).
+     */
+    @Test
+    void metrics_ShouldExposeRealSeries() {
+        given().when().get("/api/products/does-not-exist").then().statusCode(404);
+
+        given()
+                .baseUri(APP.getSystemURI().toString())
+        .when()
+                .get("/metrics")
+        .then()
+                .statusCode(200)
+                .body(containsString("kora_up"))
+                .body(containsString("http_server_request_duration"));
+    }
+
+    @Test
+    void createProduct_ShouldReturn201() {
+        given()
+                .contentType(ContentType.JSON)
+                .body(productJson("Widget"))
+        .when()
+                .post("/api/products")
+        .then()
+                .statusCode(201)
+                .body("id", notNullValue())
+                .body("name", equalTo("Widget"));
+    }
+
+    @Test
+    void readUpdateDelete_ShouldRoundTrip() {
+        var id = given()
+                .contentType(ContentType.JSON)
+                .body(productJson("Original"))
+        .when()
+                .post("/api/products")
+        .then()
+                .statusCode(201)
+        .extract()
+                .path("id").toString();
+
+        given()
+        .when()
+                .get("/api/products/" + id)
+        .then()
+                .statusCode(200)
+                .body("name", equalTo("Original"));
+
+        given()
+                .contentType(ContentType.JSON)
+                .body(productJson("Renamed"))
+        .when()
+                .put("/api/products/" + id)
+        .then()
+                .statusCode(200)
+                .body("name", equalTo("Renamed"));
+
+        given()
+        .when()
+                .delete("/api/products/" + id)
+        .then()
+                .statusCode(204);
+
+        given()
+        .when()
+                .get("/api/products/" + id)
+        .then()
+                .statusCode(404);
+    }
+
+    @Test
+    void invalidBody_ShouldReturn400() {
+        given()
+                .contentType(ContentType.JSON)
+                .body("{}")
+        .when()
+                .post("/api/products")
+        .then()
+                .statusCode(400);
+    }
+
+    /** A static container is shared by every method, so the data must be unique, not the container. */
+    private static String productJson(String name) {
+        return """
+            {"name": "%s", "sku": "%s"}
+            """.formatted(name, UUID.randomUUID());
+    }
+
+    /**
+     * The application under test. Port 8085 is the system server (httpServer.system.port),
+     * which serves /system/readiness, /system/liveness and /metrics; 8080 is the public API
+     * (httpServer.port). Gate on the readiness probe, never on a log line - Kora's startup
+     * message wording is not part of its contract.
+     */
+    static final class AppContainer extends GenericContainer<AppContainer> {
+
+        private AppContainer() {
+            // image names must be lowercase
+            super(new ImageFromDockerfile("my-service-black-box")
+                    .withDockerfile(Path.of("../my-service-app/Dockerfile")));
+        }
+
+        private AppContainer(DockerImageName image) {
+            super(image);
+        }
+
+        /** Reuses a prebuilt image when APP_IMAGE is set (CI), otherwise builds the Dockerfile. */
+        static AppContainer build() {
+            var appImage = System.getenv("APP_IMAGE");
+            var container = (appImage != null && !appImage.isBlank())
+                    ? new AppContainer(DockerImageName.parse(appImage))
+                    : new AppContainer();
+
+            return container
+                    .withExposedPorts(8080, 8085)
+                    .withStartupTimeout(Duration.ofSeconds(30))
+                    .waitingFor(Wait.forHttp("/system/readiness").forPort(8085).forStatusCode(200))
+                    .withLogConsumer(new Slf4jLogConsumer(LoggerFactory.getLogger(AppContainer.class)));
+        }
+
+        URI getURI() {
+            return URI.create("http://" + getHost() + ":" + getMappedPort(8080));
+        }
+
+        URI getSystemURI() {
+            return URI.create("http://" + getHost() + ":" + getMappedPort(8085));
+        }
+    }
+}

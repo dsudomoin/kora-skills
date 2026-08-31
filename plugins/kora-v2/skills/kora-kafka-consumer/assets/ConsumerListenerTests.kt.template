@@ -1,0 +1,86 @@
+package ${packagePath}.listener
+
+import io.goodforgod.testcontainers.extensions.ContainerMode
+import io.goodforgod.testcontainers.extensions.kafka.ConnectionKafka
+import io.goodforgod.testcontainers.extensions.kafka.Event
+import io.goodforgod.testcontainers.extensions.kafka.KafkaConnection
+import io.goodforgod.testcontainers.extensions.kafka.TestcontainersKafka
+import io.goodforgod.testcontainers.extensions.kafka.Topics
+import io.koraframework.application.graph.Lifecycle
+import io.koraframework.common.annotation.Tag
+import io.koraframework.test.extension.junit5.KoraAppTest
+import io.koraframework.test.extension.junit5.KoraAppTestConfigModifier
+import io.koraframework.test.extension.junit5.KoraConfigModification
+import io.koraframework.test.extension.junit5.TestComponent
+import ${packagePath}.Application
+import org.awaitility.Awaitility
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Test
+import java.time.Duration
+
+/**
+ * Integration test for ${listenerName} against a real broker.
+ *
+ * Two things make a Kora Kafka test work:
+ *
+ *  1. `bootstrap.servers` in application.conf must be overridable — write the literal first and
+ *     override it with an optional substitution, then set that system property here.
+ *  2. The generated container must be pulled into the test graph by its tag, otherwise @KoraAppTest
+ *     prunes it and the listener never starts.
+ *
+ * Tests are ordinary functions: Kora 2.0 contracts are synchronous, so there is no runTest and no
+ * coroutine dispatcher anywhere in a listener test.
+ */
+@TestcontainersKafka(mode = ContainerMode.PER_RUN, topics = Topics("${topicName}"))
+@KoraAppTest(Application::class)
+class ${listenerName}Tests : KoraAppTestConfigModifier {
+
+    @ConnectionKafka
+    lateinit var connection: KafkaConnection
+
+    @Tag(${listenerName}Module.${listenerName}ProcessTag::class)
+    @TestComponent
+    lateinit var consumerLifecycle: Lifecycle
+
+    @TestComponent
+    lateinit var listener: ${listenerName}
+
+    override fun config(): KoraConfigModification =
+        KoraConfigModification.ofSystemProperty("KAFKA_BOOTSTRAP", connection.params().bootstrapServers())
+
+    @Test
+    fun consumesRecord() {
+        connection.send("${topicName}", Event.ofValueAndRandomKey("payload"))
+
+        Awaitility.await()
+            .atMost(Duration.ofSeconds(20))
+            .until { listener.processedCount() == 1 }
+    }
+
+    @Test
+    fun skipsBlankRecord() {
+        connection.send("${topicName}", Event.ofValueAndRandomKey(""))
+
+        Awaitility.await()
+            .atMost(Duration.ofSeconds(20))
+            .until { listener.skippedCount() == 1 }
+
+        assertEquals(0, listener.processedCount())
+    }
+}
+
+/*
+ * Test config requirements (application.conf, or an inline KoraConfigModification.ofString):
+ *
+ *   kafka.consumer.${listenerNameLower} {
+ *     topics = ["${topicName}"]
+ *     pollTimeout = 250ms
+ *     driverProperties {
+ *       "bootstrap.servers" = "localhost:9092"
+ *       "bootstrap.servers" = ${?KAFKA_BOOTSTRAP}
+ *       "group.id" = "${consumerGroupId}"
+ *       "auto.offset.reset" = "earliest"      # otherwise records sent before the join are missed
+ *     }
+ *     telemetry.logging.enabled = true        # off by default in Kora 2.0
+ *   }
+ */

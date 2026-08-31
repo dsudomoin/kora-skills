@@ -1,0 +1,64 @@
+// Kotlin twin of S3BucketInitializer.java.template.
+//
+// Bucket administration is NOT part of the declarative @S3 contract, so it goes through the AWS SDK
+// client published by io.koraframework:s3-client-aws. An application that also wants declarative
+// @S3.Client interfaces pulls in BOTH artifacts and extends BOTH modules:
+//
+//   implementation("io.koraframework:s3-client-aws")
+//   implementation("io.koraframework.experimental:s3-client-kora")
+//   implementation("io.koraframework:http-client-jdk")
+//
+//   @KoraApp
+//   interface Application : HoconConfigModule, LogbackModule, JdkHttpClientModule,
+//       AwsS3ClientModule,      // this file
+//       KoraS3ClientModule      // the @S3.Client interfaces
+//
+// Replace `com.example.storage` with your package.
+
+package com.example.storage
+
+import io.koraframework.application.graph.Lifecycle
+import io.koraframework.common.annotation.Component
+import io.koraframework.common.annotation.Root
+import io.koraframework.config.common.annotation.ConfigSource
+import software.amazon.awssdk.services.s3.S3Client
+import software.amazon.awssdk.services.s3.model.CreateBucketRequest
+import software.amazon.awssdk.services.s3.model.HeadBucketRequest
+import software.amazon.awssdk.services.s3.model.NoSuchBucketException
+
+/**
+ * The declarative client reads its bucket through `@S3.Bucket`, which produces a generated class
+ * rather than an injectable component — so code that needs the name separately reads the same
+ * config path itself.
+ */
+@ConfigSource("s3client.uploads")
+interface S3UploadsConfig {
+    fun bucket(): String
+}
+
+/**
+ * `@Root` IS LOAD-BEARING. This component prepares external state and nothing depends on it, so
+ * without `@Root` the graph prunes it — and the `S3Client` it pulled in goes with it. The failure
+ * names the SDK type rather than this class:
+ * ```
+ * interface software.amazon.awssdk.services.s3.S3Client wasn't found in graph
+ * ```
+ */
+@Root
+@Component
+class S3BucketInitializer(
+    private val s3Client: S3Client,
+    private val config: S3UploadsConfig
+) : Lifecycle {
+
+    override fun init() {
+        val bucket = config.bucket()
+        try {
+            s3Client.headBucket(HeadBucketRequest.builder().bucket(bucket).build())
+        } catch (e: NoSuchBucketException) {
+            s3Client.createBucket(CreateBucketRequest.builder().bucket(bucket).build())
+        }
+    }
+
+    override fun release() {}
+}

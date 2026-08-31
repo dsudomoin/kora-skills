@@ -1,0 +1,89 @@
+// @Fallback for graceful degradation (Kora 2.0).
+// The class AND every annotated method must be `open`; the fallback method itself need not be.
+// Replace `com.example.app.resilience` with your package.
+//
+// The `value` attribute was REMOVED in 2.0 — @Fallback(method = "...") is the only form.
+// There is no @FallbackSpec, no resilient.fallback.<name> section and no FallbackPredicate;
+// filtering is done with the @Fallback.Reason parameter type.
+
+package com.example.app.resilience
+
+import io.koraframework.common.annotation.Component
+import io.koraframework.http.client.common.exception.HttpClientResponseException
+import io.koraframework.resilient.fallback.annotation.Fallback
+
+@Component
+open class ProductService(
+    private val repository: ProductRepository,
+    private val cache: ProductCache,
+    private val inventoryClient: InventoryClient
+) {
+
+    // `method` is a compile-time method reference: "name()" or "name(arg1, arg2)", where each
+    // argument is a PARAMETER NAME of this method. It is not an expression language.
+    // Every Throwable triggers the fallback unless a @Fallback.Reason parameter narrows it.
+    @Fallback(method = "getFromCache(id)")
+    open fun getProduct(id: String): Product =
+        repository.findById(id) ?: throw ProductNotFoundException(id)
+
+    // Fallback method rules:
+    //   1. same class as the annotated method
+    //   2. parameters == exactly the referenced arguments (+ at most one @Fallback.Reason)
+    //   3. return type assignable to the annotated method's return type
+    //   4. non-private — a private method is unreachable from the generated proxy
+    protected open fun getFromCache(id: String): Product = cache.get(id)
+
+    // The @Fallback.Reason parameter is NOT named in the reference string — the processor
+    // appends it. The reference stays "unknownStock(sku)" even though the fallback declares two
+    // parameters.
+    //
+    // The reason type is also a FILTER: the generated code emits
+    // `if (_e !is HttpClientResponseException) throw _e` before calling the fallback, so an
+    // exception of any other type propagates untouched.
+    //
+    // Unlike Java, Kotlin has no throws clause and therefore no restriction on the reason type —
+    // whatever you declare becomes the filter.
+    @Fallback(method = "unknownStock(sku)")
+    open fun checkStock(sku: String): Stock = inventoryClient.lookup(sku)
+
+    protected open fun unknownStock(sku: String, @Fallback.Reason reason: HttpClientResponseException): Stock =
+        Stock.UNKNOWN
+}
+
+// ---------------------------------------------------------------- placeholders
+
+data class Product(val id: String, val name: String)
+
+enum class Stock { IN_STOCK, OUT_OF_STOCK, UNKNOWN }
+
+class ProductNotFoundException(id: String) : RuntimeException("Product not found: $id")
+
+@Component
+open class ProductRepository {
+    open fun findById(id: String): Product? = null
+}
+
+@Component
+open class ProductCache {
+    open fun get(id: String): Product = Product(id, "unknown")
+}
+
+@Component
+open class InventoryClient {
+    open fun lookup(sku: String): Stock = Stock.IN_STOCK
+}
+
+// Placement matters. @Fallback belongs FIRST (outermost) in a stack so it catches
+// CallNotPermittedException, RetryExhaustedException and TimeoutExhaustedException too:
+//
+//   @Fallback(method = "chargeFallback(request)")
+//   @CircuitBreakable(PaymentCircuitBreaker::class)
+//   @Retryable(PaymentRetry::class)
+//   @Timeout(PaymentTimeouter::class)
+//
+// Listing @Fallback LAST makes it innermost: it would swallow the failure before the circuit
+// breaker records it, and the breaker would never open.
+//
+// The only fallback configuration in Kora 2.0 is telemetry:
+//
+// resilient.telemetry.fallback { logging.enabled = true, metrics.enabled = true }

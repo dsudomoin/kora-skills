@@ -1,0 +1,226 @@
+{
+  "evals": [
+    {
+      "id": "kora-testing-junit-java-component-basic",
+      "skills": ["kora-testing-junit-java"],
+      "query": "Write a JUnit 5 component test for my Kora UserService. It has a method createUser(UserRequest) that returns a UserResponse. Inject the real service from the application graph.",
+      "expected_behavior": [
+        "Annotates the test class with @KoraAppTest(Application.class) imported from io.koraframework.test.extension.junit5",
+        "Injects UserService with @TestComponent on a non-static, non-final field",
+        "Adds testImplementation \"io.koraframework:test-junit5\" versioned through platform(\"io.koraframework:kora-bom:$koraVersion\") with koraVersion=2.0.0.RC1, plus annotationProcessor \"io.koraframework:annotation-processors\"",
+        "Pins JUnit through platform(\"org.junit:junit-bom:$junitVersion\") with junitVersion=6.1.3, and a Java 25 toolchain",
+        "Asserts on the value the synchronous method returned; does not block, join or subscribe",
+        "Does not use ru.tinkoff.kora coordinates, the kora-parent BOM, or foreign-framework test annotations"
+      ],
+      "tags": ["component", "basic"]
+    },
+    {
+      "id": "kora-testing-junit-java-mock-component",
+      "skills": ["kora-testing-junit-java"],
+      "query": "I need to test OrderService which depends on UserRepository, but I want to mock the repository inside the Kora graph and verify the calls.",
+      "expected_behavior": [
+        "Combines @Mock with @TestComponent on the UserRepository field so the mock replaces the node in the application graph",
+        "States that @Mock on its own is invisible to the extension, which only inspects elements that also carry @TestComponent",
+        "Stubs with Mockito.when(...).thenReturn(...) on plain values and checks interactions with verify(...)",
+        "Explicitly avoids @ExtendWith(MockitoExtension.class) because @KoraAppTest already creates, injects, resets and strictness-checks the mocks",
+        "Adds org.mockito:mockito-core at 5.23.0 or newer",
+        "Does not rely on a mock-bean construct or any foreign-framework testing construct"
+      ],
+      "tags": ["mock", "basic"]
+    },
+    {
+      "id": "kora-testing-junit-java-config-modifier",
+      "skills": ["kora-testing-junit-java"],
+      "query": "How do I override configuration in a Kora 2.0 test, substituting environment-style placeholders like POSTGRES_JDBC_URL without a separate config file?",
+      "expected_behavior": [
+        "Implements KoraAppTestConfigModifier and returns a KoraConfigModification from config()",
+        "Uses KoraConfigModification.ofSystemProperty(...).withSystemProperty(...) for placeholder substitution, mentioning ofString / ofResourceFile as alternatives",
+        "Notes that ofString and ofResourceFile REPLACE application.conf rather than merging with it, so the block must carry every key the graph needs",
+        "Notes that KoraAppTestConfigModifier must be implemented as the interface method and cannot be combined with constructor injection",
+        "Does not use a foreign @TestPropertySource mechanism or application-test.properties conventions"
+      ],
+      "tags": ["config", "basic"]
+    },
+    {
+      "id": "kora-testing-junit-java-config-stale-1x-keys",
+      "skills": ["kora-testing-junit-java"],
+      "query": "I migrated this Kora test to 2.0 and it fails with 'ConfigValueException: Config expected value, but got null at path: ROOT.jdbc.username'. The config block is: KoraConfigModification.ofString(\"\"\"\\n db { jdbcUrl = ${POSTGRES_JDBC_URL} username = ${POSTGRES_USER} password = ${POSTGRES_PASS} }\\n publicApiHttpPort = 8080\\n privateApiHttpPort = 8085\\n\"\"\")",
+      "expected_behavior": [
+        "Renames the db { } section to jdbc { } and identifies that as the direct cause of the ConfigValueException",
+        "Renames publicApiHttpPort to httpServer.port and privateApiHttpPort to httpServer.system.port",
+        "Explains that a stale HOCON key is simply unrecognised and is ignored without any warning, so each server falls back to its own default (8080 public, 8085 system) and the test binds ports it never intended",
+        "Does not repeat the claim that stale port keys make both servers bind 8080 and fail with 'Address already in use'",
+        "Points out that HOCON embedded in Java source inside ofString is missed by resource-only scanners and migration scripts, so these blocks must be reviewed by hand",
+        "Does not leave any ru.tinkoff.kora-era config key in the block"
+      ],
+      "tags": ["config", "regression", "migration"]
+    },
+    {
+      "id": "kora-testing-junit-java-config-circuitbreaker-block",
+      "skills": ["kora-testing-junit-java"],
+      "query": "My Kora 2.0 test config block has resilient { circuitbreaker.pet { slidingWindowSize = 2, minimumRequiredCalls = 2, failureRateThreshold = 100 } } and the graph fails to initialize. Fix it.",
+      "expected_behavior": [
+        "Replaces slidingWindowSize with countBased.windowSize and adds an explicit window type such as FIXED_WINDOW",
+        "Keeps the remaining mandatory keys that have no defaults: minimumRequiredCalls, failureRateThreshold, permittedCallsInHalfOpenState, waitDurationInOpenState",
+        "Explains that countBased is declared @Nullable but validated on construction, so omitting it fails graph initialization with IllegalArgumentException: CircuitBreaker '<name>' property 'countBased' is not configured",
+        "Notes that named resilient sections no longer inherit from a default section",
+        "Does not invent a slidingWindowType or other 1.x-shaped keys"
+      ],
+      "tags": ["config", "resilience", "regression"]
+    },
+    {
+      "id": "kora-testing-junit-java-postgres-testcontainers",
+      "skills": ["kora-testing-junit-java"],
+      "query": "Write an integration test for my UserRepository against a real PostgreSQL using Testcontainers, with Flyway migrations applied.",
+      "expected_behavior": [
+        "Uses @Testcontainers with a static @Container PostgreSQLContainer, or the io.goodforgod:testcontainers-extensions-postgres @TestcontainersPostgreSQL extension",
+        "Implements KoraAppTestConfigModifier and feeds the container's jdbcUrl/username/password in as system properties",
+        "Writes the database section as jdbc { }, never db { }",
+        "Adds io.koraframework:database-jdbc and io.koraframework:database-flyway plus the mandatory dialect artifact org.flywaydb:flyway-database-postgresql, explaining that database-flyway ships flyway-core only",
+        "Adds testAnnotationProcessor \"io.koraframework:annotation-processors\" when the test source set declares its own @KoraApp",
+        "Does not use a foreign data/ORM layer, a JdbcTemplate, or a @DataJpaTest slice"
+      ],
+      "tags": ["integration", "database", "advanced"]
+    },
+    {
+      "id": "kora-testing-junit-java-testcontainers-coordinates",
+      "skills": ["kora-testing-junit-java"],
+      "query": "I want to move my Kora 2.0 tests to Testcontainers 2.x. My build has org.testcontainers:postgresql:1.21.4, org.testcontainers:kafka:1.21.4 and org.testcontainers:junit-jupiter:1.21.4. What changes, and should junit-jupiter follow the JUnit 6.1.3 BOM?",
+      "expected_behavior": [
+        "States that Testcontainers 2.x renamed the modules to org.testcontainers:testcontainers-postgresql, testcontainers-kafka and testcontainers-cassandra",
+        "States that org.testcontainers:junit-jupiter is a Testcontainers artifact whose version tracks Testcontainers, and must NOT be aligned with org.junit:junit-bom",
+        "Notes that io.koraframework:kora-bom constrains only io.koraframework artifacts, so Testcontainers, JUnit and Mockito versions are the application's own choice",
+        "Reports honestly that the migrated Kora 2.0 examples run on Testcontainers 1.21.4 with the old module names, often through io.goodforgod:testcontainers-extensions-*:0.15.0, while the framework's own internal fixtures use 2.0.5 with the new names",
+        "Does not claim kora-bom pins a Testcontainers version"
+      ],
+      "tags": ["integration", "dependencies", "regression"]
+    },
+    {
+      "id": "kora-testing-junit-java-test-application-submodule",
+      "skills": ["kora-testing-junit-java"],
+      "query": "My production graph has no cleanup repository. How do I add a test-only repository with deleteAll() and findAll() for Kora 2.0 integration tests?",
+      "expected_behavior": [
+        "Declares a @KoraApp TestApplication interface in the test source set that extends the production Application",
+        "Adds an inner @Repository interface extending JdbcRepository with @Query methods and keeps it in the graph either with @Root @Component on the repository or with a @Root default method that consumes it",
+        "Imports KoraApp, Root, Component and Tag from io.koraframework.common.annotation, Query/Repository from io.koraframework.database.common.annotation and JdbcRepository from io.koraframework.database.jdbc",
+        "Puts -Akora.app.submodule.enabled=true on the PRODUCTION module's compileJava and testAnnotationProcessor \"io.koraframework:annotation-processors\" on the module owning the test sources",
+        "Warns that a missing submodule flag only produces the warning 'Expected @KoraApp as SubModule, but Submodule implementation not found for: ...', leaving a green build whose test graph is silently missing the parent application's components",
+        "Excludes generated classes from JUnit discovery with filter { excludeTestsMatching '*$*' }",
+        "Does not use a foreign-framework repository bean or classpath component scanning"
+      ],
+      "tags": ["integration", "submodule", "advanced"]
+    },
+    {
+      "id": "kora-testing-junit-java-missing-test-processor",
+      "skills": ["kora-testing-junit-java"],
+      "query": "My Kora 2.0 test fails at startup with 'Cannot find generated Kora application graph for: com.example.TestApplication'. The main application builds fine and I do have annotationProcessor \"io.koraframework:annotation-processors\" in build.gradle.",
+      "expected_behavior": [
+        "Identifies that annotationProcessor covers only compileJava, and that a @KoraApp declared in src/test needs testAnnotationProcessor \"io.koraframework:annotation-processors\" as well",
+        "Notes that the testAnnotationProcessor configuration must also extend the koraBom platform configuration so the version resolves",
+        "Checks for a module-wide options.compilerArgs += [\"-proc:none\"] that silently disables the processor even when it is declared",
+        "Also checks the second half of the pattern: -Akora.app.submodule.enabled=true on the production module when TestApplication extends its @KoraApp",
+        "Suggests inspecting build/generated and running a clean build rather than editing generated sources",
+        "Does not suggest registering the graph manually or instantiating the application by hand"
+      ],
+      "tags": ["build", "regression"]
+    },
+    {
+      "id": "kora-testing-junit-java-graph-modifier",
+      "skills": ["kora-testing-junit-java"],
+      "query": "In a Kora 2.0 test I want to add a Supplier<Integer> component to the graph and also replace an existing tagged component with a value derived from the real one.",
+      "expected_behavior": [
+        "Implements KoraAppTestGraphModifier and returns KoraGraphModification.create()",
+        "Uses addComponent(TypeRef.of(Supplier.class, Integer.class), ...) with TypeRef from io.koraframework.application.graph",
+        "Passes the tag as a SINGLE Class<?> argument, e.g. replaceComponent(MyComponent.class, MyTag.class, supplier) — not a List of tag classes as in Kora 1.x",
+        "Uses the Function<KoraAppGraph, T> overload with graph.getFirst(...) to build the replacement from the real component, and notes that this form keeps the replaced node's dependencies while the Supplier form drops them",
+        "Notes that KoraAppTestGraphModifier cannot be combined with constructor injection",
+        "Does not use foreign @Primary/@Qualifier annotations or ApplicationContext bean overriding"
+      ],
+      "tags": ["graph", "advanced"]
+    },
+    {
+      "id": "kora-testing-junit-java-spy-strictness",
+      "skills": ["kora-testing-junit-java"],
+      "query": "I want a partial mock (spy) of a Kora component and I want unused stubs to fail the test.",
+      "expected_behavior": [
+        "Uses @Spy together with @TestComponent, and explains the difference between spying the instance the graph builds (dependencies kept) and spying a value from a field initializer (dependencies dropped)",
+        "Adds @MockitoStrictness(Strictness.STRICT_STUBS), imported from io.koraframework.test.extension.junit5.mockito, so unused stubs raise UnnecessaryStubbingException",
+        "States that the default level without the annotation is Strictness.WARN and that the valid values are LENIENT, WARN and STRICT_STUBS",
+        "Prefers doReturn/doThrow/doNothing over when(...) on a spy so the real method is not invoked while stubbing",
+        "Keeps the Mockito lifecycle under @KoraAppTest without attaching MockitoExtension",
+        "Does not invent a SILENT strictness level or introduce foreign test slices or PowerMock"
+      ],
+      "tags": ["mock", "advanced"]
+    },
+    {
+      "id": "kora-testing-junit-java-mockito-bytebuddy-floor",
+      "skills": ["kora-testing-junit-java"],
+      "query": "After migrating to Kora 2.0 my tests fail with 'Application graph failed to initialize with 3 errors' and no cause. Sometimes I see 'IllegalArgumentException: Java 25 (69) is not supported by the current version of Byte Buddy'. My build has org.mockito:mockito-core:5.18.0.",
+      "expected_behavior": [
+        "Identifies the root cause as a Byte Buddy that predates Java 25 class files, pulled in transitively by the old mockito-core",
+        "Raises mockito-core to 5.23.0 (Byte Buddy 1.18.x), the version in Kora's own catalog, and notes that several migrated examples still carry 5.18.0",
+        "Explains that the failure is hidden inside 'Application graph failed to initialize with N errors' with no visible suppressed exception, so it looks like a dependency-injection problem",
+        "Suggests ./gradlew <module>:dependencyInsight --dependency byte-buddy --configuration testRuntimeClasspath to confirm the resolved version, and temporarily enabling junitXml.required to see suppressed exceptions",
+        "Treats -Dnet.bytebuddy.experimental=true as a diagnostic probe only, not a fix",
+        "Does not blame the Kora DI graph or suggest downgrading the JDK below 25"
+      ],
+      "tags": ["mock", "dependencies", "regression"]
+    },
+    {
+      "id": "kora-testing-junit-java-reactive-contract-removed",
+      "skills": ["kora-testing-junit-java"],
+      "query": "Port this Kora 1.x test to 2.0: it does StepVerifier.create(userService.getUserAsync(\"1\")).expectNextMatches(u -> u.email().equals(\"john@example.com\")).verifyComplete(), the repository stub returns Mono.just(user), and another test asserts on a CompletionStage result.",
+      "expected_behavior": [
+        "States that Kora 2.0 contracts are synchronous on virtual threads and that Mono/Flux, CompletionStage and suspend are no longer Kora contracts, so the reactive assertion layer is gone rather than merely renamed",
+        "Rewrites the assertion as a direct call plus assertEquals/assertThrows on the returned value, keeping the same scenario and the same expectations",
+        "Rewrites the Mockito stub from thenReturn(Mono.just(user)) to thenReturn(user) or thenReturn(Optional.of(user))",
+        "Removes the io.projectreactor:reactor-test dependency instead of keeping StepVerifier alive over a hand-rolled wrapper",
+        "Does not weaken or delete the test scenario, and does not wrap the synchronous result in a CompletableFuture just to keep the old assertion shape",
+        "Notes that Context no longer exists anywhere in Kora 2.0, so any test helper passing one must be rewritten"
+      ],
+      "tags": ["migration", "regression", "advanced"]
+    },
+    {
+      "id": "kora-testing-junit-java-metrics-telemetry-default",
+      "skills": ["kora-testing-junit-java"],
+      "query": "My Kora 2.0 @KoraAppTest asserts that http_server_duration and db_pool metrics exist in the MeterRegistry, but meterRegistry.find(...) always returns null. The application runs fine.",
+      "expected_behavior": [
+        "Identifies that TelemetryConfig.MetricsConfig.enabled() defaults to false in Kora 2.0, so Kora's component metrics are never registered unless enabled",
+        "Enables telemetry per component in the test config, e.g. httpServer.telemetry.metrics.enabled = true and jdbc.telemetry.metrics.enabled = true",
+        "Notes that logging telemetry defaults to false as well, while tracing defaults to true except under httpServer.system where it is overridden to false",
+        "Distinguishes Kora component metrics from meters the application registers on the MeterRegistry itself, which work without any telemetry flag",
+        "Injects MeterRegistry with @TestComponent rather than constructing a registry by hand",
+        "Does not conclude that the metric names are wrong or that Micrometer is missing"
+      ],
+      "tags": ["telemetry", "regression", "advanced"]
+    },
+    {
+      "id": "kora-testing-junit-java-kafka-testcontainers",
+      "skills": ["kora-testing-junit-java"],
+      "query": "Write an integration test for a Kora 2.0 @KafkaListener and @KafkaPublisher against a Kafka container.",
+      "expected_behavior": [
+        "Starts a broker with the io.goodforgod @TestcontainersKafka extension or a static @Container KafkaContainer with a generous withStartupTimeout",
+        "Keeps the consumer in the trimmed graph by listing the generated <Consumer>Module in @KoraAppTest(modules = ...) or by injecting the generated consumer Lifecycle through its @Tag",
+        "Feeds the bootstrap servers into the per-consumer and per-publisher driverProperties under \"bootstrap.servers\", at exactly the config path named in @KafkaListener/@KafkaPublisher, and states there is no flat kafka.bootstrapServers key",
+        "Uses \"auto.offset.reset\" = \"earliest\" in driverProperties for a consumer that has a group.id, and notes that KafkaListenerConfig.offset only applies to the assign strategy without a group.id",
+        "Verifies asynchronous delivery with Awaitility rather than Thread.sleep",
+        "Does not use a foreign Kafka test framework, @EmbeddedKafka, or a KafkaTemplate"
+      ],
+      "tags": ["integration", "kafka", "advanced"]
+    },
+    {
+      "id": "kora-testing-junit-java-lifecycle-and-injection-rules",
+      "skills": ["kora-testing-junit-java"],
+      "query": "My Kora test class is slow because the graph is rebuilt for every method. I switched to @TestInstance(PER_CLASS) and now I get an error about mocks on test method parameters. What are the rules?",
+      "expected_behavior": [
+        "Explains that PER_METHOD is the default and closes the graph after each method, while PER_CLASS builds one graph per class and resets the mocks in beforeEach",
+        "Explains that method-parameter mocks are per-method by nature and are rejected under PER_CLASS, so the mock must move to a field or constructor parameter",
+        "Notes that constructor injection excludes KoraAppTestConfigModifier and KoraAppTestGraphModifier, and excludes @TestComponent on test-method parameters",
+        "Notes that injected fields may be neither static nor final",
+        "Suggests container reuse (a static @Container, or ContainerMode.PER_RUN) as the other half of the speed fix",
+        "Does not suggest disabling the extension or caching the graph manually"
+      ],
+      "tags": ["lifecycle", "advanced"]
+    }
+  ]
+}

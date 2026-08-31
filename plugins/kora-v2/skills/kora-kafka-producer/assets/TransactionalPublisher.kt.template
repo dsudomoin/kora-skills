@@ -1,0 +1,43 @@
+package ${packagePath}.publisher
+
+import io.koraframework.kafka.common.annotation.KafkaPublisher
+import io.koraframework.kafka.common.annotation.KafkaPublisher.Topic
+import io.koraframework.kafka.common.producer.TransactionalPublisher
+
+// Transactional publisher: everything sent inside inTx(...) commits together, or the
+// whole batch aborts when the lambda throws.
+@KafkaPublisher("kafka.producer.myPublisher")
+interface MyPublisher {
+
+    @Topic("kafka.producer.myTopic")
+    fun send(key: String, value: String)
+}
+
+@KafkaPublisher("kafka.producer.myTransactional")
+interface MyTransactionalPublisher : TransactionalPublisher<MyPublisher>
+
+// Usage:
+//
+// @Component
+// class MyService(private val publisher: MyTransactionalPublisher) {
+//
+//     // inTx and withTx are each overloaded (consumer + function), so Kotlin cannot
+//     // infer the SAM type from a bare lambda — name it explicitly.
+//     fun sendBoth() {
+//         publisher.inTx(TransactionalConsumer<MyPublisher, RuntimeException> { producer ->
+//             producer.send("key1", "value1")
+//             producer.send("key2", "value2")
+//         })
+//     }
+//
+//     // begin() needs no SAM ceremony: use { } closes (and therefore commits) for you.
+//     fun sendManual(somethingBad: Boolean) {
+//         publisher.begin().use { tx ->
+//             tx.publisher().send("key", "value")
+//             if (somethingBad) tx.abort()
+//         }
+//     }
+// }
+//
+// Required import for the SAM constructor:
+// import io.koraframework.kafka.common.producer.TransactionalPublisher.TransactionalConsumer

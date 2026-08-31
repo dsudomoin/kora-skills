@@ -1,0 +1,33 @@
+package ${package};
+
+import io.koraframework.database.cassandra.annotation.EntityCassandra;
+import io.koraframework.database.common.annotation.Column;
+import io.koraframework.database.common.annotation.Embedded;
+import io.koraframework.database.common.annotation.Id;
+import io.koraframework.database.common.annotation.Table;
+import org.jspecify.annotations.Nullable;
+
+/*
+ * TEMPLATE NOTES — delete this block after copying.
+ *
+ * @Embedded flattens the nested ID record into the owning entity's columns; @Id marks the whole
+ * group as the primary key for the %{entity#where = @id} macro, which then expands to
+ * "${id1_field} = :entity.id.${id1_field} AND ${id2_field} = :entity.id.${id2_field}".
+ *
+ * Binding always uses the full path: :entity.id.${id1_field}, not :entity.${id1_field}.
+ * @Embedded("prefix_") prefixes every flattened column name.
+ *
+ * The ID record is NOT annotated — @EntityCassandra belongs on the owner only.
+ * CQL: PRIMARY KEY ((${id1_field}), ${id2_field}) or ((${id1_field}, ${id2_field})).
+ */
+@EntityCassandra
+@Table("${table_name}")
+public record ${entity_name}(
+    @Id @Embedded ID id,
+    @Column("name") String name,
+    @Column("field1") String field1,
+    @Column("field2") @Nullable String field2
+) {
+
+    public record ID(${id1_type} ${id1_field}, ${id2_type} ${id2_field}) {}
+}

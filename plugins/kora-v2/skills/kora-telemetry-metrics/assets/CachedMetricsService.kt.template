@@ -1,0 +1,93 @@
+package ${package}
+
+import io.koraframework.common.annotation.Component
+import io.micrometer.core.instrument.Counter
+import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.Timer
+import java.time.Duration
+import java.util.concurrent.Callable
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
+
+/**
+ * High-throughput metrics service with cached meter instances (Kora 2.0).
+ *
+ * Use this pattern when a meter carries tags whose values vary at runtime, and the hot
+ * path cannot afford a builder + registry lookup per call.
+ *
+ * Kora's own instrumentation is built exactly this way -- see the requestDurationCache
+ * and activeRequestsCache maps in DefaultHttpServerMetricsFactory, and the guard comment
+ * it repeats above every builder method:
+ *
+ *     DO NOT ADD DYNAMIC TAGS IN BUILDER, use metric key instead of metric collision will happen
+ *
+ * That is the rule to respect here: the cache key must contain EVERY tag that varies.
+ * If it does not, two different tag sets collapse onto one cache entry, the
+ * first-registered meter wins, and later calls are recorded under the wrong labels.
+ *
+ * Tag values must still be bounded. Caching an unbounded tag only moves the memory leak
+ * from Micrometer's map into yours.
+ */
+@Component
+class CachedMetricsService(
+    private val registry: MeterRegistry
+) {
+
+    /** Key for custom.operation.duration -- both of its dynamic tags. */
+    private data class DurationKey(val operation: String, val status: String)
+
+    /** Key for custom.operation.count -- both of its dynamic tags. */
+    private data class CountKey(val operation: String, val type: String)
+
+    private val timers = ConcurrentHashMap<DurationKey, Timer>()
+    private val counters = ConcurrentHashMap<CountKey, Counter>()
+
+    /**
+     * Runs the action, records its duration under status=success or status=failed, and
+     * rethrows whatever it threw. The metric is recorded exactly once on either path.
+     */
+    fun <T> recordOperation(operation: String, action: Callable<T>): T {
+        val startedAt = System.nanoTime()
+        try {
+            val result = action.call()
+            recordOperationDuration(operation, System.nanoTime() - startedAt, true)
+            return result
+        } catch (e: Exception) {
+            recordOperationDuration(operation, System.nanoTime() - startedAt, false)
+            throw e
+        }
+    }
+
+    /** Records a duration you measured yourself. */
+    fun recordOperationDuration(operation: String, durationNanos: Long, success: Boolean) {
+        val key = DurationKey(operation, if (success) "success" else "failed")
+        val timer = timers.computeIfAbsent(key) { k ->
+            Timer.builder("custom.operation.duration")
+                .description("Duration of custom operations")
+                .tag("operation", k.operation)
+                .tag("status", k.status)
+                .serviceLevelObjectives(
+                    Duration.ofMillis(50),
+                    Duration.ofMillis(100),
+                    Duration.ofMillis(250),
+                    Duration.ofMillis(500),
+                    Duration.ofSeconds(1)
+                )
+                .register(registry)
+        }
+
+        timer.record(durationNanos, TimeUnit.NANOSECONDS)
+    }
+
+    fun incrementCounter(operation: String, type: String) {
+        val key = CountKey(operation, type)
+        val counter = counters.computeIfAbsent(key) { k ->
+            Counter.builder("custom.operation.count")
+                .tag("operation", k.operation)
+                .tag("type", k.type)
+                .register(registry)
+        }
+
+        counter.increment()
+    }
+}

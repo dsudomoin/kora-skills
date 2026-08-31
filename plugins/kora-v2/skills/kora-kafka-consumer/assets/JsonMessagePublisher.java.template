@@ -1,0 +1,54 @@
+package ${packagePath}.publisher;
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Tag;
+import io.koraframework.json.common.JsonWriter;
+import io.koraframework.json.common.annotation.Json;
+import io.koraframework.kafka.common.annotation.KafkaPublisher;
+import io.koraframework.kafka.common.annotation.KafkaPublisher.Topic;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.serialization.Serializer;
+
+import java.time.Instant;
+
+/**
+ * Kafka publisher with JSON serialization.
+ *
+ * @Json on the payload selects the generated JsonWriter through JsonKafkaSerializer; the consumer
+ * side reads it back with @Json on the listener parameter.
+ */
+@KafkaPublisher("kafka.producer.${publisherName}")
+public interface ${publisherName} {
+
+    @Json
+    record ${eventClassName}(String id, String type, Instant timestamp) {}
+
+    @Topic("kafka.producer.${publisherName}.${topicName}")
+    void send(@Json ${eventClassName} event);
+
+    @Topic("kafka.producer.${publisherName}.${topicName}")
+    void send(String key, @Json ${eventClassName} event);
+
+    void send(ProducerRecord<String, @Json ${eventClassName}> record);
+
+    /**
+     * Custom serializer instead of @Json: register a tagged Serializer @Component and reference the
+     * same tag on the payload. JsonWriter.toByteArray declares no checked exception in Kora 2.0 —
+     * a try/catch (IOException) around it does not compile.
+     */
+    @Tag(${eventClassName}.class)
+    @Component
+    class ${eventClassName}Serializer implements Serializer<${eventClassName}> {
+
+        private final JsonWriter<${eventClassName}> writer;
+
+        public ${eventClassName}Serializer(JsonWriter<${eventClassName}> writer) {
+            this.writer = writer;
+        }
+
+        @Override
+        public byte[] serialize(String topic, ${eventClassName} data) {
+            return writer.toByteArray(data);
+        }
+    }
+}

@@ -1,0 +1,320 @@
+# Kora 2.x — reference OpenAPI 3.x contract for the `kora` generator (java-server / kotlin-server).
+#
+# Generated for apiPackage = com.example.petapi.api, modelPackage = com.example.petapi.model:
+#   PetApiController, PetApiDelegate, PetApiResponses, PetApiServerResponseMappers,
+#   PetApiServerRequestMappers, ApiSecurity, and the models below.
+#
+# Every construct here is exercised by the delegate templates in this directory.
+#
+# NOTE for 2.0.0.RC1: status-code RANGE responses ("4XX", "5XX") are NOT supported — that
+# landed after RC1. Declare explicit codes, or a single `default` response, as done below.
+openapi: 3.0.3
+
+info:
+  title: Pet API
+  description: Reference contract for a Kora 2.x contract-first HTTP server.
+  version: 1.0.0
+
+servers:
+  - url: http://localhost:8080
+
+# Applies to every operation unless the operation overrides `security`.
+security:
+  - BearerAuth: []
+
+tags:
+  - name: pet
+    description: Pet operations       # -> PetApiDelegate / PetApiResponses / PetApiController
+
+paths:
+
+  /pets:
+    post:
+      tags: [pet]
+      operationId: addPet             # -> PetApiDelegate#addPet
+      summary: Add a pet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Pet'
+      responses:
+        # Two declared statuses -> sealed PetApiResponses.AddPetApiResponse with
+        # AddPet200ApiResponse(Pet content) and AddPet400ApiResponse(ErrorResponse content).
+        '200':
+          description: Pet created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pet'
+        '400':
+          description: Invalid pet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    put:
+      tags: [pet]
+      operationId: updatePet
+      summary: Update an existing pet
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Pet'
+      responses:
+        '200':
+          description: Pet updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pet'
+        '404':
+          description: Pet not found
+
+  /pets/findByStatus:
+    get:
+      tags: [pet]
+      operationId: findPetsByStatus
+      summary: Find pets by status
+      parameters:
+        # required: false -> @Nullable String in Java, String? in Kotlin.
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [available, pending, sold]
+      responses:
+        '200':
+          description: Matching pets
+          # A response header becomes a component of the generated response record and is
+          # written by the generated response mapper. Undeclared headers cannot be set.
+          headers:
+            x-total-count:
+              required: true
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Pet'
+        '400':
+          description: Unknown status value
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /pets/{petId}:
+    get:
+      tags: [pet]
+      operationId: getPetById
+      summary: Find a pet by id
+      parameters:
+        # required: true + integer/int64 -> unboxed `long petId` / `petId: Long`.
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: The pet
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pet'
+        '400':
+          description: Invalid id
+        '404':
+          description: Pet not found
+
+    delete:
+      tags: [pet]
+      operationId: deletePet
+      summary: Delete a pet
+      # Operation-level security overrides the global one. Two entries = OR:
+      # either credential authenticates the request.
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: api_key
+          in: header
+          required: false
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Deleted
+        # A `default` response record takes `int statusCode` as its FIRST component.
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /pets/whoami:
+    get:
+      tags: [pet]
+      operationId: whoAmI
+      summary: Identity of the caller
+      # An oauth2 requirement makes the extractor's principal type PrincipalWithScopes, and the
+      # generated interceptor checks principal.scopes().contains("pets:read").
+      security:
+        - OAuth: ["pets:read"]
+      responses:
+        # Exactly ONE declared response -> PetApiResponses.WhoAmIApiResponse is a record itself,
+        # with no sealed interface and no per-status nested type.
+        '200':
+          description: Caller identity
+          content:
+            application/json:
+              schema:
+                type: string
+
+  /pets/{petId}/delivery:
+    put:
+      tags: [pet]
+      operationId: setDelivery
+      summary: Polymorphic body via discriminator
+      parameters:
+        - name: petId
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Delivery'
+      responses:
+        '204':
+          description: Delivery set
+        '404':
+          description: Pet not found
+
+components:
+
+  securitySchemes:
+    # The generated tag marker is the scheme NAME, PascalCased:
+    #   BearerAuth -> ApiSecurity.BearerAuth
+    #   ApiKeyAuth -> ApiSecurity.ApiKeyAuth
+    #   OAuth      -> ApiSecurity.OAuth
+    # Ordinal SecurityRequirementTagN names are Kora 1.x and do not exist in 2.0.
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-KEY
+    OAuth:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            pets:read: Read pets
+            pets:write: Modify pets
+
+  schemas:
+
+    Pet:
+      type: object
+      required:
+        - id
+        - name
+        - nickname
+      properties:
+        # required + not nullable -> unboxed primitive / non-null Kotlin type
+        id:
+          type: integer
+          format: int64
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64          # with enableServerValidation -> @Size(min = 1, max = 64)
+        # not required -> @Nullable Java field / Kotlin `T? = null`
+        tag:
+          type: string
+        # The wire values are lower case while the generated constants are AVAILABLE/PENDING/SOLD.
+        # Parse with Pet.StatusEnum.fromValue(raw) — never Enum.valueOf.
+        status:
+          type: string
+          enum: [available, pending, sold]
+        # not required + nullable -> JsonNullable<Double>, so the delegate can tell
+        # "absent" from "explicitly null" (the correct shape for PATCH bodies).
+        weight:
+          type: number
+          format: double
+          nullable: true
+          minimum: 0
+          maximum: 500           # min + max -> @Range(from = 0.0, to = 500.0, ...)
+        # required + nullable -> a plain nullable field plus @JsonInclude(ALWAYS) and a
+        # JSON-only constructor that rejects an ABSENT key while accepting an explicit null.
+        nickname:
+          type: string
+          nullable: true
+
+    ErrorResponse:
+      type: object
+      required:
+        - message
+      properties:
+        message:
+          type: string
+
+    # A discriminator generates a Kora sealed JSON hierarchy:
+    #   @Json @JsonDiscriminatorField("kind") sealed interface Delivery permits Courier, Pickup
+    #   @JsonDiscriminatorValue({"courier"}) record Courier(...) implements Delivery
+    Delivery:
+      type: object
+      required:
+        - kind
+      properties:
+        kind:
+          type: string
+      discriminator:
+        propertyName: kind
+        mapping:
+          courier: '#/components/schemas/DeliveryCourier'
+          pickup: '#/components/schemas/DeliveryPickup'
+
+    DeliveryCourier:
+      allOf:
+        - $ref: '#/components/schemas/Delivery'
+        - type: object
+          required:
+            - address
+          properties:
+            address:
+              type: string
+
+    DeliveryPickup:
+      allOf:
+        - $ref: '#/components/schemas/Delivery'
+        - type: object
+          required:
+            - pointId
+          properties:
+            pointId:
+              type: string

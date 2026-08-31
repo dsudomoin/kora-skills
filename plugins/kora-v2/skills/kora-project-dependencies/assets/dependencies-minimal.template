@@ -1,0 +1,35 @@
+// Minimal Kora 2.0 dependencies for a basic application
+// Use this as a starting point and add modules as needed
+
+dependencies {
+    // Kora BOM - manages all Kora module versions
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+
+    // Annotation processor (Java) - required for compile-time code generation.
+    // The koraBom configuration must extendsFrom annotationProcessor or this fails to resolve.
+    annotationProcessor "io.koraframework:annotation-processors"
+
+    // For Kotlin projects, use KSP instead - and note the explicit version:
+    // the BOM does not constrain the `ksp` configuration.
+    //   ksp("io.koraframework:symbol-processors:$koraVersion")
+
+    // ===========================================
+    // ALWAYS NEEDED (core modules)
+    // ===========================================
+
+    // Logging - SLF4J with Logback backend
+    implementation "io.koraframework:logging-logback"
+
+    // Configuration - HOCON format (application.conf)
+    implementation "io.koraframework:config-hocon"
+
+    // Alternative: YAML configuration (application.yaml)
+    // implementation "io.koraframework:config-yaml"
+
+    // JSON - compile-time (de)serialization for DTOs, HTTP, Kafka.
+    // The artifact is json-common; `json-module` does not exist in Kora 2.0.
+    implementation "io.koraframework:json-common"
+}
+
+// Do not version io.koraframework:* artifacts - kora-bom owns them.
+// The single exception is the Kotlin ksp(...) line above.

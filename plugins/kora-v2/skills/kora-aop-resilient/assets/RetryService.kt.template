@@ -1,0 +1,88 @@
+// @Retryable + a @Tag-bound RetryPredicate (Kora 2.0).
+// The class AND every annotated method must be `open`.
+// Replace `com.example.app.resilience` with your package.
+
+package com.example.app.resilience
+
+import io.koraframework.common.annotation.Component
+import io.koraframework.common.annotation.Tag
+import io.koraframework.resilient.retry.Retry
+import io.koraframework.resilient.retry.RetryPredicate
+import io.koraframework.resilient.retry.annotation.RetrySpec
+import io.koraframework.resilient.retry.annotation.Retryable
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+
+// Linear backoff: delay + delayStep * (n - 1)
+@RetrySpec("resilient.retry.user")
+interface UserRetry : Retry
+
+// Exponential backoff + jitter + retry budget
+@RetrySpec("resilient.retry.external")
+interface ExternalRetry : Retry
+
+@Component
+open class UserService(
+    private val repository: UserRepository,
+    private val externalApi: ExternalApi
+) {
+
+    // `attempts` counts RETRIES, not total invocations: attempts = 3 means up to 4 calls.
+    // When every attempt fails, RetryExhaustedException is thrown with the last failure as cause.
+    // With attempts = 0 or enabled = false the ORIGINAL exception propagates unwrapped instead —
+    // do not write `catch (e: RetryExhaustedException)` as the only error path.
+    @Retryable(UserRetry::class)
+    open fun findById(id: String): User? = repository.findById(id)
+
+    // suspend and Flow are both supported by the Kotlin aspects.
+    @Retryable(ExternalRetry::class)
+    open suspend fun fetchExternal(id: String): User? = externalApi.fetchUser(id)
+}
+
+// Retry predicate. In Kora 2.0 this is a single-method interface bound by @Tag(<Spec>::class);
+// the 1.x name() + test(throwable) pair and the `failurePredicateName` config key are both gone.
+// A rejected exception ends the loop immediately and propagates unchanged.
+@Tag(ExternalRetry::class)
+@Component
+class TransientOnlyRetryPredicate : RetryPredicate {
+
+    override fun isRetryFailure(throwable: Throwable): Boolean =
+        throwable is SocketTimeoutException || throwable is ConnectException
+}
+
+// ---------------------------------------------------------------- placeholders
+
+data class User(val id: String, val name: String)
+
+@Component
+open class UserRepository {
+    open fun findById(id: String): User? = null
+}
+
+interface ExternalApi {
+    suspend fun fetchUser(id: String): User?
+}
+
+@Component
+class ExternalApiClient : ExternalApi {
+    override suspend fun fetchUser(id: String): User? = null
+}
+
+// Config (HOCON):
+//
+// resilient.retry {
+//   user {
+//     delay = "100ms"       # REQUIRED
+//     attempts = 3          # REQUIRED — number of retries, not total calls
+//     delayStep = "100ms"   # optional, default 0 — waits 100ms, 200ms, 300ms
+//   }
+//   external {
+//     delay = "100ms"
+//     attempts = 5
+//     backoff { multiplier = 2.0, delayMax = "5s" }  # REPLACES delayStep: 100/200/400/800/1600ms
+//     jitter  { type = FULL, ratio = 0.5 }           # shortens each wait by up to 50%
+//     retryBudget { ratio = 0.1, tokensMax = 100 }   # caps retry amplification during an outage
+//   }
+// }
+//
+// Named sections do NOT inherit resilient.retry.default in Kora 2.0.

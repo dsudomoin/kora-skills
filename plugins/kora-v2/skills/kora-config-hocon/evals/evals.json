@@ -1,0 +1,359 @@
+{
+  "evals": [
+    {
+      "id": "kora-config-hocon-basic-configsource",
+      "skills": [
+        "kora-config-hocon"
+      ],
+      "query": "I have a Kora 2.0 Java service. Add a typed configuration for an 'app' section with name, version and environment fields, loaded from application.conf.",
+      "expected_behavior": [
+        "Adds the io.koraframework:config-hocon dependency and annotationProcessor \"io.koraframework:annotation-processors\", versioned through the io.koraframework:kora-bom platform",
+        "Declares a @KoraApp interface extending HoconConfigModule from io.koraframework.config.hocon",
+        "Creates an interface annotated @ConfigSource(\"app\") from io.koraframework.config.common.annotation with name(), version(), environment() methods",
+        "Creates src/main/resources/application.conf with a matching app { } section",
+        "Injects the config through a constructor into a @Component; no field injection and no value-placeholder annotations",
+        "Does not use the ru.tinkoff.kora group, the kora-parent BOM, or ru.tinkoff.kora.* imports",
+        "Does not add the generated AppConfigModule to the @KoraApp extends clause (same-compilation @Module interfaces are discovered automatically)"
+      ],
+      "tags": [
+        "config",
+        "basic",
+        "java"
+      ]
+    },
+    {
+      "id": "kora-config-hocon-basic-configsource-kotlin",
+      "skills": [
+        "kora-config-hocon"
+      ],
+      "query": "Set up typed HOCON configuration in my Kora 2.0 Kotlin service for an 'app' section with name and version.",
+      "expected_behavior": [
+        "Applies the com.google.devtools.ksp plugin and adds ksp(\"io.koraframework:symbol-processors\") plus implementation(\"io.koraframework:config-hocon\")",
+        "Uses the io.koraframework:kora-bom platform for versions rather than pinning individual artifacts",
+        "Declares interface AppConfig with @ConfigSource(\"app\") and functions returning String",
+        "Enables HoconConfigModule on the @KoraApp interface",
+        "Does not use annotationProcessor or kapt for the Kora processor in a Kotlin module"
+      ],
+      "tags": [
+        "config",
+        "basic",
+        "kotlin"
+      ]
+    },
+    {
+      "id": "kora-config-hocon-env-substitution",
+      "skills": [
+        "kora-config-hocon"
+      ],
+      "query": "Externalize the database url, user and password through environment variables in my Kora HOCON config, with a sensible default pool size that can still be overridden.",
+      "expected_behavior": [
+        "Uses required substitution ${DATABASE_URL} / ${DATABASE_USER} / ${DATABASE_PASSWORD}",
+        "Expresses the pool-size default by assigning the key twice: the literal first, then ${?DB_POOL_SIZE}",
+        "Explains that ${VAR} is required and aborts startup if unset while ${?VAR} is optional",
+        "Does not use an inline ${VAR:default} placeholder — HOCON has no inline default; that form only works in YAML",
+        "Does not use shell-style ${VAR:-default}, which is valid in neither format",
+        "Does not place the literal after the ${?VAR} assignment, which would make the override unreachable",
+        "Does not read the variables via System.getenv in code"
+      ],
+      "tags": [
+        "config",
+        "env",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-config-hocon-nested-objects",
+      "skills": [
+        "kora-config-hocon"
+      ],
+      "query": "My Kora 2.0 config interface needs a nested 'bar' object and a list of bars. How do I model the nested types?",
+      "expected_behavior": [
+        "Keeps @ConfigSource only on the outer path-bound interface",
+        "Annotates the nested sub-object interfaces with @ConfigMapper from io.koraframework.config.common.annotation",
+        "Exposes the nested object as a method (e.g. BarConfig bar()) and the list as List<BarConfig> bars()",
+        "Does not annotate nested interfaces with @ConfigSource",
+        "Does not use @ConfigValueExtractor, which does not exist in Kora 2.0"
+      ],
+      "tags": [
+        "config",
+        "nested",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-config-hocon-required-optional-default",
+      "skills": [
+        "kora-config-hocon"
+      ],
+      "query": "In my Kora 2.0 Java @ConfigSource interface I need one required field, one optional field, and one field with a default value of 42.",
+      "expected_behavior": [
+        "Uses a plain abstract method for the required field (required by default in Kora)",
+        "Marks the optional field with org.jspecify.annotations.Nullable placed on the return type",
+        "Provides the default via a Java default method returning 42",
+        "Does not use a @DefaultValue annotation (it does not exist in Kora)",
+        "Does not use jakarta.annotation.Nullable, javax.annotation.Nullable or org.jetbrains.annotations.Nullable for new Kora 2.0 code"
+      ],
+      "tags": [
+        "config",
+        "nullability",
+        "java"
+      ]
+    },
+    {
+      "id": "kora-config-hocon-required-optional-default-kotlin",
+      "skills": [
+        "kora-config-hocon"
+      ],
+      "query": "Same thing in Kotlin: one required config value, one optional, and one with a default of 42.",
+      "expected_behavior": [
+        "Uses an abstract function for the required value",
+        "Expresses the optional value as a nullable return type (e.g. fun optionalBar(): String?)",
+        "Expresses the default as a function with a body (fun baz(): Int = 42)",
+        "Does not add JSpecify or jakarta nullability annotations to Kotlin declarations, and does not use @field:Nullable"
+      ],
+      "tags": [
+        "config",
+        "nullability",
+        "kotlin"
+      ]
+    },
+    {
+      "id": "kora-config-hocon-reusable-config-mapper",
+      "skills": [
+        "kora-config-hocon"
+      ],
+      "query": "Two libraries in my Kora 2.0 app share the same config shape (endpoint + requestTimeout) but live at libs.lib1 and libs.lib2. How do I bind both?",
+      "expected_behavior": [
+        "Declares one shape with @ConfigMapper (e.g. LibConfig)",
+        "Adds @Tag marker classes and @KoraApp factory methods that call mapper.mapOrThrow(config.get(\"libs.lib1\")) and config.get(\"libs.lib2\")",
+        "Injects io.koraframework.config.common.mapper.ConfigValueMapper<LibConfig> and io.koraframework.config.common.Config into the factories",
+        "Optionally reuses one HOCON object (${common-lib}) and overrides a single field",
+        "Distinguishes the two instances with @Tag rather than field injection or a qualifier-by-name mechanism",
+        "Does not write ConfigMapper<LibConfig> as a type — the annotation is not generic",
+        "Does not call extract(...) — the 2.0 methods are map(...) and mapOrThrow(...)"
+      ],
+      "tags": [
+        "config",
+        "tags",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-config-hocon-custom-value-mapper",
+      "skills": [
+        "kora-config-hocon"
+      ],
+      "query": "My Kora config has a value like \"Bearer abc123\" that I want mapped into my own Token type. How do I do that?",
+      "expected_behavior": [
+        "Implements io.koraframework.config.common.mapper.ConfigValueMapper<Token> with a map(ConfigValue<?> value) method",
+        "Registers the mapper as a @Component from io.koraframework.common.annotation",
+        "References it from the config method with @Mapping(TokenConfigValueMapper.class) using io.koraframework.common.annotation.Mapping",
+        "Handles ConfigValue.NullValue and uses value.asString() rather than casting manually",
+        "Does not implement a type named ConfigValueExtractor or reference io.koraframework.config.common.extractor"
+      ],
+      "tags": [
+        "config",
+        "mapper",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-config-hocon-size-duration-types",
+      "skills": [
+        "kora-config-hocon"
+      ],
+      "query": "How do I read a byte-size limit like 10Mb and a timeout like 250s into typed fields in a Kora 2.0 config interface?",
+      "expected_behavior": [
+        "Maps the byte size to io.koraframework.common.util.Size",
+        "Maps the timeout to java.time.Duration with a value like \"250s\"",
+        "Notes that Kora has no DataSize type and that a suffix containing 'i' (Mib) selects the binary scale while Mb is decimal",
+        "Does not import Size from a config package such as config.common.Size",
+        "Does not introduce a custom string parser for the byte size"
+      ],
+      "tags": [
+        "config",
+        "types",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-config-hocon-raw-config-env",
+      "skills": [
+        "kora-config-hocon"
+      ],
+      "query": "I want a component in my Kora 2.0 app to read only environment variables through the framework config abstraction.",
+      "expected_behavior": [
+        "Injects io.koraframework.config.common.Config with the @EnvironmentConfig tag",
+        "Mentions @SystemPropertiesConfig and @ApplicationConfig as the other layer-scoping tags",
+        "Recommends typed @ConfigSource interfaces over injecting the raw Config when possible",
+        "Does not use the Kora 1.x names @Environment or @SystemProperties",
+        "Does not use System.getenv directly as the primary approach"
+      ],
+      "tags": [
+        "config",
+        "tags",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-config-hocon-per-environment",
+      "skills": [
+        "kora-config-hocon"
+      ],
+      "query": "How do I run my Kora service with a production config file instead of the default application.conf?",
+      "expected_behavior": [
+        "Uses the config.resource system property for a classpath file or config.file for a filesystem path",
+        "Explains the resolution order: config.resource, then config.file, then application.conf from the classpath, then an empty config",
+        "Warns that setting both config.resource and config.file fails with an ambiguous-source error",
+        "Optionally layers the environment file over the base one with include \"application\"",
+        "Does not invent a config.environment or CONFIG_ENVIRONMENT profile switch (it does not exist in Kora)"
+      ],
+      "tags": [
+        "config",
+        "ops",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-config-hocon-migrate-configvalueextractor",
+      "skills": [
+        "kora-config-hocon"
+      ],
+      "query": "I am migrating this Kora 1.x code to 2.0:\n\nimport ru.tinkoff.kora.config.common.annotation.ConfigValueExtractor;\nimport ru.tinkoff.kora.config.common.extractor.ConfigValueExtractor;\n\n@ConfigValueExtractor\npublic interface LibConfig { String endpoint(); }\n\npublic interface LibModule {\n  default LibConfig libConfig(Config config, ConfigValueExtractor<LibConfig> extractor) {\n    return extractor.extract(config.get(\"library.foo\"));\n  }\n}",
+      "expected_behavior": [
+        "Replaces the annotation with @ConfigMapper from io.koraframework.config.common.annotation",
+        "Replaces the runtime contract with ConfigValueMapper<LibConfig> from io.koraframework.config.common.mapper",
+        "Keeps the annotation and the runtime mapper distinct and never writes ConfigMapper<LibConfig> as a type",
+        "Replaces extract(value) with mapOrThrow(value) for a non-null result, or map(value) when null is acceptable",
+        "States that the package io.koraframework.config.common.extractor does not exist in 2.0",
+        "Notes that a composing extractor.map(function) becomes mapper.andThen(function)"
+      ],
+      "tags": [
+        "config",
+        "migration",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-config-hocon-migrate-http-server-ports",
+      "skills": [
+        "kora-config-hocon"
+      ],
+      "query": "I upgraded my Kora service to 2.0. It starts without any error, but the load balancer gets nothing on port 8090 and the readiness probe on 8091 times out. My application.conf still says:\n\nhttpServer {\n  publicApiHttpPort = 8090\n  privateApiHttpPort = 8091\n}",
+      "expected_behavior": [
+        "Renames publicApiHttpPort to httpServer.port and privateApiHttpPort to httpServer.system.port",
+        "Also renames privateApiHttpReadinessPath / LivenessPath / MetricsPath to httpServer.system.readinessPath / livenessPath / metricsPath if present",
+        "Explains that unknown HOCON keys are ignored without a warning, so each server silently falls back to its default: 8080 for the public server and 8085 for the system server",
+        "Does not claim the system server inherits port 8080 from HttpServerConfig — SystemHttpServerConfig overrides port() to 8085",
+        "Does not conclude the service failed to start; a green startup on the wrong port is the whole point of this failure mode",
+        "Does not suggest keeping the 1.x key names as an alias"
+      ],
+      "tags": [
+        "config",
+        "migration",
+        "regression",
+        "http"
+      ]
+    },
+    {
+      "id": "kora-config-hocon-migrate-jdbc-section",
+      "skills": [
+        "kora-config-hocon"
+      ],
+      "query": "After migrating to Kora 2.0 my app fails with: ConfigValueException: Config expected value, but got null at path: 'ROOT.jdbc.username'. My application.conf has a db { } block with jdbcUrl, username and password.",
+      "expected_behavior": [
+        "Renames the top-level db { } section to jdbc { }",
+        "Explains that JdbcDatabaseModule reads the section name jdbc in 2.0, so the db block is never read",
+        "Points out that the error names a path the config file does not contain, which is why it is misleading",
+        "Reminds the reader to apply the same rename to HOCON embedded in test sources",
+        "Does not add a jdbc.username key to the existing db block or otherwise keep the db section as the datasource config"
+      ],
+      "tags": [
+        "config",
+        "migration",
+        "regression",
+        "database"
+      ]
+    },
+    {
+      "id": "kora-config-hocon-telemetry-defaults",
+      "skills": [
+        "kora-config-hocon"
+      ],
+      "query": "My Kora 2.0 service starts and /metrics returns 200, but there are no http_server_* or db_* metrics and no request logs. The config has no telemetry block.",
+      "expected_behavior": [
+        "Explains that in Kora 2.0 TelemetryConfig metrics.enabled and logging.enabled default to false while tracing.enabled defaults to true",
+        "Adds telemetry.metrics.enabled = true and telemetry.logging.enabled = true explicitly per component (e.g. under httpServer and jdbc)",
+        "Notes this is a silent failure: nothing is logged and nothing fails",
+        "Does not claim the metrics are missing because the registry or the exporter is misconfigured without checking the telemetry defaults first"
+      ],
+      "tags": [
+        "config",
+        "migration",
+        "regression",
+        "telemetry"
+      ]
+    },
+    {
+      "id": "kora-config-hocon-embedded-test-hocon",
+      "skills": [
+        "kora-config-hocon"
+      ],
+      "query": "I renamed the config keys in all my .conf files for the Kora 2.0 migration, but my @KoraAppTest still starts the server on the default port instead of the one the test needs. Where else could the old keys be?",
+      "expected_behavior": [
+        "Points at HOCON embedded in test sources via KoraConfigModification.ofString(\"\"\"...\"\"\")",
+        "Explains that those blocks carry the same keys and are missed by scans that only read .conf and .yaml files",
+        "Applies the same renames there: httpServer.port, httpServer.system.port, jdbc { }",
+        "Mentions KoraConfigModification.ofResourceFile and withSystemProperty as the other test config entry points",
+        "Does not conclude the resource files are wrong when they have already been migrated"
+      ],
+      "tags": [
+        "config",
+        "migration",
+        "regression",
+        "testing"
+      ]
+    },
+    {
+      "id": "kora-config-hocon-library-module-ksp",
+      "skills": [
+        "kora-config-hocon"
+      ],
+      "query": "I moved my @ConfigMapper interfaces into a separate Kotlin Gradle library module. Now the application module fails because the generated Module class is missing. The library compiles fine.",
+      "expected_behavior": [
+        "Identifies that the library module must apply the com.google.devtools.ksp plugin and add ksp(\"io.koraframework:symbol-processors\") itself",
+        "Explains that config annotations are processed in the module that declares them, so without the processor the library silently generates nothing",
+        "Notes that the failure surfaces in the consumer, which points at the wrong module",
+        "States that @Module auto-discovery only covers the current compilation, so a *Module generated in another Gradle module must be added to the consuming @KoraApp extends/supertype list",
+        "Does not fix the problem by adding the processor only to the application module"
+      ],
+      "tags": [
+        "config",
+        "multi-module",
+        "regression",
+        "kotlin"
+      ]
+    },
+    {
+      "id": "kora-config-hocon-yaml-to-hocon-defaults",
+      "skills": [
+        "kora-config-hocon"
+      ],
+      "query": "I am converting my Kora application.yaml to application.conf. The YAML has `name: ${APP_NAME:my-service}` and `root: ${LOGGING_LEVEL_ROOT:WARN}`. What is the HOCON equivalent?",
+      "expected_behavior": [
+        "Rewrites each inline default as a double assignment: the literal first, then ${?VAR}",
+        "Produces name = \"my-service\" followed by name = ${?APP_NAME}, and the same shape for the logging level",
+        "Explains that HOCON substitutions are resolved by typesafe-config before Kora's own resolver runs, so the ${VAR:default} form never reaches the resolver that understands ':'",
+        "Notes that the ${VAR:default} form is valid in YAML precisely because YAML has no substitution logic of its own",
+        "Does not carry the ${VAR:default} form over into the .conf file unchanged",
+        "Does not suggest shell-style ${VAR:-default}"
+      ],
+      "tags": [
+        "config",
+        "env",
+        "regression",
+        "yaml-interop"
+      ]
+    }
+  ]
+}

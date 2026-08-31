@@ -1,0 +1,46 @@
+package com.example.interceptor
+
+import io.koraframework.common.annotation.Component
+import io.koraframework.common.annotation.Tag
+import io.koraframework.http.server.common.HttpServer
+import io.koraframework.http.server.common.interceptor.HttpServerInterceptor
+import io.koraframework.http.server.common.request.HttpServerRequest
+import io.koraframework.http.server.common.response.HttpServerResponse
+import org.slf4j.LoggerFactory
+
+/**
+ * Server-scoped request logging interceptor — Kora 2.0 (Kotlin).
+ *
+ * Behaviourally identical to LoggingInterceptor.java.template.
+ *
+ * - @Tag(HttpServer::class) is what makes it server-scoped. The 1.x tag
+ *   @Tag(HttpServerModule::class) still COMPILES but is collected by nothing, so the
+ *   interceptor is pruned from the graph and silently never runs. Leaving it untagged
+ *   fails the same way.
+ * - Spell out the nested chain type: HttpServerInterceptor.InterceptChain.
+ * - Kotlin has no checked exceptions, so the contract's `throws Exception` disappears.
+ */
+@Tag(HttpServer::class)
+@Component
+class LoggingInterceptor : HttpServerInterceptor {
+
+    private val log = LoggerFactory.getLogger(LoggingInterceptor::class.java)
+
+    override fun intercept(
+        request: HttpServerRequest,
+        chain: HttpServerInterceptor.InterceptChain
+    ): HttpServerResponse {
+        val started = System.nanoTime()
+        var code = 500
+        try {
+            val response = chain.process(request)
+            code = response.code()
+            return response
+        } finally {
+            log.info(
+                "{} {} -> {} ({} ms)",
+                request.method(), request.path(), code, (System.nanoTime() - started) / 1_000_000
+            )
+        }
+    }
+}

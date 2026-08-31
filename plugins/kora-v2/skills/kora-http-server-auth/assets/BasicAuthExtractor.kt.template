@@ -1,0 +1,59 @@
+package ${package}
+
+import io.koraframework.common.Principal
+import io.koraframework.common.annotation.Module
+import io.koraframework.common.annotation.Tag
+import io.koraframework.http.server.common.auth.HttpServerPrincipalExtractor
+import java.util.Base64
+
+/**
+ * HTTP Basic authentication for an OpenAPI-generated Kora 2.0 HTTP server.
+ *
+ * Wire-up: for a scheme `basicAuth: { type: http, scheme: basic }` the generator emits
+ * `ApiSecurity.BasicAuth`. Replace `ApiSecurity` with the generated class from your api package
+ * and match the tag to your scheme's name, PascalCased.
+ *
+ * **The credential is the entire `Authorization` header**, prefix included — the generated
+ * interceptor passes `request.headers().getFirst("Authorization")` straight through. Kora 1.x
+ * documented a pre-stripped value; that is no longer true, so strip `"Basic "` here.
+ *
+ * Rejection protocol: return `null`; the generated interceptor answers `401 Unauthorized`. Never
+ * throw [SecurityException] — Kora 2.0 gives it no meaning and it surfaces as HTTP 500 with your
+ * message in the response body.
+ *
+ * Serve Basic auth over HTTPS only: the credential is base64-encoded, not encrypted.
+ */
+@Module
+interface BasicAuthExtractor {
+
+    /** Basic-auth principal. Must implement [Principal]; read it back with `Principal.current()`. */
+    data class BasicAuthPrincipal(val userId: String, val roles: List<String>) : Principal
+
+    /** Validates credentials against your user store (DB, LDAP, ...). Supply an implementation as a @Component. */
+    interface CredentialService {
+        fun validate(username: String, password: String): Boolean
+
+        fun roles(username: String): List<String>
+    }
+
+    @Tag(ApiSecurity.BasicAuth::class)
+    fun basicHttpServerPrincipalExtractor(creds: CredentialService): HttpServerPrincipalExtractor<String, Principal> =
+        HttpServerPrincipalExtractor { _, value ->
+            val decoded = value
+                ?.takeIf { it.startsWith("Basic ") }
+                ?.removePrefix("Basic ")
+                ?.let { encoded ->
+                    try {
+                        String(Base64.getDecoder().decode(encoded), Charsets.UTF_8)
+                    } catch (e: IllegalArgumentException) {
+                        null // malformed base64 is a failed login, not a server error
+                    }
+                }
+            val parts = decoded?.split(":", limit = 2)
+            if (parts != null && parts.size == 2 && creds.validate(parts[0], parts[1])) {
+                BasicAuthPrincipal(parts[0], creds.roles(parts[0]))
+            } else {
+                null
+            }
+        }
+}

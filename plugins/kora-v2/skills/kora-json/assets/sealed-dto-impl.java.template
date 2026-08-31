@@ -1,0 +1,27 @@
+package ${package};
+
+import io.koraframework.json.common.annotation.Json;
+import io.koraframework.json.common.annotation.JsonDiscriminatorValue;
+${imports}
+
+/**
+ * {@link ${sealed_interface_name}} case "${discriminator_value}".
+ *
+ * <p>{@code @Json} is required here — the sealed mapper on
+ * {@code ${sealed_interface_name}} is wired from the per-subtype mappers.</p>
+ *
+ * <p>{@code @JsonDiscriminatorValue} is optional: without it the discriminator value is this
+ * record's simple name. Pass several values to accept aliases —
+ * {@code @JsonDiscriminatorValue({"${discriminator_value}", "alias"})} — in which case the
+ * writer emits the first entry unless the record itself exposes the discriminator.</p>
+ *
+ * <p>Do not add a component for the discriminator "just because": the generated writer emits
+ * it. Add one only when the value must be visible on the model, and then make its JSON name
+ * match the discriminator field (via {@code @JsonField} if the names differ) — otherwise the
+ * output carries the key twice.</p>
+ *
+ * @param ${fields_description}
+ */
+@Json
+@JsonDiscriminatorValue("${discriminator_value}")
+public record ${impl_name}(${fields}) implements ${sealed_interface_name} {}

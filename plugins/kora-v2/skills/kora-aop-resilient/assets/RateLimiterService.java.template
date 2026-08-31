@@ -1,0 +1,92 @@
+// @RateLimited — NEW in Kora 2.0, no 1.x equivalent.
+// Replace `com.example.app.resilience` with your package.
+
+package com.example.app.resilience;
+
+import java.util.List;
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.resilient.ratelimiter.RateLimiter;
+import io.koraframework.resilient.ratelimiter.annotation.RateLimited;
+import io.koraframework.resilient.ratelimiter.annotation.RateLimiterSpec;
+
+// The spec interface IS the permit pool. Every method annotated with THIS class draws from the
+// same pool — that is how one quota is shared across call sites. Two spec interfaces on the same
+// config path are two independent pools, each with the full allowance.
+@RateLimiterSpec("resilient.ratelimiter.notifications")
+public interface NotificationRateLimiter extends RateLimiter {}
+
+@Component
+class NotificationSender {                                              // NOT final
+
+    private final SmsGateway gateway;
+
+    NotificationSender(SmsGateway gateway) {
+        this.gateway = gateway;
+    }
+
+    // Fails fast with RateLimitExceededException once the window's permits are spent —
+    // callers are never queued or blocked. Wrap with @Retryable (listed ABOVE @RateLimited)
+    // if a rejected call should wait and try again instead of surfacing the exception.
+    @RateLimited(NotificationRateLimiter.class)
+    public void send(Notification notification) {
+        gateway.send(notification);
+    }
+}
+
+// Imperative use: the spec interface is a graph component. tryAcquire() returns a boolean
+// instead of throwing, which suits batch work that should defer rather than fail.
+// There is no RateLimiterManager in Kora 2.0.
+@Component
+class BulkNotificationSender {
+
+    private final NotificationRateLimiter rateLimiter;
+    private final SmsGateway gateway;
+    private final DeferredQueue deferred;
+
+    BulkNotificationSender(NotificationRateLimiter rateLimiter, SmsGateway gateway, DeferredQueue deferred) {
+        this.rateLimiter = rateLimiter;
+        this.gateway = gateway;
+        this.deferred = deferred;
+    }
+
+    public void sendAll(List<Notification> batch) {
+        for (var notification : batch) {
+            if (rateLimiter.tryAcquire()) {
+                gateway.send(notification);
+            } else {
+                deferred.enqueue(notification);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- placeholders
+
+record Notification(String recipient, String text) {}
+
+@Component
+class SmsGateway {
+    void send(Notification notification) {
+        // no-op
+    }
+}
+
+@Component
+class DeferredQueue {
+    void enqueue(Notification notification) {
+        // no-op
+    }
+}
+
+// Config (HOCON):
+//
+// resilient.ratelimiter.notifications {
+//   limitForPeriod = 100        # REQUIRED — permits per window
+//   limitRefreshPeriod = "1s"   # REQUIRED — window length
+//   enabled = true              # optional, default true
+// }
+//
+// Fixed window, refilled lazily on the first call after the deadline. Unused permits do not carry
+// over, and the window is not wall-clock aligned — a burst straddling a boundary can briefly pass
+// up to 2 * limitForPeriod calls. This is a per-process limiter with no shared state.

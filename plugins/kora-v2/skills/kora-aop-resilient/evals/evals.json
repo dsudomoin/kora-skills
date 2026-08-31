@@ -1,0 +1,393 @@
+{
+  "evals": [
+    {
+      "id": "kora-aop-resilient-module-setup",
+      "skills": [
+        "kora-aop-resilient"
+      ],
+      "query": "How do I enable Kora's resilience features (retry, circuit breaker, timeout) in my application?",
+      "expected_behavior": [
+        "Adds implementation \"io.koraframework:resilient-kora\"",
+        "Adds the mandatory processor: Java annotationProcessor \"io.koraframework:annotation-processors\", Kotlin ksp \"io.koraframework:symbol-processors\"",
+        "Uses platform \"io.koraframework:kora-bom\" at 2.0.0.RC1 (koraVersion property) from plain mavenCentral(), without pinning per-artifact versions",
+        "Has the @KoraApp interface extend io.koraframework.resilient.ResilientModule",
+        "States that the generated $<Spec>_Module must NOT be extended manually — @KoraApp picks it up"
+      ],
+      "anti_behavior": [
+        "Writes ru.tinkoff.kora:resilient-kora or the ru.tinkoff.kora:kora-parent BOM",
+        "Pins 2.0.0-SNAPSHOT or 2.0.0.alpha6 as the version for a new project",
+        "Adds the generated spec module to the @KoraApp extends list"
+      ],
+      "tags": [
+        "setup",
+        "basic",
+        "regression-coordinates"
+      ]
+    },
+    {
+      "id": "kora-aop-resilient-string-annotation-java",
+      "skills": [
+        "kora-aop-resilient"
+      ],
+      "query": "My Kora build fails with: error: incompatible types: String cannot be converted to Class<? extends Timeouter>. The line is @Timeout(\"pet\") on PetService.findById. What is wrong?",
+      "expected_behavior": [
+        "Identifies this as un-migrated Kora 1.x code: in 2.0 the annotation attribute is Class<? extends Timeouter>, not String",
+        "Declares a spec interface annotated @TimeoutSpec(\"resilient.timeout.pet\") that extends io.koraframework.resilient.timeout.Timeouter",
+        "Changes the method annotation to @Timeout(PetTimeouter.class)",
+        "Notes that the runtime contract is spelled Timeouter while Timeout is the annotation",
+        "Keeps the existing resilient.timeout.pet config section rather than renaming it"
+      ],
+      "anti_behavior": [
+        "Suggests casting, changing the string, or suppressing the error",
+        "Claims io.koraframework provides a ready-made DefaultTimeouter or PetTimeouter type",
+        "Recommends a blind find/replace across the codebase as the whole migration"
+      ],
+      "tags": [
+        "migration",
+        "regression-string-annotation",
+        "java"
+      ]
+    },
+    {
+      "id": "kora-aop-resilient-string-annotation-kotlin",
+      "skills": [
+        "kora-aop-resilient"
+      ],
+      "query": "After bumping our Kotlin Kora service to 2.0, KSP crashes with java.lang.ClassCastException: class java.lang.String cannot be cast to class com.google.devtools.ksp.symbol.KSType and the stack trace only names Kora classes. How do I find the cause?",
+      "expected_behavior": [
+        "Explains that the Kora resilient symbol processor reads the annotation value with a checked cast to KSType, so a leftover string argument crashes it instead of producing a readable diagnostic",
+        "Tells the user to search for the string forms @Retryable(\", @CircuitBreakable(\", @Timeout(\", @RateLimited(\"",
+        "Replaces each with a spec interface: @RetrySpec(\"...\") interface X : Retry, then @Retryable(X::class)",
+        "Notes the equivalent Java symptom is a plain compile error about String not converting to Class<? extends ...>"
+      ],
+      "anti_behavior": [
+        "Blames KSP version, Kotlin version, or the Gradle cache as the root cause",
+        "Suggests disabling KSP or the resilient processor",
+        "Cites a Kora migration document that is not shipped with this package as if it were authoritative"
+      ],
+      "tags": [
+        "migration",
+        "regression-string-annotation",
+        "kotlin",
+        "troubleshooting"
+      ]
+    },
+    {
+      "id": "kora-aop-resilient-countbased-missing",
+      "skills": [
+        "kora-aop-resilient"
+      ],
+      "query": "I ported this circuit breaker config to Kora 2.0: resilient.circuitbreaker.order { slidingWindowSize = 50, minimumRequiredCalls = 25, failureRateThreshold = 50, waitDurationInOpenState = \"30s\", permittedCallsInHalfOpenState = 5 }. The app builds but dies on startup. Why?",
+      "expected_behavior": [
+        "Identifies that slidingWindowSize no longer exists and is silently ignored as an unknown HOCON key",
+        "Replaces it with a countBased.windowSize = 50 block plus an explicit type",
+        "States the failure is an IllegalArgumentException during graph initialisation — \"CircuitBreaker '<Spec>' property 'countBased' is not configured\" — not a config-validation error and not a compile error",
+        "Notes the countBased block is required for STRIPED_APPROX (the default), FIXED_WINDOW and RING_BUFFER; TIME_BASED needs a timeBased block instead",
+        "Mentions RING_BUFFER is the closest match to the 1.x counting window while the migrated examples use FIXED_WINDOW"
+      ],
+      "anti_behavior": [
+        "Says the app fails with an NPE",
+        "Claims countBased is optional because the config accessor is @Nullable",
+        "Keeps slidingWindowSize anywhere in the output",
+        "Invents a minimumNumberOfCalls key"
+      ],
+      "tags": [
+        "circuit-breaker",
+        "config",
+        "regression-countbased"
+      ]
+    },
+    {
+      "id": "kora-aop-resilient-named-section-inheritance",
+      "skills": [
+        "kora-aop-resilient"
+      ],
+      "query": "In Kora 1.x our config had resilient.circuitbreaker.default with all the settings and resilient.circuitbreaker.payment overriding just failureRateThreshold = 30. I kept both in 2.0 and pointed @CircuitBreakerSpec at resilient.circuitbreaker.payment. Is that still equivalent?",
+      "expected_behavior": [
+        "States it is not equivalent: in 2.0 a spec resolves exactly one config path and named sections do not merge with `default`",
+        "Explains that unset keys fall back to the config type's defaults, not to the neighbouring section",
+        "Points out that failureRateThreshold, minimumRequiredCalls, waitDurationInOpenState and permittedCallsInHalfOpenState have no defaults at all, so the partial section fails to start",
+        "Fills the payment section completely, including a window type and countBased.windowSize",
+        "Notes the default section becomes dead config once nothing points at it and should be removed or given its own spec"
+      ],
+      "anti_behavior": [
+        "Claims 2.0 still merges a named section with `default`",
+        "Suggests a HOCON include or ${resilient.circuitbreaker.default} substitution as the documented Kora mechanism without flagging it as the user's own workaround",
+        "Leaves the partially-filled section as correct"
+      ],
+      "tags": [
+        "circuit-breaker",
+        "config",
+        "migration",
+        "regression-no-default-inheritance"
+      ]
+    },
+    {
+      "id": "kora-aop-resilient-failure-predicate",
+      "skills": [
+        "kora-aop-resilient"
+      ],
+      "query": "Our circuit breaker trips on HTTP 404s. In Kora 1.x we had a CircuitBreakerPredicate with name() returning \"IgnoreBusinessErrors\" and wired it with failurePredicateName in the config. Port it to 2.0 so only 5xx counts.",
+      "expected_behavior": [
+        "Removes the failurePredicateName config key entirely — it no longer selects anything in 2.0",
+        "Implements io.koraframework.resilient.circuitbreaker.CircuitBreakerPredicate with the single method isCircuitBreakerFailure(Throwable) and no name() method",
+        "Registers it as a @Component annotated @Tag(<CircuitBreakerSpec class>.class) — the tag is the only wiring",
+        "Inspects the response code (HttpClientResponseException.getCode()) to keep only 5xx as failures",
+        "Mentions the alternative of overriding isFailure(Throwable) as a default method on the spec interface, and that a tagged predicate overrides it"
+      ],
+      "anti_behavior": [
+        "Keeps name() or test(Throwable) on the predicate",
+        "Keeps or reintroduces a failurePredicateName config key",
+        "Registers the predicate as a plain untagged @Component and claims it will be picked up",
+        "Uses a non-Kora resilience predicate API"
+      ],
+      "tags": [
+        "circuit-breaker",
+        "predicate",
+        "migration",
+        "regression-failure-predicate"
+      ]
+    },
+    {
+      "id": "kora-aop-resilient-fallback-value-removed",
+      "skills": [
+        "kora-aop-resilient"
+      ],
+      "query": "This does not compile after upgrading to Kora 2.0: @Fallback(value = \"product.read\", method = \"getFromCache(id)\"). We also have a resilient.fallback.\"product.read\" section with a failurePredicateName. What is the 2.0 equivalent?",
+      "expected_behavior": [
+        "States the value attribute was removed — @Fallback(method = \"getFromCache(id)\") is the only form",
+        "States there is no @FallbackSpec, no resilient.fallback.<name> config section and no FallbackPredicate in 2.0",
+        "Deletes the resilient.fallback.\"product.read\" section, noting only resilient.telemetry.fallback survives",
+        "Replaces the predicate with a @Fallback.Reason parameter on the fallback method, explaining that its declared type filters which exceptions trigger the fallback",
+        "Notes the reason parameter is not named inside the method reference string"
+      ],
+      "anti_behavior": [
+        "Keeps @Fallback(value = ...)",
+        "Invents a @FallbackSpec annotation or a FallbackSpec interface",
+        "Keeps a resilient.fallback.<name> configuration section",
+        "Claims FallbackPredicate still exists"
+      ],
+      "tags": [
+        "fallback",
+        "migration",
+        "regression-fallback-value"
+      ]
+    },
+    {
+      "id": "kora-aop-resilient-one-spec-per-name",
+      "skills": [
+        "kora-aop-resilient"
+      ],
+      "query": "I am migrating a Kotlin service where OrderService.load, OrderService.refresh and OrderAdminService.reload all had @CircuitBreaker(\"order\"). Should I create a spec interface per method?",
+      "expected_behavior": [
+        "Says no: one spec interface per logical configuration name, shared by all three methods across both classes",
+        "Explains that the spec interface is the circuit breaker's identity, so duplicate interfaces on the same config path create independent breakers with independent windows and state — they would never trip together",
+        "Produces a single @CircuitBreakerSpec(\"resilient.circuitbreaker.order\") interface OrderCircuitBreaker : CircuitBreaker and annotates all three methods with @CircuitBreakable(OrderCircuitBreaker::class)",
+        "Reminds that in Kotlin both classes and all three methods must be open"
+      ],
+      "anti_behavior": [
+        "Creates one spec interface per method or per class",
+        "Claims two interfaces on the same config path share one runtime instance",
+        "Suggests distinguishing them with @Tag on the annotated methods"
+      ],
+      "tags": [
+        "circuit-breaker",
+        "migration",
+        "kotlin",
+        "regression-spec-sharing"
+      ]
+    },
+    {
+      "id": "kora-aop-resilient-kotlin-open",
+      "skills": [
+        "kora-aop-resilient"
+      ],
+      "query": "I added @Retryable(UserRetry::class) to a Kotlin class method and the build fails with \"AOP aspect cannot be applied to class 'com.example.UserService' because the class is not open\". What do I do?",
+      "expected_behavior": [
+        "Marks the class open and the annotated method open — both are required for the generated $UserService__AopProxy subclass",
+        "Notes this is a hard compile error in Kora 2.0, not a silently skipped aspect",
+        "Mentions the companion error for a non-open function: \"AOP aspect cannot be applied to function ... because the function is not open\"",
+        "Notes the Java equivalent is \"AOP aspect cannot be applied to class ... because the class is final\""
+      ],
+      "anti_behavior": [
+        "Suggests the all-open Kotlin compiler plugin as the Kora-documented solution",
+        "Claims the aspect would just be skipped silently",
+        "Suggests making the class an interface or adding a runtime proxy"
+      ],
+      "tags": [
+        "kotlin",
+        "troubleshooting",
+        "regression-open"
+      ]
+    },
+    {
+      "id": "kora-aop-resilient-combined-stack-order",
+      "skills": [
+        "kora-aop-resilient"
+      ],
+      "query": "Wrap a payment charge call in Kora 2.0 with a per-attempt timeout, retry on transient failures, a circuit breaker, and a fallback for graceful degradation.",
+      "expected_behavior": [
+        "Declares one spec interface per aspect: @CircuitBreakerSpec, @RetrySpec and @TimeoutSpec on interfaces extending CircuitBreaker, Retry and Timeouter",
+        "Stacks @Fallback first (outermost), then @CircuitBreakable, then @Retryable, then @Timeout last (innermost) on one @Component method, and states that declaration order is nesting order",
+        "Explains the per-attempt bound follows from @Timeout being inside @Retryable, and that swapping them makes the timeout a budget for the whole chain",
+        "Adds a same-class protected fallback method whose parameters match the method reference exactly",
+        "Provides resilient.* config for all three specs, with the circuit-breaker section including a type and countBased.windowSize"
+      ],
+      "anti_behavior": [
+        "Uses string-named annotations such as @CircuitBreaker(\"payment\") or @Retry(\"payment\")",
+        "Passes a value attribute to @Fallback",
+        "Puts @Fallback last, which would swallow failures before the circuit breaker records them",
+        "Introduces Resilience4j or another external resilience library"
+      ],
+      "tags": [
+        "combination",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-aop-resilient-imperative-no-manager",
+      "skills": [
+        "kora-aop-resilient"
+      ],
+      "query": "I cannot annotate the method I need to protect, and in Kora 1.x I used CircuitBreakerManager.get(\"order\"). How do I use a circuit breaker imperatively in Kora 2.0?",
+      "expected_behavior": [
+        "States that CircuitBreakerManager, RetryManager, TimeoutManager and FallbackManager do not exist in Kora 2.0",
+        "Injects the spec interface itself by constructor — the generated module registers it as a graph component",
+        "Calls the CircuitBreaker contract directly: accept(callable), accept(callable, fallback), or tryAcquire()/acquire() paired with releaseOnSuccess()/releaseOnError(t)",
+        "Notes the same pattern applies to Retry (retry(...)), Timeouter (execute(...)) and RateLimiter (tryAcquire()/acquire())"
+      ],
+      "anti_behavior": [
+        "Uses any *Manager type or a name-based lookup",
+        "Injects the generated $<Spec>_Impl class instead of the spec interface",
+        "Constructs a KoraCircuitBreaker by hand"
+      ],
+      "tags": [
+        "imperative",
+        "migration",
+        "regression-manager-removed"
+      ]
+    },
+    {
+      "id": "kora-aop-resilient-retry-backoff",
+      "skills": [
+        "kora-aop-resilient"
+      ],
+      "query": "Configure a Kora 2.0 retry for an external API: exponential backoff starting at 100ms, capped at 5s, with jitter, retrying at most 4 times, and only on connection-level failures.",
+      "expected_behavior": [
+        "Declares a @RetrySpec interface extending Retry and applies @Retryable(<Spec>.class)",
+        "Sets attempts = 4 and notes that attempts counts retries, so up to 5 invocations happen",
+        "Uses a backoff block (multiplier, delayMax) and states it replaces delayStep rather than combining with it",
+        "Adds a jitter block with type = FULL",
+        "Restricts the exceptions with a @Tag(<Spec>.class) @Component implementing RetryPredicate.isRetryFailure(Throwable), not a failurePredicateName key",
+        "Notes a rejected exception propagates unchanged instead of becoming RetryExhaustedException"
+      ],
+      "anti_behavior": [
+        "Uses failurePredicateName or a RetryPredicate with name()/test()",
+        "Claims delayStep produces exponential backoff",
+        "Says attempts is the total number of invocations",
+        "Uses @Retry(\"external\")"
+      ],
+      "tags": [
+        "retry",
+        "config",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-aop-resilient-test-config",
+      "skills": [
+        "kora-aop-resilient"
+      ],
+      "query": "Write a @KoraAppTest that proves our circuit breaker opens after two failures, overriding the resilience config inside the test.",
+      "expected_behavior": [
+        "Implements KoraAppTestConfigModifier and returns KoraConfigModification.ofString(\"\"\"...\"\"\") with the resilient block",
+        "Includes the window block in the embedded HOCON — a type plus countBased.windowSize — and all required circuit-breaker keys, or the graph fails to initialise",
+        "Tunes the values down (small windowSize, minimumRequiredCalls of 1-2, failureRateThreshold = 100, sub-second waitDurationInOpenState) so the breaker trips within a few calls",
+        "Injects the service with @TestComponent and asserts on invocation counts against a fake collaborator rather than on wall-clock timing",
+        "Notes that CallNotPermittedException is what an OPEN breaker throws"
+      ],
+      "anti_behavior": [
+        "Omits the countBased block from the embedded test HOCON",
+        "Assumes the test picks up resilient.circuitbreaker.default automatically",
+        "Mocks the circuit breaker instead of exercising the real graph",
+        "Uses Thread.sleep-based timing as the assertion"
+      ],
+      "tags": [
+        "testing",
+        "config",
+        "regression-embedded-hocon"
+      ]
+    },
+    {
+      "id": "kora-aop-resilient-rate-limiter",
+      "skills": [
+        "kora-aop-resilient"
+      ],
+      "query": "I need to cap outbound SMS notifications at 100 per second in our Kora 2.0 service, shared between two sender classes.",
+      "expected_behavior": [
+        "Uses @RateLimited with a @RateLimiterSpec interface extending io.koraframework.resilient.ratelimiter.RateLimiter, noting it is new in 2.0",
+        "Declares a single spec interface used by both classes so they share one permit pool",
+        "Configures limitForPeriod = 100 and limitRefreshPeriod = \"1s\", both required",
+        "States that an exceeded limit throws RateLimitExceededException immediately — callers are never blocked or queued",
+        "Notes it is a per-process fixed-window limiter with no cluster-wide coordination"
+      ],
+      "anti_behavior": [
+        "Claims @RateLimited existed in Kora 1.x",
+        "Describes it as a token bucket that blocks or queues callers",
+        "Gives each class its own spec interface on the same config path",
+        "Suggests a resilient.ratelimiter key set that is not limitForPeriod / limitRefreshPeriod / enabled"
+      ],
+      "tags": [
+        "rate-limiter",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-aop-resilient-no-metrics",
+      "skills": [
+        "kora-aop-resilient"
+      ],
+      "query": "Our Kora 2.0 service uses @CircuitBreakable and @Retryable but no resilient.* metrics show up in Prometheus and there is nothing in the logs either. Everything else reports fine.",
+      "expected_behavior": [
+        "States that resilient telemetry is off by default — logging, metrics and tracing all default to false for the resilience aspects",
+        "Enables it under resilient.telemetry.<aspect> (circuitBreaker, retry, timeout, fallback, rateLimiter), or per spec under <specPath>.telemetry",
+        "Points out the camelCase spelling of the resilient.telemetry sub-keys",
+        "Names the real metric families, e.g. resilient.circuitbreaker.state, resilient.circuitbreaker.transition, resilient.retry.attempts, resilient.retry.exhausted",
+        "Notes that metrics also require the micrometer module in the graph"
+      ],
+      "anti_behavior": [
+        "Claims resilience metrics are enabled by default",
+        "Only raises the logger level and stops there",
+        "Invents metric names not emitted by resilient-kora"
+      ],
+      "tags": [
+        "telemetry",
+        "troubleshooting",
+        "regression-telemetry-defaults"
+      ]
+    },
+    {
+      "id": "kora-aop-resilient-no-reactive",
+      "skills": [
+        "kora-aop-resilient"
+      ],
+      "query": "Our Kora 1.x service had @CircuitBreaker(\"catalog\") on a method returning Mono<Catalog>, and a Kotlin one on a suspend fun. What happens to both in 2.0?",
+      "expected_behavior": [
+        "States that Mono/Flux are gone as Kora contracts in 2.0 and no resilience aspect accepts a Publisher return type — the build fails with \"cannot be applied ... because return type ... is not supported by this aspect\"",
+        "Rewrites the reactive method to a synchronous signature, noting Kora 2.0 contracts are synchronous on virtual threads",
+        "States that Kotlin suspend and Flow ARE supported by the resilience aspects, so the suspend fun keeps working once the annotation is retyped to a spec class",
+        "Notes that in Kotlin CompletionStage/CompletableFuture are rejected by every resilience aspect, while Java accepts them for all aspects except @RateLimited"
+      ],
+      "anti_behavior": [
+        "Suggests adding reactor-core to keep Mono/Flux working with Kora aspects",
+        "Claims Kotlin suspend functions are unsupported by the resilience aspects",
+        "Leaves a Mono/Flux signature in the output"
+      ],
+      "tags": [
+        "migration",
+        "signatures",
+        "regression-reactive-removed"
+      ]
+    }
+  ]
+}

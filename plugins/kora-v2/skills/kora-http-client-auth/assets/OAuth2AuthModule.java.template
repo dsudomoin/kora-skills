@@ -1,0 +1,55 @@
+package ${package};
+
+import io.koraframework.common.annotation.Module;
+import io.koraframework.http.client.common.auth.HttpClientTokenProvider;
+import io.koraframework.http.client.common.interceptor.BasicAuthHttpClientInterceptor;
+import io.koraframework.http.client.common.interceptor.BearerAuthHttpClientInterceptor;
+
+/**
+ * Supplies the two framework interceptors this setup needs.
+ *
+ * <p>Requires: {@code OAuth2Config}, and an {@code HttpClientTokenProvider} in the graph
+ * ({@code OAuth2ClientCredentialsProvider} carries {@code @Component}).</p>
+ *
+ * <p>The interceptor classes belong to the framework, so they cannot carry {@code @Component} —
+ * a {@code @Module} factory is the only way to put them in the graph. Provide each of them
+ * <b>exactly once</b>: a second provider gives
+ * {@code Multiple components match dependency:}, none gives
+ * {@code No component found for dependency:} naming the interceptor type.</p>
+ *
+ * <p>Unlike {@code @ConfigSource} and {@code @HttpClient} interfaces, a hand-written {@code @Module}
+ * is not auto-discovered — add it to {@code @KoraApp extends}:</p>
+ *
+ * <pre>{@code
+ * @KoraApp
+ * public interface Application extends
+ *         HoconConfigModule, JsonModule, LogbackModule, OkHttpClientModule,
+ *         OAuth2AuthModule {
+ *
+ *     static void main(String[] args) {
+ *         KoraApplication.run(ApplicationGraph::graph);
+ *     }
+ * }
+ * }</pre>
+ *
+ * <p>Attach them per client:</p>
+ *
+ * <pre>{@code
+ * @InterceptWith(BearerAuthHttpClientInterceptor.class)
+ * @HttpClient("httpClient.secureApi")
+ * public interface SecureApiClient { … }
+ * }</pre>
+ */
+@Module
+public interface OAuth2AuthModule {
+
+    /** Authenticates the token endpoint itself with the client id and secret. */
+    default BasicAuthHttpClientInterceptor oauth2ClientCredentials(OAuth2Config config) {
+        return new BasicAuthHttpClientInterceptor(config.clientId(), config.clientSecret());
+    }
+
+    /** Adds {@code Authorization: Bearer <token>} to the business client's requests. */
+    default BearerAuthHttpClientInterceptor secureApiBearer(HttpClientTokenProvider provider) {
+        return new BearerAuthHttpClientInterceptor(provider);
+    }
+}

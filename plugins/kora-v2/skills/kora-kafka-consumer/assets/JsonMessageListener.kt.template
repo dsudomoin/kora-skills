@@ -1,0 +1,70 @@
+package ${packagePath}.listener
+
+import io.koraframework.common.annotation.Component
+import io.koraframework.json.common.annotation.Json
+import io.koraframework.kafka.common.annotation.KafkaListener
+import org.slf4j.LoggerFactory
+import java.time.Instant
+import java.util.concurrent.CopyOnWriteArrayList
+
+/**
+ * Kafka consumer with JSON deserialization for topics: ${topics}
+ *
+ * Config path: kafka.consumer.${listenerNameLower}
+ *
+ * @Json on the payload type selects the generated JsonReader through JsonKafkaDeserializer.
+ * Requires io.koraframework:json-common and JsonModule on the @KoraApp interface.
+ *
+ * Nullability is the Kotlin type, never an annotation: the generated handler assigns null to the
+ * payload when deserialization fails, so `event` must be declared `${eventClassName}?`.
+ */
+@Component
+class ${listenerName} {
+
+    private val log = LoggerFactory.getLogger(${listenerName}::class.java)
+
+    @Json
+    data class ${eventClassName}(val id: String, val type: String, val timestamp: Instant)
+
+    private val received = CopyOnWriteArrayList<${eventClassName}>()
+    private val failed = CopyOnWriteArrayList<Exception>()
+
+    @KafkaListener("kafka.consumer.${listenerNameLower}")
+    fun process(@Json event: ${eventClassName}?, exception: Exception?) {
+        if (exception != null) {
+            log.warn("Failed to deserialize record from ${topicName}", exception)
+            failed += exception
+            // TODO route the raw bytes to a DLQ — see references/kafka-error-handling-reference.md
+            return
+        }
+        if (event == null) {
+            log.warn("Received a tombstone without an exception")
+            return
+        }
+
+        log.debug("Consuming event {} of type {}", event.id, event.type)
+        received += event
+        // TODO business logic
+    }
+
+    fun received(): List<${eventClassName}> = received
+
+    fun failed(): List<Exception> = failed
+}
+
+/*
+ * Variants:
+ *
+ *   fun process(key: String, @Json event: ${eventClassName})                  // key + JSON value
+ *   fun process(record: ConsumerRecord<String, @Json ${eventClassName}>)      // metadata, value() may throw
+ *   fun process(records: ConsumerRecords<String, @Json ${eventClassName}>)    // whole poll batch
+ *
+ * A custom deserializer must respect the @NullMarked contract and JsonReader.read being nullable:
+ *
+ *   @Tag(${eventClassName}::class)
+ *   @Component
+ *   class ${eventClassName}Deserializer(private val reader: JsonReader<${eventClassName}>) : Deserializer<${eventClassName}> {
+ *       override fun deserialize(topic: String, data: ByteArray): ${eventClassName} =
+ *           requireNotNull(reader.read(data)) { "Empty payload in topic " + topic }
+ *   }
+ */

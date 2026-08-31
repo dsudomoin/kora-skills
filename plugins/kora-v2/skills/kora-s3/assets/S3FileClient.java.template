@@ -1,0 +1,136 @@
+// Declarative Kora 2.0 S3 client — artifact io.koraframework.experimental:s3-client-kora.
+// Needs a Kora HTTP client module (http-client-ok / -jdk / -apache) and KoraS3ClientModule
+// on @KoraApp. Kora generates $S3FileClient_S3ClientImpl and a module that registers it —
+// inject this interface, never the generated class.
+//
+// Replace `com.example.storage` with your package.
+
+package com.example.storage;
+
+import io.koraframework.s3.client.kora.annotation.S3;
+import io.koraframework.s3.client.kora.model.request.GetObjectArgs;
+import io.koraframework.s3.client.kora.model.request.ListObjectsArgs;
+import io.koraframework.s3.client.kora.model.request.PutObjectArgs;
+import io.koraframework.s3.client.kora.model.response.GetObjectResult;
+import io.koraframework.s3.client.kora.model.response.HeadObjectResult;
+import io.koraframework.s3.client.kora.model.response.ListBucketResult;
+import org.jspecify.annotations.Nullable;
+
+import java.io.InputStream;
+import java.util.Iterator;
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * The {@code @S3.Client} value is the config path holding {@code S3ClientConfigWithCredentials}
+ * (endpoint / credentials / region / addressStyle / requestTimeout / upload / telemetry).
+ * Leave it out and the interface's simple name becomes the config path — always pass it.
+ *
+ * <p>The {@code @S3.Bucket} value is a config path holding the bucket NAME. A leading dot makes it
+ * relative to the client path, so {@code ".bucket"} here resolves to {@code s3client.uploads.bucket}.
+ */
+@S3.Client("s3client.uploads")
+@S3.Bucket(".bucket")
+public interface S3FileClient {
+
+    // ------------------------------------------------------------------ put
+
+    /** Returns the ETag. Declare `void` instead if you do not need it. */
+    @S3.Put("files/{fileId}")
+    String upload(String fileId, byte[] body);
+
+    /** Every {name} must match a method parameter; non-String parameters use toString(). */
+    @S3.Put("files/{tenantId}/{fileId}")
+    String uploadForTenant(String tenantId, UUID fileId, byte[] body);
+
+    /**
+     * An InputStream body triggers a multipart upload in `upload.partSize` chunks (default 5 MiB);
+     * a stream that ends inside the first part is sent as a single PutObject instead.
+     * The stream is closed for you.
+     */
+    @S3.Put("files/{fileId}")
+    String uploadStream(String fileId, InputStream body);
+
+    /** PutObjectArgs carries contentType, acl, storageClass, tagging, SSE and object-lock fields. */
+    @S3.Put("files/{fileId}")
+    String uploadWithOptions(String fileId, PutObjectArgs args, byte[] body);
+
+    // ------------------------------------------------------------------ get
+
+    /**
+     * GetObjectResult extends HttpClientResponse and is Closeable — close it AND the body stream:
+     *
+     * <pre>{@code
+     * try (var obj = client.download(id); var body = obj.body().asInputStream()) {
+     *     return body.readAllBytes();
+     * }
+     * }</pre>
+     */
+    @S3.Get("files/{fileId}")
+    GetObjectResult download(String fileId);
+
+    /** byte[] does the read-and-close above for you. */
+    @S3.Get("files/{fileId}")
+    byte[] downloadBytes(String fileId);
+
+    /** Without @Nullable a missing object throws S3ClientNoSuchKeyException; with it, returns null. */
+    @S3.Get("files/{fileId}")
+    @Nullable
+    GetObjectResult downloadOrNull(String fileId);
+
+    /** GetObjectArgs carries range (Range.fromTo/from/last), versionId and conditional headers. */
+    @S3.Get("files/{fileId}")
+    GetObjectResult downloadRange(String fileId, GetObjectArgs args);
+
+    // ----------------------------------------------------------------- head
+
+    /** Metadata only. @S3.Get does not do metadata in Kora 2.0 — this is the replacement. */
+    @S3.Head("files/{fileId}")
+    HeadObjectResult meta(String fileId);
+
+    @S3.Head("files/{fileId}")
+    @Nullable
+    HeadObjectResult metaOrNull(String fileId);
+
+    // ----------------------------------------------------------------- list
+
+    /** A constant prefix needs no parameters. */
+    @S3.List("files/")
+    ListBucketResult listAll();
+
+    @S3.List("files/{tenantId}/")
+    List<String> listKeys(String tenantId);
+
+    /**
+     * With a ListObjectsArgs parameter the annotation's prefix is not applied — set it yourself.
+     * maxKeys replaces the 1.x @S3.List(limit = N); delimiter replaces the 1.x delimiter attribute.
+     *
+     * <pre>{@code
+     * client.listPage(new ListObjectsArgs()
+     *     .setPrefix("files/").setDelimiter("/").setMaxKeys(50)
+     *     .setContinuationToken(previous.nextContinuationToken()));
+     * }</pre>
+     */
+    @S3.List
+    ListBucketResult listPage(ListObjectsArgs args);
+
+    /** An Iterator return pages lazily — the next page is fetched on demand. */
+    @S3.List
+    Iterator<ListBucketResult.ListBucketItem> listLazily(ListObjectsArgs args);
+
+    // --------------------------------------------------------------- delete
+
+    /**
+     * {@code @S3.Delete} generates deleteObject only and must return void. There is no declarative
+     * batch delete: a {@code List<String>} parameter is rejected as a key. Use the AWS SDK client's
+     * {@code deleteObjects(...)} or the runtime {@code S3Client#deleteObjects(creds, bucket, keys)}.
+     */
+    @S3.Delete("files/{fileId}")
+    void delete(String fileId);
+
+    // -------------------------------------------------- bucket chosen at runtime
+
+    /** A @S3.Bucket parameter overrides the interface-level bucket for this call. */
+    @S3.Get
+    byte[] downloadFrom(@S3.Bucket String bucket, String key);
+}

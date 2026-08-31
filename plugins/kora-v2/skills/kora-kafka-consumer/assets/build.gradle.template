@@ -1,0 +1,66 @@
+plugins {
+    id "java"
+    id "application"
+}
+
+// Kora 2.0 artifacts are compiled to class-file 69 — JDK 25 is the floor.
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+configurations {
+    koraBom
+    annotationProcessor.extendsFrom(koraBom)
+    compileOnly.extendsFrom(koraBom)
+    implementation.extendsFrom(koraBom)
+    testImplementation.extendsFrom(koraBom)
+    testAnnotationProcessor.extendsFrom(koraBom)
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // koraVersion=2.0.0.RC1 in gradle.properties — never pin a Kora artifact individually
+    koraBom platform("io.koraframework:kora-bom:${koraVersion}")
+    annotationProcessor "io.koraframework:annotation-processors"
+
+    implementation "io.koraframework:kafka"
+    implementation "io.koraframework:json-common"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
+
+    // Telemetry — required for telemetry.metrics.enabled / telemetry.tracing.enabled to do anything
+    // implementation "io.koraframework:micrometer-module"
+    // implementation "io.koraframework:opentelemetry-tracing"
+    // implementation "io.koraframework:opentelemetry-tracing-exporter-grpc"
+
+    // Retry / circuit breaker on listener methods
+    // implementation "io.koraframework:resilient-kora"
+
+    testImplementation "io.koraframework:test-junit5"
+    // Testcontainers 2.x module names: testcontainers-kafka, NOT kafka
+    testImplementation "io.goodforgod:testcontainers-extensions-kafka:0.15.0"
+    // Not managed by kora-bom; these are the versions the migrated examples pin.
+    testImplementation "org.awaitility:awaitility:4.2.0"
+    testImplementation "org.json:json:20231013"
+}
+
+application {
+    mainClass = "${packagePath}.Application"
+}
+
+tasks.named("test") {
+    useJUnitPlatform()
+}
+
+tasks.named("compileJava") {
+    options.encoding = "UTF-8"
+}
+
+run {
+    environment(["KAFKA_BOOTSTRAP": System.getenv("KAFKA_BOOTSTRAP") ?: "localhost:9092"])
+}

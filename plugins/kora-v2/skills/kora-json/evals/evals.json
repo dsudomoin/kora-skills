@@ -1,0 +1,327 @@
+{
+  "evals": [
+    {
+      "id": "kora-json-basic-dto",
+      "skills": [
+        "kora-json"
+      ],
+      "query": "I'm building a Kora HTTP API. Create a JSON request DTO UserRequest with name and email, and a UserResponse with id, name, email, createdAt.",
+      "expected_behavior": [
+        "Annotates each DTO type with @Json imported from io.koraframework.json.common.annotation",
+        "Uses Java records (or Kotlin data classes) for the DTOs",
+        "Adds annotationProcessor \"io.koraframework:annotation-processors\" and implementation \"io.koraframework:json-common\" (Kotlin: ksp \"io.koraframework:symbol-processors\")",
+        "Uses the platform \"io.koraframework:kora-bom\" at version 2.0.0.RC1 (koraVersion property) rather than pinning per-artifact versions",
+        "Notes that the @KoraApp interface must extend io.koraframework.json.common.JsonModule",
+        "Does not use foreign @JsonProperty or field injection; uses constructor injection"
+      ],
+      "anti_behavior": [
+        "Writes the artifact ru.tinkoff.kora:json-module or io.koraframework:json-module",
+        "Writes the BOM ru.tinkoff.kora:kora-parent",
+        "Imports ru.tinkoff.kora.json.common.annotation.Json",
+        "Pins 2.0.0-SNAPSHOT, 2.0.0.alpha6 or a 1.x version as the version for a new project"
+      ],
+      "tags": [
+        "dto",
+        "basic",
+        "regression-coordinates"
+      ]
+    },
+    {
+      "id": "kora-json-artifact-and-module-rename",
+      "skills": [
+        "kora-json"
+      ],
+      "query": "Our Kora 1.x service depends on ru.tinkoff.kora:json-module and its @KoraApp extends ru.tinkoff.kora.json.module.JsonModule. What are the Kora 2.0 equivalents?",
+      "expected_behavior": [
+        "States the artifact is io.koraframework:json-common — json-module does not exist in Kora 2.0",
+        "States the module interface is io.koraframework.json.common.JsonModule (package .common, not .module)",
+        "States that JsonCommonModule was folded into JsonModule and no longer exists",
+        "Mentions the BOM change ru.tinkoff.kora:kora-parent -> io.koraframework:kora-bom",
+        "Notes that json-common should be declared explicitly in every Gradle module using @Json"
+      ],
+      "anti_behavior": [
+        "Claims io.koraframework:json-module or io.koraframework.json.module.JsonModule exists",
+        "Recommends keeping JsonCommonModule",
+        "Suggests running a blind package find/replace as the whole migration"
+      ],
+      "tags": [
+        "migration",
+        "regression-coordinates"
+      ]
+    },
+    {
+      "id": "kora-json-version-and-repository",
+      "skills": [
+        "kora-json"
+      ],
+      "query": "Set up a fresh Gradle module that uses Kora 2.0 JSON. Which Kora version and which repositories do I declare?",
+      "expected_behavior": [
+        "Pins koraVersion=2.0.0.RC1 — the Kora 2.0 release published on Maven Central",
+        "Uses plain mavenCentral(); no extra repository is needed for RC1",
+        "Declares platform(\"io.koraframework:kora-bom:$koraVersion\") and no per-artifact versions",
+        "Adds io.koraframework:json-common plus annotation-processors (Java) or symbol-processors (Kotlin)",
+        "If 2.0.0-SNAPSHOT is mentioned at all, labels it the master development line and pairs it with https://central.sonatype.com/repository/maven-snapshots"
+      ],
+      "anti_behavior": [
+        "Uses 2.0.0-SNAPSHOT as the version for a new project",
+        "Uses 2.0.0.alpha6 or claims Central only publishes an alpha",
+        "Adds a custom/snapshot repository for the RC1 release",
+        "Offers a leftover Central artifact such as kora-parent or cache-redis, which the RC1 BOM does not constrain"
+      ],
+      "tags": [
+        "setup",
+        "versions",
+        "regression-version"
+      ]
+    },
+    {
+      "id": "kora-json-unchecked-methods-removed",
+      "skills": [
+        "kora-json"
+      ],
+      "query": "Migrating to Kora 2.0: my code calls jsonWriter.toByteArrayUnchecked(dto), jsonWriter.toStringUnchecked(dto) and jsonReader.readUnchecked(bytes). These methods no longer resolve.",
+      "expected_behavior": [
+        "Maps toByteArrayUnchecked -> toByteArray, toStringUnchecked -> toString, readUnchecked -> read",
+        "States that the surviving methods declare no checked exception — in 2.0.0.RC1 no throws clause at all, and on the 2.0.0-SNAPSHOT line only the unchecked tools.jackson.core.JacksonException",
+        "Warns that a leftover try/catch (IOException) around toByteArray is now a Java compile error (\"exception IOException is never thrown in body of corresponding try statement\")",
+        "Says to delete the now-unused import java.io.IOException"
+      ],
+      "anti_behavior": [
+        "Keeps or reintroduces a *Unchecked method",
+        "Keeps the try/catch (IOException) or suggests catching IOException",
+        "Claims the plain methods still throw IOException"
+      ],
+      "tags": [
+        "migration",
+        "regression-unchecked"
+      ]
+    },
+    {
+      "id": "kora-json-java-ioexception-try-catch",
+      "skills": [
+        "kora-json"
+      ],
+      "query": "This Kora 2.0 Java interceptor does not compile:\n\n```java\ntry {\n    return HttpServerResponse.of(code, HttpBody.json(errorWriter.toByteArray(error)));\n} catch (IOException ex) {\n    return HttpServerResponse.of(500, HttpBody.plaintext(ex.getMessage()));\n}\n```\nWhat is wrong?",
+      "expected_behavior": [
+        "Identifies the error as \"exception IOException is never thrown in body of corresponding try statement\"",
+        "Explains that JsonWriter.toByteArray(@Nullable T) declares no checked exception in Kora 2.0 (in 2.0.0.RC1 no throws clause at all)",
+        "Rewrites the snippet as a single unguarded return statement",
+        "Removes the java.io.IOException import"
+      ],
+      "anti_behavior": [
+        "Suggests catching Exception or IOException anyway",
+        "Suggests adding throws IOException to the enclosing method",
+        "Claims the method signature is unchanged from Kora 1.x"
+      ],
+      "tags": [
+        "java",
+        "compile-error",
+        "regression-unchecked"
+      ]
+    },
+    {
+      "id": "kora-json-kotlin-nullable-read",
+      "skills": [
+        "kora-json"
+      ],
+      "query": "In my Kotlin Kafka listener on Kora 2.0, `val event: OrderEvent = reader.read(record.value())` fails to compile with a type mismatch. Why, and how do I fix it?",
+      "expected_behavior": [
+        "Explains that JsonReader<T>.read(...) is annotated @Nullable in Kora 2.0, so it returns T?",
+        "Fixes it with requireNotNull(reader.read(data)) (or an explicit null check / !!)",
+        "Notes that reading the JSON literal null legitimately yields null, so a null check is real logic rather than ceremony",
+        "Does not change the declared type of the JsonReader component"
+      ],
+      "anti_behavior": [
+        "Claims read() returns a non-null type",
+        "Suggests a platform-type cast or an unsafe unchecked cast",
+        "Suggests switching to a suspend or reactive reader API"
+      ],
+      "tags": [
+        "kotlin",
+        "nullability",
+        "regression-nullable-read"
+      ]
+    },
+    {
+      "id": "kora-json-controller",
+      "skills": [
+        "kora-json"
+      ],
+      "query": "Add a Kora @HttpController UserController with a POST /users that takes a JSON body and a GET /users/{id} that returns JSON.",
+      "expected_behavior": [
+        "Marks the request parameter with @Json and the route method with @Json",
+        "Uses @HttpRoute(method = HttpMethod.POST/GET, path = ...) and @Path for the id",
+        "Annotates the controller with @HttpController and @Component, injecting the service via the constructor",
+        "Puts @Json on the DTO types themselves, not only on the controller parameter",
+        "Uses synchronous return types — no Mono/Flux/CompletionStage/suspend",
+        "Does not use @RestController, @RequestBody, @GetMapping or @PathVariable"
+      ],
+      "tags": [
+        "http",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-json-field-naming-optional",
+      "skills": [
+        "kora-json"
+      ],
+      "query": "My JSON uses snake_case keys like user_id and first_name, and some fields are optional. How do I map this in a Kora 2.0 DTO?",
+      "expected_behavior": [
+        "Uses @JsonField(\"user_id\") to rename individual fields",
+        "Mentions @NamingStrategy(SnakeCaseNameConverter.class) as the wholesale alternative",
+        "Marks optional fields with JSpecify org.jspecify.annotations.Nullable (Kotlin: nullable type T?)",
+        "Explains that all fields are required by default",
+        "For a qualified/nested Java type, places the type-use @Nullable before the simple name (java.util.@Nullable List<String>)",
+        "Does not introduce com.fasterxml.jackson @JsonProperty"
+      ],
+      "anti_behavior": [
+        "Uses javax/jakarta @Nullable or invents a Kora @Nullable",
+        "Writes @Nullable java.util.List<String> in a position javac rejects",
+        "Uses @field:Nullable in Kotlin"
+      ],
+      "tags": [
+        "fields",
+        "basic",
+        "nullability"
+      ]
+    },
+    {
+      "id": "kora-json-sealed-polymorphic",
+      "skills": [
+        "kora-json"
+      ],
+      "query": "Create a polymorphic JSON result PaymentResult with a discriminator field type and two cases PaymentSuccess (SUCCESS) and PaymentError (ERROR).",
+      "expected_behavior": [
+        "Defines a sealed interface annotated with @Json and @JsonDiscriminatorField(\"type\")",
+        "Annotates EVERY subtype with its own @Json — otherwise the sealed mapper cannot be wired",
+        "Annotates each subtype with @JsonDiscriminatorValue matching the JSON value",
+        "Does not add a redundant String type component to the subtypes, or, if it adds one, maps its JSON name onto the discriminator field",
+        "Does not use Jackson @JsonTypeInfo/@JsonSubTypes"
+      ],
+      "anti_behavior": [
+        "Claims the discriminator must be declared as a record component on every subtype",
+        "Omits @Json from the subtypes",
+        "Claims @JsonDiscriminatorValue is mandatory (it defaults to the subtype simple name)"
+      ],
+      "tags": [
+        "sealed",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-json-patch-nullable",
+      "skills": [
+        "kora-json"
+      ],
+      "query": "I have a PATCH /users/{id} endpoint that must distinguish a field omitted from the body from a field explicitly set to null. How do I model the request DTO in Kora?",
+      "expected_behavior": [
+        "Uses io.koraframework.json.common.JsonNullable<T> for the patchable fields",
+        "Reads state with isDefined() and value() (and isNull() when needed), not Optional-style isPresent()/get()",
+        "Explains the three states: defined non-null, defined null, undefined (omitted)",
+        "Notes that JsonNullable.undefined() is omitted from the output even under @JsonInclude(ALWAYS)",
+        "Does not invent isAbsent()/isPresent() methods on JsonNullable"
+      ],
+      "tags": [
+        "jsonnullable",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-json-custom-mapper",
+      "skills": [
+        "kora-json"
+      ],
+      "query": "I need to serialize LocalDate as dd.MM.yyyy across my Kora 2.0 app. Register a custom JSON mapper.",
+      "expected_behavior": [
+        "Provides JsonReader<LocalDate> and JsonWriter<LocalDate> factories in a @Module (io.koraframework.common.annotation.Module) or directly in @KoraApp",
+        "Uses PLAIN factory methods, explaining that a non-default component overrides JsonModule's @DefaultComponent built-in",
+        "Uses the Jackson 3 API: tools.jackson.core.JsonParser/JsonGenerator, parser.getString()/getValueAsString(), generator.writeString/writeNull, StreamReadException for failures",
+        "Handles null in the writer (writeNull) and returns null for JsonToken.VALUE_NULL in the reader",
+        "Builds the DateTimeFormatter once, outside the lambda",
+        "Mentions @Mapping(X.class) as the per-field alternative"
+      ],
+      "anti_behavior": [
+        "Uses parser.getText(), generator.writeStringField(...) or writeFieldName(...) (Jackson 2 API)",
+        "Imports com.fasterxml.jackson.* types",
+        "Throws or catches IOException",
+        "Marks the override with @DefaultComponent, leaving two competing defaults"
+      ],
+      "tags": [
+        "custom-mapper",
+        "advanced",
+        "regression-jackson3-api"
+      ]
+    },
+    {
+      "id": "kora-json-enum-serialization",
+      "skills": [
+        "kora-json"
+      ],
+      "query": "Create an OrderStatus enum that serializes to lowercase strings like pending and shipped in a Kora @Json DTO, and another that serializes to an integer code.",
+      "expected_behavior": [
+        "Annotates both enums with @Json",
+        "For the string case, overrides toString() to return the lowercase value",
+        "Explains that the default value accessor is toString() and the reader matches back through the same accessor",
+        "For the integer case, exposes a public zero-argument accessor annotated @Json whose return type becomes the JSON value type",
+        "Does not add a fromString/valueOf helper and claim Kora uses it",
+        "Does not use fasterxml enum annotations"
+      ],
+      "tags": [
+        "enum",
+        "intermediate"
+      ]
+    },
+    {
+      "id": "kora-json-jackson-backend",
+      "skills": [
+        "kora-json"
+      ],
+      "query": "My team has an existing Jackson ObjectMapper config. How do I make a Kora 2.0 app route its HTTP JSON bodies through Jackson?",
+      "expected_behavior": [
+        "Extends io.koraframework.json.jackson.module.JacksonModule on the @KoraApp interface",
+        "Adds implementation \"io.koraframework:jackson-module\"",
+        "States that jackson-module binds Jackson 3 under the group tools.jackson.core (jackson-databind 3.x) and that the mapper type is tools.jackson.databind.ObjectMapper",
+        "States that jackson-databind arrives transitively via jackson-module's api dependency, so the consumer must NOT add a Jackson coordinate of their own",
+        "States that JacksonModule supplies NO ObjectMapper — the app must provide one as a component, or the graph fails with \"No component found for dependency tools.jackson.databind.ObjectMapper\"",
+        "Clarifies that JacksonModule replaces only the HTTP request/response body mappers, not JsonReader/JsonWriter generation, so @Json and json-common are still needed",
+        "Notes that the Kora-native HTTP JSON mappers are @DefaultComponent, so JacksonModule's plain factories take precedence automatically"
+      ],
+      "anti_behavior": [
+        "Adds com.fasterxml.jackson.core:jackson-databind or imports com.fasterxml.jackson.databind.ObjectMapper",
+        "Registers a Jackson 2 add-on such as jackson-datatype-jsr310 or jackson-module-kotlin against a tools.jackson ObjectMapper",
+        "Claims Kora supplies a default ObjectMapper that a factory merely overrides",
+        "Claims JacksonModule replaces the generated JsonReader/JsonWriter components",
+        "Tells the user to add tools.jackson.core:jackson-databind explicitly alongside jackson-module"
+      ],
+      "tags": [
+        "jackson",
+        "advanced",
+        "regression-jackson-group"
+      ]
+    },
+    {
+      "id": "kora-json-reader-not-found",
+      "skills": [
+        "kora-json"
+      ],
+      "query": "My Kora 2.0 build fails with: No component found for dependency io.koraframework.json.common.JsonReader<com.example.OrderEvent>. What did I miss?",
+      "expected_behavior": [
+        "Checks that OrderEvent carries @Json (or @JsonReader) on the type itself",
+        "Checks that the @KoraApp interface extends io.koraframework.json.common.JsonModule",
+        "Checks that io.koraframework:json-common and the annotation processor (annotation-processors / symbol-processors) are on the module's classpath",
+        "For a sealed type, checks that every subtype carries its own @Json",
+        "Mentions that stale generated sources from a 1.x rename need ./gradlew clean --no-build-cache rather than hand-editing build/generated"
+      ],
+      "anti_behavior": [
+        "Suggests registering the DTO in a reflection config or a runtime mapper registry",
+        "Suggests annotating only the controller parameter",
+        "Suggests editing generated sources under build/"
+      ],
+      "tags": [
+        "troubleshooting",
+        "di"
+      ]
+    }
+  ]
+}

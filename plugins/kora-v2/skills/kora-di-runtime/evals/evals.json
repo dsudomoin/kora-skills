@@ -1,0 +1,253 @@
+{
+  "evals": [
+    {
+      "id": "kora-di-runtime-root-autostart",
+      "skills": ["kora-di-runtime"],
+      "query": "I have a Kora 2.0 component that starts a background worker, but nothing depends on it and it never runs at startup. How do I make Kora always instantiate it?",
+      "expected_behavior": [
+        "Explains that Kora resolves the graph from the root set outwards, so a component with no dependents is never created",
+        "Annotates the @Component class (or the @KoraApp/@Module factory method) with @Root from io.koraframework.common.annotation",
+        "Implements io.koraframework.application.graph.Lifecycle so init() starts the worker and release() stops it",
+        "States explicitly that implementing Lifecycle does NOT make a component reachable",
+        "Does not use field injection, classpath scanning, or external-framework lifecycle annotations such as @PostConstruct"
+      ],
+      "tags": ["root", "basic"]
+    },
+    {
+      "id": "kora-di-runtime-root-pruned-lifecycle-regression",
+      "skills": ["kora-di-runtime"],
+      "query": "This Kora 2.0 component compiles and the app starts, but the bucket is never created. Why?\n\n@Component\npublic final class S3BucketInitializer implements Lifecycle {\n    private final S3Client s3Client;\n    public S3BucketInitializer(S3Client s3Client) { this.s3Client = s3Client; }\n    @Override public void init() { s3Client.createBucket(CreateBucketRequest.builder().bucket(\"uploads\").build()); }\n    @Override public void release() {}\n}",
+      "expected_behavior": [
+        "Identifies the missing @Root as the cause: nothing depends on the component, so it is pruned from the graph and init() never runs",
+        "Adds @Root (io.koraframework.common.annotation.Root) above/below @Component",
+        "Explains that the failure is silent - the build is green and no error is logged",
+        "Does not claim the Lifecycle interface, the S3 client wiring, or the constructor is at fault",
+        "Does not suggest calling init() manually or moving the work into the constructor"
+      ],
+      "tags": ["root", "lifecycle", "regression", "silent-failure"]
+    },
+    {
+      "id": "kora-di-runtime-lifecycle-initrelease",
+      "skills": ["kora-di-runtime"],
+      "query": "Create a Kora 2.0 component that opens a connection pool on startup and closes it cleanly on shutdown.",
+      "expected_behavior": [
+        "Implements io.koraframework.application.graph.Lifecycle with exactly `void init() throws Exception` and `void release() throws Exception`",
+        "Constructs the resource in the constructor and starts it in init(); stops it in release() with a bounded wait",
+        "Notes that release runs on graceful shutdown in reverse order of init, only after every dependent has been released",
+        "Mentions that a component implementing AutoCloseable also gets close() on release",
+        "Does not return a reactive type, CompletionStage, or use suspend in the lifecycle methods",
+        "Does not use external-framework lifecycle callbacks"
+      ],
+      "tags": ["lifecycle", "basic"]
+    },
+    {
+      "id": "kora-di-runtime-lifecycle-reactive-signature-regression",
+      "skills": ["kora-di-runtime"],
+      "query": "Port this Kora 1.x component to Kora 2.0:\n\n@Component\npublic final class WarmCache implements Lifecycle {\n    @Override public Mono<Void> init() { return Mono.fromRunnable(this::warm); }\n    @Override public Mono<Void> release() { return Mono.empty(); }\n}",
+      "expected_behavior": [
+        "Replaces the reactive signatures with `void init() throws Exception` and `void release() throws Exception`, the actual Kora 2.0 Lifecycle contract",
+        "Removes the Mono/Reactor usage entirely rather than keeping it inside the method body",
+        "States that Kora 2.0 container contracts are synchronous and executed on virtual threads, so there is no reactive Lifecycle variant",
+        "Updates the import to io.koraframework.application.graph.Lifecycle",
+        "Does not wrap the reactive call in block() and present that as the migration",
+        "Does not claim the 1.x signature still compiles"
+      ],
+      "tags": ["lifecycle", "regression", "reactive-removed"]
+    },
+    {
+      "id": "kora-di-runtime-lifecycle-wrapper-factory",
+      "skills": ["kora-di-runtime"],
+      "query": "I provide a third-party DataSource from a Kora 2.0 @Module factory method, but it needs init/release hooks and the class cannot implement Lifecycle. How do I give it a lifecycle?",
+      "expected_behavior": [
+        "Changes the factory method return type to Wrapped<DataSource> and returns new LifecycleWrapper<>(instance, initFn, releaseFn)",
+        "Imports io.koraframework.application.graph.LifecycleWrapper and io.koraframework.application.graph.Wrapped",
+        "Explains that the container unwraps Wrapped<T>, so consumers keep injecting DataSource",
+        "Notes that all three constructor arguments are mandatory and that there is no static wrap(...) factory",
+        "In Kotlin, passes the three arguments positionally and does not use named arguments on the Java constructor",
+        "Does not rely on external-framework init/destroy method attributes"
+      ],
+      "tags": ["lifecycle", "wrapped", "advanced"]
+    },
+    {
+      "id": "kora-di-runtime-tag-disambiguation",
+      "skills": ["kora-di-runtime"],
+      "query": "I have two implementations of a Cache interface in my Kora 2.0 container and the build fails with an ambiguous dependency. How do I pick which one each consumer gets?",
+      "expected_behavior": [
+        "Introduces marker tag classes and annotates each implementation with @Tag(SomeTag.class) from io.koraframework.common.annotation.Tag",
+        "Repeats the matching @Tag on each injection point",
+        "Explains that the tag is a Class, not a string, so refactoring and find-usages keep working",
+        "Warns that tagging an implementation removes it from every untagged consumer of that interface",
+        "Does not import Tag from io.koraframework.common (the annotations live in io.koraframework.common.annotation)",
+        "Does not use external-framework qualifier or primary annotations"
+      ],
+      "tags": ["tag", "basic"]
+    },
+    {
+      "id": "kora-di-runtime-di-annotation-wrong-package-regression",
+      "skills": ["kora-di-runtime"],
+      "query": "My Kora 2.0 Kotlin file does not compile: `import io.koraframework.common.Tag` and `import io.koraframework.common.Component` are unresolved. What is wrong?",
+      "expected_behavior": [
+        "Corrects both imports to io.koraframework.common.annotation.Tag and io.koraframework.common.annotation.Component",
+        "States that all Kora 2.0 DI annotations - Component, Module, KoraApp, KoraSubmodule, Root, Tag, Mapping, Conditional, DefaultComponent, FactoryModule - live in io.koraframework.common.annotation",
+        "Notes that io.koraframework.common itself holds non-annotation types such as Configurer, Either, Principal and PromisedProxy",
+        "Does not suggest that the artifact is missing or that the BOM version is wrong",
+        "Does not invent a io.koraframework.common.Tag type"
+      ],
+      "tags": ["tag", "packages", "regression"]
+    },
+    {
+      "id": "kora-di-runtime-tag-factory-semantics",
+      "skills": ["kora-di-runtime"],
+      "query": "In Kora 2.0 I see @Tag(Tag.Factory.class) on the S3Client provider inside AwsS3ClientFactoryModule. Does that mean I have to inject S3Client with a tag? And how would I add a second, differently configured S3 client?",
+      "expected_behavior": [
+        "Explains that inside a module supplied by a @FactoryModule method, @Tag(Tag.Factory.class) resolves to the tag of that factory-module method itself",
+        "Concludes that because AwsS3ClientModule#awsS3ClientFactoryModule() carries no tag, the S3Client is untagged and is injected as a plain S3Client",
+        "Explains that adding a tag to the @FactoryModule method moves the whole family - config, http client, S3Client - under that tag",
+        "Shows a second @FactoryModule method with its own @Tag and config path to obtain a second independently configured client",
+        "Mentions that @Tag.Factory outside a factory module is a compile error",
+        "Does not claim consumers must write @Tag(Tag.Factory.class) at the injection point"
+      ],
+      "tags": ["tag", "factory-module", "advanced"]
+    },
+    {
+      "id": "kora-di-runtime-all-collection",
+      "skills": ["kora-di-runtime"],
+      "query": "I want a Kora 2.0 service that receives every Notifier implementation registered in the container and broadcasts to all of them.",
+      "expected_behavior": [
+        "Injects All<Notifier> from io.koraframework.application.graph.All in the constructor",
+        "States that All<T> extends Iterable<T> and is NOT a List - no size(), get(int) or stream()",
+        "Iterates the All directly, or materialises it explicitly (List.copyOf does not accept an Iterable)",
+        "Explains that a plain All<T> collects only untagged components, while @Tag(Tag.Any.class) All<T> collects every implementation",
+        "Does not claim All<T> extends List<T> or assign it to a List field without copying",
+        "Does not use classpath scanning or reflective container lookups"
+      ],
+      "tags": ["collection", "basic"]
+    },
+    {
+      "id": "kora-di-runtime-all-is-not-list-regression",
+      "skills": ["kora-di-runtime"],
+      "query": "This Kora 2.0 code does not compile - `cannot find symbol: method size()`. Fix it.\n\n@Component\npublic final class Dispatcher {\n    private final List<Handler> handlers;\n    public Dispatcher(All<Handler> handlers) {\n        this.handlers = List.copyOf(handlers);\n        System.out.println(handlers.size());\n    }\n}",
+      "expected_behavior": [
+        "Identifies that All<T> extends Iterable<T>, not List<T>, so size() does not exist and List.copyOf cannot take it",
+        "Either keeps the field as All<Handler> and iterates it, or drains the Iterable into an ArrayList before List.copyOf",
+        "Mentions that All is sealed and cannot be implemented; All.of(...) is the way to build one in a test",
+        "Does not suggest casting All to List or to Collection",
+        "Does not suggest replacing the parameter type with List<Handler>, which is not a collection claim at all"
+      ],
+      "tags": ["collection", "regression"]
+    },
+    {
+      "id": "kora-di-runtime-tag-any-collect-all",
+      "skills": ["kora-di-runtime"],
+      "query": "My Kora 2.0 CacheManager only sees the untagged caches. I need it to reach ALL caches, including the ones registered under tags.",
+      "expected_behavior": [
+        "Puts @Tag(Tag.Any.class) on the All<Cache> parameter",
+        "Explains that an untagged injection point deliberately matches only untagged components, which is why the tagged caches were missing",
+        "Notes that Tag.Any is meaningful at the injection point, not as a registration wildcard on a component",
+        "Uses @Tag(Tag.Any.class) All<Cache>, not List<Cache>",
+        "Does not use qualifier wildcards or a reflective container lookup"
+      ],
+      "tags": ["collection", "tag", "advanced"]
+    },
+    {
+      "id": "kora-di-runtime-nullable-optional",
+      "skills": ["kora-di-runtime"],
+      "query": "In my Kora 2.0 Java service an AnalyticsTracker dependency may or may not be present in the container. The graph build fails when it is absent. How do I make it optional?",
+      "expected_behavior": [
+        "Marks the constructor parameter with org.jspecify.annotations.Nullable",
+        "Notes that JSpecify @Nullable is a type-use annotation, so its position matters",
+        "Writes a real fallback path for the null case rather than only a null check",
+        "Mentions the Kotlin equivalent is the nullable type AnalyticsTracker?, with no annotation",
+        "Does not suggest jakarta/javax/org.jetbrains @Nullable as the Kora 2.0 convention",
+        "Does not suggest Optional<T> injection or required=false autowiring"
+      ],
+      "tags": ["optional", "advanced"]
+    },
+    {
+      "id": "kora-di-runtime-nullable-type-use-position-regression",
+      "skills": ["kora-di-runtime"],
+      "query": "My Kora 2.0 Java module fails to compile with `error: type annotation @org.jspecify.annotations.Nullable is not expected here`. The method is:\n\ndefault Reporter reporter(@Nullable Metrics.Registry registry) { ... }",
+      "expected_behavior": [
+        "Identifies that org.jspecify.annotations.Nullable is a TYPE_USE annotation and the nested type must be written Metrics.@Nullable Registry",
+        "Gives the corrected signature",
+        "Explains the general rule that the annotation attaches to the type, not the declaration, and shows how it changes meaning for arrays and generics (String @Nullable [] vs @Nullable String[], List<@Nullable String>)",
+        "Notes that Kotlin expresses this as Metrics.Registry? and must not carry JSpecify annotations",
+        "Does not suggest switching to jakarta.annotation.Nullable or javax.annotation.Nullable to dodge the error",
+        "Does not suggest removing the nullability marker"
+      ],
+      "tags": ["optional", "nullability", "regression"]
+    },
+    {
+      "id": "kora-di-runtime-valueof-no-cascade",
+      "skills": ["kora-di-runtime"],
+      "query": "My Kora 2.0 ApiClient gets recreated every time its AuthConfig refreshes, which is expensive. I want the client to read the latest config without being rebuilt.",
+      "expected_behavior": [
+        "Injects ValueOf<AuthConfig> from io.koraframework.application.graph.ValueOf instead of AuthConfig directly",
+        "Calls config.get() at the point of use and does not cache the result in a field",
+        "Explains that depending through ValueOf tells the container not to rebuild this component when the wrapped one refreshes",
+        "States that ValueOf has only get(), map() and optional() - there is no refresh() on ValueOf; refreshing is RefreshableGraph.refresh(Node)",
+        "Does not claim ValueOf exposes refresh()",
+        "Does not use @Lazy, ObjectProvider, or a refresh-scope annotation from another framework"
+      ],
+      "tags": ["valueof", "advanced"]
+    },
+    {
+      "id": "kora-di-runtime-graph-interceptor",
+      "skills": ["kora-di-runtime"],
+      "query": "I want to wrap my Kora 2.0 PaymentGateway component with a metrics decorator during container startup, before anything else uses it.",
+      "expected_behavior": [
+        "Implements GraphInterceptor<PaymentGateway> from io.koraframework.application.graph as a @Component",
+        "Overrides afterInit(T) and beforeRelease(T) - not init/release - and neither declares throws Exception",
+        "Returns the decorator from afterInit so that every dependent receives it",
+        "Explains that afterInit runs after the component's own Lifecycle.init() and before any dependent is created, and beforeRelease runs before its release()",
+        "Notes that interceptors are matched by exact declared type and by tag, so a generic GraphInterceptor<T> matches nothing",
+        "Notes that an interceptor needs no @Root",
+        "Does not use a bean post-processor or a runtime AOP proxy from another framework"
+      ],
+      "tags": ["interceptor", "advanced"]
+    },
+    {
+      "id": "kora-di-runtime-interceptor-old-method-names-regression",
+      "skills": ["kora-di-runtime"],
+      "query": "Migrating to Kora 2.0, this interceptor no longer compiles - 'MetricsInterceptor is not abstract and does not override abstract method beforeRelease(HttpClient)' and 'method does not override or implement a method from a supertype'. What changed?\n\n@Component\npublic final class MetricsInterceptor implements GraphInterceptor<HttpClient> {\n    @Override public HttpClient init(HttpClient c) throws Exception { return new Metered(c); }\n    @Override public HttpClient release(HttpClient c) throws Exception { return c; }\n}",
+      "expected_behavior": [
+        "Renames the methods to afterInit and beforeRelease, the Kora 2.0 GraphInterceptor contract",
+        "Removes `throws Exception` because neither 2.0 method declares checked exceptions and an override cannot add one",
+        "Shows the corrected class",
+        "Mentions that a checked exception thrown inside afterInit surfaces as IllegalStateException: Graph interceptor failed with checked exception",
+        "Does not keep the 1.x method names or claim they still work"
+      ],
+      "tags": ["interceptor", "regression"]
+    },
+    {
+      "id": "kora-di-runtime-context-removed-regression",
+      "skills": ["kora-di-runtime"],
+      "query": "Port this Kora 1.x component to 2.0. It threads the Kora Context through its lifecycle so downstream calls see the request metadata:\n\n@Root @Component\npublic final class AuditStarter implements Lifecycle {\n    private final Context context;\n    public AuditStarter(Context context) { this.context = context; }\n    @Override public void init() { Context.current().set(AUDIT_KEY, \"startup\"); }\n    @Override public void release() {}\n}",
+      "expected_behavior": [
+        "States plainly that Context has been removed from the whole Kora 2.0 framework - not just from the HTTP APIs - so there is no io.koraframework equivalent to import",
+        "Removes the Context constructor parameter and the Context.current() usage entirely",
+        "Keeps @Root and the synchronous Lifecycle methods",
+        "If ambient state is genuinely needed, suggests passing it explicitly or using a plain component/ScopedValue rather than reintroducing a framework Context",
+        "Does not rewrite the import to io.koraframework.common.Context or any other invented package",
+        "Does not claim Context still exists under a different name"
+      ],
+      "tags": ["context-removed", "regression", "lifecycle"]
+    },
+    {
+      "id": "kora-di-runtime-conditional-component",
+      "skills": ["kora-di-runtime"],
+      "query": "In Kora 2.0 I want a nightly export job to exist in the graph only when export.enabled is true in config. How?",
+      "expected_behavior": [
+        "Creates a component implementing io.koraframework.application.graph.GraphCondition, tagged with a marker class",
+        "Returns ConditionResult.matched(reason) / ConditionResult.failed(reason) with meaningful reason strings",
+        "Annotates the job with @Conditional(tag = MarkerClass.class) - the attribute is named tag",
+        "Keeps @Root on the job, since nothing depends on it",
+        "Explains that on a failed condition the factory is never invoked, so there is no instance and no Lifecycle.init()",
+        "Notes that exactly one GraphCondition may carry a given tag, and that this is decided at graph init, not live",
+        "Does not write @Conditional(MarkerClass.class) positionally",
+        "Does not use an external-framework conditional annotation or a property placeholder"
+      ],
+      "tags": ["conditional", "advanced"]
+    }
+  ]
+}

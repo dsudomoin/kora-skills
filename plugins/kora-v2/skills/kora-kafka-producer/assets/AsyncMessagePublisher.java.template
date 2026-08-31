@@ -1,0 +1,28 @@
+package ${packagePath}.publisher;
+
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Future;
+import org.apache.kafka.clients.producer.Callback;
+import org.apache.kafka.clients.producer.RecordMetadata;
+import io.koraframework.kafka.common.annotation.KafkaPublisher;
+import io.koraframework.kafka.common.annotation.KafkaPublisher.Topic;
+
+// Non-blocking publisher. The generated code creates a CompletableFuture and completes
+// it from the Kafka producer callback, so the call returns before the broker acks.
+//
+// Nothing on this path throws KafkaPublishException: a send failure completes the
+// returned handle exceptionally with the raw Kafka exception. Ignore the handle and the
+// failure is invisible. A serialization failure still throws SerializationException
+// synchronously, because serialization happens before the record reaches the producer.
+@KafkaPublisher("kafka.producer.asyncPublisher")
+public interface AsyncMessagePublisher {
+
+    @Topic(".topic")
+    Future<RecordMetadata> sendAsync(String value);
+
+    @Topic(".topic")
+    CompletionStage<RecordMetadata> sendStage(String key, String value);
+
+    @Topic(".topic")
+    CompletionStage<RecordMetadata> sendStage(String key, String value, Callback callback);
+}

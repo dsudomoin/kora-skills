@@ -1,0 +1,41 @@
+package ${package};
+
+import io.grpc.Status;
+import io.grpc.StatusRuntimeException;
+import io.koraframework.common.annotation.Component;
+import ${proto_package}.${service_name}Grpc;
+import ${proto_package}.${request_class};
+import ${proto_package}.${response_class};
+
+/**
+ * Application-facing wrapper around the generated ${service_name} stub (Kora 2.0).
+ *
+ * The stub is injected DIRECTLY BY TYPE with no @Tag: the compile-time extension serves untagged
+ * stub requests only, and refuses tagged ones. The channel behind it is configured under
+ * grpcClient.${service_name} and shared by every stub flavour of this service.
+ *
+ * Keeping protobuf builders and io.grpc.Status handling here stops transport types from leaking
+ * into the rest of the application. Contracts are synchronous — this method blocks a virtual
+ * thread, which is the intended execution model in Kora 2.0.
+ */
+@Component
+public final class ${service_name}Client {
+
+    private final ${service_name}Grpc.${stub_type} stub;
+
+    public ${service_name}Client(${service_name}Grpc.${stub_type} stub) {
+        this.stub = stub;
+    }
+
+    public ${response_class} ${method_name}(${request_class} request) {
+        try {
+            return stub.${method_name}(request);
+        } catch (StatusRuntimeException e) {
+            // Map transport statuses to domain errors at this boundary, not at each call site.
+            if (e.getStatus().getCode() == Status.Code.NOT_FOUND) {
+                throw new IllegalArgumentException("${service_name}.${method_name}: not found", e);
+            }
+            throw e;
+        }
+    }
+}

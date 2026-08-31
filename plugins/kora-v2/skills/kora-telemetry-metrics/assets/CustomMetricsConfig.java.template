@@ -1,0 +1,41 @@
+package ${package};
+
+import io.koraframework.common.annotation.Module;
+import io.koraframework.micrometer.module.PrometheusMeterRegistryInitializer;
+
+/**
+ * Metrics customization module (Kora 2.0).
+ *
+ * MetricsModule collects every PrometheusMeterRegistryInitializer with
+ * All&lt;PrometheusMeterRegistryInitializer&gt; and applies them inside
+ * PrometheusMeterRegistryWrapper.init(), BEFORE the JVM binders are bound and before
+ * kora.up is registered -- so common tags land on those meters too.
+ *
+ * PrometheusMeterRegistryInitializer extends
+ * Function&lt;PrometheusMeterRegistry, PrometheusMeterRegistry&gt;, so it MUST return the
+ * registry. Returning a registry you did not derive from the argument breaks the chain
+ * for every later initializer.
+ *
+ * Declare it as a `default` method of a `@Module` interface -- Kora picks it up as a
+ * component automatically. Several initializers may coexist; they are applied in graph
+ * order.
+ *
+ * This is the global alternative to the per-component telemetry.metrics.tags config key.
+ */
+@Module
+public interface CustomMetricsConfig {
+
+    /**
+     * Adds common tags attached to every metric in the process.
+     * Keep the values bounded -- they multiply onto every time series.
+     */
+    default PrometheusMeterRegistryInitializer commonTagsInit() {
+        return registry -> {
+            registry.config().commonTags(
+                    "service", "my-service",
+                    "environment", "production",
+                    "version", "1.0.0");
+            return registry;
+        };
+    }
+}

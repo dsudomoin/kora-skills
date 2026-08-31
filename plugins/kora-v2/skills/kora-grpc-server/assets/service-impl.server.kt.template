@@ -1,0 +1,142 @@
+package ${package}
+
+import com.google.protobuf.Timestamp
+import io.grpc.Status
+import io.grpc.StatusRuntimeException
+import io.grpc.stub.StreamObserver
+import io.koraframework.common.annotation.Component
+import org.slf4j.LoggerFactory
+import java.time.ZoneOffset
+
+/**
+ * gRPC handler for ${service_name}.
+ *
+ * Registration — all three are required and each fails differently:
+ *  - `@Component` from `io.koraframework.common.annotation`, otherwise the class is never in the
+ *    graph and the RPC answers `UNIMPLEMENTED`;
+ *  - extends the generated `${service_name}Grpc.${service_name}ImplBase`, which is an
+ *    `io.grpc.BindableService` — that is what GrpcServerModule collects;
+ *  - **no `@Tag(...)` on the class** — the collection claim is untagged, so a tagged component
+ *    silently drops out and the RPC answers `UNIMPLEMENTED`.
+ *
+ * The generated stubs are JAVA in Kotlin projects too. Kora 2.0 contracts are synchronous and each
+ * call already runs on a virtual thread, so these are plain `override fun`s and blocking inside
+ * them is correct style. A `suspend fun` here does not override the stub and Kotlin reports
+ * "'${method_name}' overrides nothing", which never mentions coroutines. There is no `Flow`, no
+ * reactive return type, and no Kora `Context` in 2.0 — use `io.grpc.Context` (gRPC's own, unrelated
+ * type) for per-call state.
+ *
+ * Send exactly ONE terminal signal per call: `onCompleted()` or `onError(...)`, never both, never
+ * twice, and never `onNext` after either.
+ */
+@Component
+class ${service_name}GrpcHandler(
+    private val service: ${service_name}Service
+) : ${service_name}Grpc.${service_name}ImplBase() {
+
+    private val logger = LoggerFactory.getLogger(${service_name}GrpcHandler::class.java)
+
+    /** Unary — one request, one response. */
+    override fun ${method_name}(request: ${request_class}, responseObserver: StreamObserver<${response_class}>) {
+        try {
+            logger.info("Processing ${method_name}")
+
+            val result = service.${method_name}(request.name, request.email)
+
+            responseObserver.onNext(result.toGrpcResponse())
+            responseObserver.onCompleted()
+        } catch (e: StatusRuntimeException) {
+            // Already carries a gRPC status — pass it through unchanged.
+            responseObserver.onError(e)
+        } catch (e: IllegalArgumentException) {
+            responseObserver.onError(
+                Status.INVALID_ARGUMENT.withDescription(e.message).asRuntimeException()
+            )
+        } catch (e: Exception) {
+            // withCause is server-side only; it never reaches the client.
+            logger.error("Failed to process ${method_name}", e)
+            responseObserver.onError(
+                Status.INTERNAL
+                    .withDescription("Failed to process request")
+                    .withCause(e)
+                    .asRuntimeException()
+            )
+        }
+    }
+
+    /* --- Server streaming: one request, many onNext, exactly one onCompleted. ---
+    override fun listAll(request: Empty, responseObserver: StreamObserver<${response_class}>) {
+        try {
+            service.listAll().forEach { responseObserver.onNext(it.toGrpcResponse()) }
+            responseObserver.onCompleted()
+        } catch (e: Exception) {
+            responseObserver.onError(
+                Status.INTERNAL.withDescription("Failed to stream items").withCause(e).asRuntimeException()
+            )
+        }
+    }
+    */
+
+    /* --- Client streaming: return the request observer, reply from onCompleted. ---
+    override fun createAll(responseObserver: StreamObserver<${response_class}>): StreamObserver<${request_class}> =
+        object : StreamObserver<${request_class}> {
+            private val batch = mutableListOf<${request_class}>()
+
+            override fun onNext(value: ${request_class}) {
+                batch += value
+            }
+
+            override fun onError(t: Throwable) {
+                // Inbound notification: the client failed or cancelled. The call is already over,
+                // so do not try to answer here.
+                logger.error("Client streaming failed", t)
+            }
+
+            override fun onCompleted() {
+                try {
+                    responseObserver.onNext(service.createAll(batch).toGrpcResponse())
+                    responseObserver.onCompleted()
+                } catch (e: Exception) {
+                    responseObserver.onError(
+                        Status.INTERNAL.withDescription("Failed to create items").withCause(e).asRuntimeException()
+                    )
+                }
+            }
+        }
+    */
+
+    /* --- Bidirectional streaming: same shape, but answer inside onNext.
+           StreamObserver is not thread-safe — synchronise if several sources may emit. ---
+    override fun updateAll(responseObserver: StreamObserver<${response_class}>): StreamObserver<${request_class}> =
+        object : StreamObserver<${request_class}> {
+            override fun onNext(value: ${request_class}) {
+                try {
+                    responseObserver.onNext(service.update(value).toGrpcResponse())
+                } catch (e: StatusRuntimeException) {
+                    responseObserver.onError(e)
+                }
+            }
+
+            override fun onError(t: Throwable) {
+                logger.error("Bidirectional streaming failed", t)
+            }
+
+            override fun onCompleted() {
+                responseObserver.onCompleted()
+            }
+        }
+    */
+
+    private fun ${service_name}Result.toGrpcResponse(): ${response_class} =
+        ${response_class}.newBuilder()
+            .setId(id)
+            .setName(name)
+            .setEmail(email)
+            .setCreatedAt(
+                Timestamp.newBuilder()
+                    .setSeconds(createdAt.toEpochSecond(ZoneOffset.UTC))
+                    .setNanos(createdAt.nano)
+                    .build()
+            )
+            .build()
+}

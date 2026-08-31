@@ -1,0 +1,70 @@
+package ${packagePath}.publisher
+
+import io.goodforgod.testcontainers.extensions.ContainerMode
+import io.goodforgod.testcontainers.extensions.kafka.ConnectionKafka
+import io.goodforgod.testcontainers.extensions.kafka.KafkaConnection
+import io.goodforgod.testcontainers.extensions.kafka.TestcontainersKafka
+import io.goodforgod.testcontainers.extensions.kafka.Topics
+import io.koraframework.test.extension.junit5.KoraAppTest
+import io.koraframework.test.extension.junit5.KoraAppTestConfigModifier
+import io.koraframework.test.extension.junit5.KoraConfigModification
+import io.koraframework.test.extension.junit5.TestComponent
+import ${packagePath}.Application
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
+
+/**
+ * Integration test for ${publisherName} against a real broker.
+ *
+ * A publisher needs no lifecycle injection — it is built on demand as a dependency of the test.
+ * Subscribe BEFORE sending, otherwise the assertion races the produce.
+ */
+@TestcontainersKafka(mode = ContainerMode.PER_RUN, topics = Topics("${topicName}"))
+@KoraAppTest(Application::class)
+class ${publisherName}Tests : KoraAppTestConfigModifier {
+
+    @ConnectionKafka
+    lateinit var connection: KafkaConnection
+
+    @TestComponent
+    lateinit var publisher: ${publisherName}
+
+    override fun config(): KoraConfigModification =
+        KoraConfigModification.ofSystemProperty("KAFKA_BOOTSTRAP", connection.params().bootstrapServers())
+
+    @Test
+    fun publishesValue() {
+        val received = connection.subscribe("${topicName}")
+
+        publisher.send("payload")
+
+        assertTrue(received.assertReceivedAtLeast(1).any { it.value().asString() == "payload" })
+    }
+
+    @Test
+    fun publishesKeyAndValue() {
+        val received = connection.subscribe("${topicName}")
+
+        publisher.send("key-1", "payload")
+
+        assertTrue(received.assertReceivedAtLeast(1).any { it.key().asString() == "key-1" })
+    }
+}
+
+/*
+ * Test config requirements:
+ *
+ *   kafka.producer.${publisherName} {
+ *     driverProperties {
+ *       "bootstrap.servers" = "localhost:9092"
+ *       "bootstrap.servers" = ${?KAFKA_BOOTSTRAP}
+ *     }
+ *     telemetry.logging.enabled = true        # off by default in Kora 2.0
+ *
+ *     ${topicName} {
+ *       topic = "${topicName}"
+ *     }
+ *   }
+ *
+ * A failed publish surfaces as KafkaPublishException with the broker error in cause.
+ */

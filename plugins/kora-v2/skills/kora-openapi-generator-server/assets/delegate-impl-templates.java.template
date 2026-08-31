@@ -1,0 +1,299 @@
+# Delegate implementation patterns — Kora 2.x
+
+Patterns for implementing a generated `*ApiDelegate`. Java and Kotlin are kept behaviourally
+aligned; the Kotlin variants follow the named-argument rule for generated models.
+Placeholders are `${...}`.
+
+Kora 2.0 contracts are **synchronous**: no `Mono`, `Flux`, `CompletionStage` or `suspend`
+delegate exists, and `Context` has been removed from the framework.
+
+---
+
+## 1. Skeleton
+
+```java
+package ${basePackage}.delegate;
+
+import io.koraframework.common.annotation.Component;
+import ${basePackage}.api.${Api}ApiDelegate;
+import ${basePackage}.api.${Api}ApiResponses;
+import ${basePackage}.model.*;
+
+@Component                                   // io.koraframework.common.annotation.Component
+public final class ${Api}Delegate implements ${Api}ApiDelegate {
+
+    private final ${Service} ${service};
+
+    public ${Api}Delegate(${Service} ${service}) {
+        this.${service} = ${service};
+    }
+}
+```
+
+```kotlin
+package ${basePackage}.delegate
+
+import io.koraframework.common.annotation.Component
+import ${basePackage}.api.${Api}ApiDelegate
+import ${basePackage}.api.${Api}ApiResponses
+
+@Component
+class ${Api}Delegate(private val ${service}: ${Service}) : ${Api}ApiDelegate
+```
+
+The generated method declares `throws Exception` in Java; an override may narrow it away.
+Kotlin overrides are plain `fun`.
+
+---
+
+## 2. Lookup with 200 / 404
+
+```java
+@Override
+public ${Api}ApiResponses.Get${Entity}ByIdApiResponse get${Entity}ById(long id) {
+    var found = ${service}.find(id);
+    return found == null
+            ? new ${Api}ApiResponses.Get${Entity}ByIdApiResponse.Get${Entity}ById404ApiResponse()
+            : new ${Api}ApiResponses.Get${Entity}ByIdApiResponse.Get${Entity}ById200ApiResponse(found);
+}
+```
+
+```kotlin
+override fun get${Entity}ById(id: Long): ${Api}ApiResponses.Get${Entity}ByIdApiResponse {
+    val found = ${service}.find(id)
+        ?: return ${Api}ApiResponses.Get${Entity}ByIdApiResponse.Get${Entity}ById404ApiResponse()
+    return ${Api}ApiResponses.Get${Entity}ByIdApiResponse.Get${Entity}ById200ApiResponse(found)
+}
+```
+
+When Java infers the record type instead of the sealed supertype (typically in a ternary or a
+lambda), name the target type explicitly:
+
+```java
+return ${service}.find(id)
+        .<${Api}ApiResponses.Get${Entity}ByIdApiResponse>map(e ->
+                new ${Api}ApiResponses.Get${Entity}ByIdApiResponse.Get${Entity}ById200ApiResponse(e))
+        .orElseGet(() ->
+                new ${Api}ApiResponses.Get${Entity}ByIdApiResponse.Get${Entity}ById404ApiResponse());
+```
+
+---
+
+## 3. Parsing a generated enum — `fromValue`, never `valueOf`
+
+The wire value in the contract (`available`) is not the generated constant (`AVAILABLE`), so
+`Enum.valueOf` throws on valid input. This fails only against real data.
+
+```java
+@Override
+public ${Api}ApiResponses.Find${Entity}ByStatusApiResponse find${Entity}ByStatus(@Nullable String status) {
+    final ${Entity}.StatusEnum parsed;
+    try {
+        parsed = ${Entity}.StatusEnum.fromValue(status);
+    } catch (IllegalArgumentException e) {
+        return new ${Api}ApiResponses.Find${Entity}ByStatusApiResponse
+                .Find${Entity}ByStatus400ApiResponse(new ErrorResponse("unknown status: " + status));
+    }
+    return new ${Api}ApiResponses.Find${Entity}ByStatusApiResponse
+            .Find${Entity}ByStatus200ApiResponse(${service}.byStatus(parsed));
+}
+```
+
+```kotlin
+override fun find${Entity}ByStatus(status: String?): ${Api}ApiResponses.Find${Entity}ByStatusApiResponse {
+    val parsed = try {
+        status?.let(${Entity}.StatusEnum::fromValue)
+    } catch (_: IllegalArgumentException) {
+        null
+    } ?: return ${Api}ApiResponses.Find${Entity}ByStatusApiResponse
+        .Find${Entity}ByStatus400ApiResponse(ErrorResponse(message = "unknown status: $status"))
+
+    return ${Api}ApiResponses.Find${Entity}ByStatusApiResponse
+        .Find${Entity}ByStatus200ApiResponse(${service}.byStatus(parsed))
+}
+```
+
+Serialise back with `getValue()`.
+
+---
+
+## 4. Building and copying generated models
+
+Java models expose a canonical constructor, a **required-only** constructor (generated whenever
+any field is optional) and one `withX` per field:
+
+```java
+var created = new ${Entity}(id, name);                       // required-only constructor
+var renamed = created.withName(newName).withStatus(status);  // copy helpers
+```
+
+Kotlin models keep **spec order** with defaults in place, so an optional property can sit between
+two required ones. Always use named arguments:
+
+```kotlin
+val created = ${Entity}(id = id, name = name)                // never positional
+val renamed = created.copy(name = newName, status = status)
+```
+
+A positional Kotlin call compiles only while the argument types happen to line up, and silently
+shifts values when the contract changes.
+
+---
+
+## 5. Three-state fields (`JsonNullable`)
+
+A `nullable: true` + not-`required` field is generated as
+`io.koraframework.json.common.JsonNullable<T>`, distinguishing absent from explicit null.
+
+```java
+@Override
+public ${Api}ApiResponses.Patch${Entity}ApiResponse patch${Entity}(long id, ${Entity}Patch patch) {
+    var entity = ${service}.find(id);
+    if (entity == null) {
+        return new ${Api}ApiResponses.Patch${Entity}ApiResponse.Patch${Entity}404ApiResponse();
+    }
+    if (patch.nickname().isDefined()) {          // key present in the payload
+        entity = entity.withNickname(patch.nickname().value());   // value may itself be null
+    }
+    return new ${Api}ApiResponses.Patch${Entity}ApiResponse
+            .Patch${Entity}200ApiResponse(${service}.save(entity));
+}
+```
+
+```kotlin
+override fun patch${Entity}(id: Long, patch: ${Entity}Patch): ${Api}ApiResponses.Patch${Entity}ApiResponse {
+    var entity = ${service}.find(id)
+        ?: return ${Api}ApiResponses.Patch${Entity}ApiResponse.Patch${Entity}404ApiResponse()
+    if (patch.nickname.isDefined) {
+        entity = entity.copy(nickname = patch.nickname.value())
+    }
+    return ${Api}ApiResponses.Patch${Entity}ApiResponse
+        .Patch${Entity}200ApiResponse(${service}.save(entity))
+}
+```
+
+Construct one with `JsonNullable.of(v)`, `JsonNullable.ofNullable(v)`, `JsonNullable.nullValue()`
+or `JsonNullable.undefined()`.
+
+---
+
+## 6. Discriminated request bodies
+
+The generated base is a `sealed interface`, so the match is exhaustive without a default branch.
+
+```java
+@Override
+public ${Api}ApiResponses.SetDeliveryApiResponse setDelivery(long id, Delivery delivery) {
+    switch (delivery) {
+        case DeliveryCourier c -> ${service}.scheduleCourier(id, c.address());
+        case DeliveryPickup p  -> ${service}.schedulePickup(id, p.pointId());
+    }
+    return new ${Api}ApiResponses.SetDeliveryApiResponse.SetDelivery204ApiResponse();
+}
+```
+
+```kotlin
+override fun setDelivery(id: Long, delivery: Delivery): ${Api}ApiResponses.SetDeliveryApiResponse {
+    when (delivery) {
+        is DeliveryCourier -> ${service}.scheduleCourier(id, delivery.address)
+        is DeliveryPickup  -> ${service}.schedulePickup(id, delivery.pointId)
+    }
+    return ${Api}ApiResponses.SetDeliveryApiResponse.SetDelivery204ApiResponse()
+}
+```
+
+---
+
+## 7. Reading the authenticated principal
+
+The generated `ApiSecurity` interceptor binds the principal to a JDK `ScopedValue`; read it with
+`Principal.current()`. There is no `Context` in Kora 2.0.
+
+```java
+var principal = io.koraframework.common.Principal.current();   // @Nullable
+if (principal instanceof UserPrincipal user) {
+    ${service}.actAs(user.name());
+}
+```
+
+```kotlin
+val user = Principal.current() as? UserPrincipal
+```
+
+---
+
+## 8. Raw `HttpServerRequest` access
+
+Only with `configOptions.requestInDelegateParams: "true"`, which prepends `_serverRequest` to
+**every** controller and delegate method.
+
+```java
+@Override
+public ${Api}ApiResponses.Get${Entity}ByIdApiResponse get${Entity}ById(
+        HttpServerRequest _serverRequest, long id) {
+    var traceId = _serverRequest.headers().getFirst("x-trace-id");
+    …
+}
+```
+
+```kotlin
+override fun get${Entity}ById(
+    _serverRequest: HttpServerRequest,
+    id: Long,
+): ${Api}ApiResponses.Get${Entity}ByIdApiResponse {
+    val traceId = _serverRequest.headers().getFirst("x-trace-id")
+    …
+}
+```
+
+`HttpServerRequest` is `io.koraframework.http.server.common.request.HttpServerRequest`.
+
+---
+
+## 9. Form and multipart operations
+
+Form fields arrive as a record nested in the **controller**, wired through a generated mapper.
+Copy the parameter, including its `@Mapping`, from the generated delegate.
+
+```java
+@Override
+public ${Api}ApiResponses.UploadApiResponse upload(${Api}ApiController.UploadFormParam form) {
+    var part = form.photo();                     // FormMultipart.FormPart for `format: binary`
+    ${service}.store(form.name(), part.content());
+    return new ${Api}ApiResponses.UploadApiResponse.Upload204ApiResponse();
+}
+```
+
+Multipart mapping and parsing received fixes after `2.0.0.RC1`; the signature shape is unchanged.
+
+---
+
+## 10. Errors the contract does not model
+
+Prefer a declared status record. When the contract genuinely has no room for the case, throw:
+
+```java
+throw io.koraframework.http.server.common.response.HttpServerResponseException.of(409, "conflict");
+```
+
+```kotlin
+throw HttpServerResponseException.of(409, "conflict")
+```
+
+Constraint violations are already handled: `@Validate` throws `ViolationException` and
+`ValidationHttpServerInterceptor` maps it (default `400`).
+
+---
+
+## 11. Anti-patterns
+
+| Do not | Do |
+|---|---|
+| Hand-write an `@HttpController` for a generated operation | Implement the delegate |
+| Edit anything in `build/generated` | `./gradlew clean build --no-build-cache` |
+| `Enum.valueOf(raw)` / a hand-written `statusOf` | `MyEnum.fromValue(raw)` |
+| Positional construction of a Kotlin model | Named arguments |
+| `override suspend fun` / `Mono` / `CompletionStage` | Plain synchronous signatures |
+| `@Tag(ApiSecurity.SecurityRequirementTag1.class)` | `@Tag(ApiSecurity.<SchemeName>.class)` |
+| Return a raw DTO | Return the generated response record |
+| Business logic in the delegate | Inject a service; the delegate only maps |

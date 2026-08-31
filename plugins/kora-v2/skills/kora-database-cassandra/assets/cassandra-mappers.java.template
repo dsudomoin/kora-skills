@@ -1,0 +1,152 @@
+package ${package};
+
+import com.datastax.oss.driver.api.core.cql.ResultSet;
+import com.datastax.oss.driver.api.core.cql.Row;
+import com.datastax.oss.driver.api.core.data.GettableByName;
+import com.datastax.oss.driver.api.core.data.SettableByName;
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Mapping;
+import io.koraframework.database.cassandra.CassandraRepository;
+import io.koraframework.database.cassandra.annotation.EntityCassandra;
+import io.koraframework.database.cassandra.mapper.parameter.CassandraParameterColumnMapper;
+import io.koraframework.database.cassandra.mapper.result.CassandraResultSetMapper;
+import io.koraframework.database.cassandra.mapper.result.CassandraRowColumnMapper;
+import io.koraframework.database.cassandra.mapper.result.CassandraRowMapper;
+import io.koraframework.database.common.annotation.Column;
+import io.koraframework.database.common.annotation.Query;
+import io.koraframework.database.common.annotation.Repository;
+import org.jspecify.annotations.Nullable;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/*
+ * TEMPLATE NOTES — delete this block after copying.
+ *
+ * DRIVER PACKAGES: Kora 2.0 resolves the driver from org.apache.cassandra:java-driver-core, but
+ * the Java packages are unchanged — com.datastax.oss.driver.api.* is CORRECT here.
+ *
+ * FOUR CONTRACTS (io.koraframework.database.cassandra.mapper.*):
+ *   CassandraRowMapper<T>              @Nullable T apply(Row row)
+ *   CassandraResultSetMapper<T>        @Nullable T apply(ResultSet rows)
+ *   CassandraRowColumnMapper<T>        @Nullable T apply(GettableByName row, int index)
+ *   CassandraParameterColumnMapper<T>  void apply(SettableByName<?> stmt, int index, @Nullable T v)
+ * A fifth, CassandraAsyncResultSetMapper<T>, exists for Java CompletionStage methods.
+ *
+ * @Component OR NOT — decided by the constructor, because the generated repository either builds
+ * the mapper itself or asks the graph for it:
+ *   final class + public no-arg constructor + untagged @Mapping -> the repository emits
+ *       "this._mapper = new Mapper()". @Component is then optional.
+ *   constructor dependencies, a non-final class, or a tagged @Mapping -> the mapper becomes a
+ *       constructor parameter and MUST be in the graph, or the build fails with
+ *       "No component found for dependency: ...".
+ * Declare AT MOST ONE component per mapper type; two give
+ * "Multiple components match dependency:". Kora's own scalar mappers in CassandraMapperModule are
+ * @DefaultComponent, so your @Component for the same type replaces them without conflict.
+ *
+ * @Nullable is JSpecify and TYPE-USE. On a qualified nested type the annotation goes AFTER the
+ * qualifier: "Entity.@Nullable FieldType value", not "@Nullable Entity.FieldType value".
+ */
+@Repository
+public interface ${repository_name} extends CassandraRepository {
+
+    enum FieldType {
+
+        UNKNOWN(-10), ONE(1), TWO(2);
+
+        private final int code;
+
+        FieldType(int code) {
+            this.code = code;
+        }
+
+        public int code() {
+            return code;
+        }
+    }
+
+    // Read one column: CQL int -> enum. Applied on the entity component.
+    @Component
+    final class FieldTypeReadMapper implements CassandraRowColumnMapper<FieldType> {
+
+        private static final FieldType[] ALL = FieldType.values();
+
+        @Override
+        public FieldType apply(GettableByName row, int index) {
+            var code = row.getInt(index);
+            for (var type : ALL) {
+                if (type.code() == code) {
+                    return type;
+                }
+            }
+            return FieldType.UNKNOWN;
+        }
+    }
+
+    // Write one column: enum -> CQL int. Applied on the entity component or on a query parameter.
+    @Component
+    final class FieldTypeWriteMapper implements CassandraParameterColumnMapper<FieldType> {
+
+        @Override
+        public void apply(SettableByName<?> stmt, int index, @Nullable FieldType value) {
+            if (value == null) {
+                stmt.setToNull(index);
+            } else {
+                stmt.setInt(index, value.code());
+            }
+        }
+    }
+
+    // Map a whole row to a projection that is not an @EntityCassandra type.
+    @Component
+    final class ${entity_name}PartRowMapper implements CassandraRowMapper<${entity_name}Part> {
+
+        @Override
+        public ${entity_name}Part apply(Row row) {
+            return new ${entity_name}Part(row.getString(0), row.getInt(1));
+        }
+    }
+
+    // Map the whole result set when the shape is not a single row or a plain List.
+    @Component
+    final class ${entity_name}PartsResultSetMapper
+            implements CassandraResultSetMapper<Map<Integer, List<${entity_name}Part>>> {
+
+        @Override
+        public Map<Integer, List<${entity_name}Part>> apply(ResultSet rows) {
+            var result = new LinkedHashMap<Integer, List<${entity_name}Part>>();
+            for (var row : rows) {
+                var part = new ${entity_name}Part(row.getString(0), row.getInt(1));
+                result.computeIfAbsent(part.field1(), k -> new ArrayList<>()).add(part);
+            }
+            return result;
+        }
+    }
+
+    record ${entity_name}Part(String id, int field1) {}
+
+    @EntityCassandra
+    record ${entity_name}(
+        String id,
+        @Mapping(FieldTypeReadMapper.class)
+        @Mapping(FieldTypeWriteMapper.class)
+        @Column("field1") FieldType field1,
+        String field2
+    ) {}
+
+    @Query("SELECT * FROM ${table_name}")
+    List<${entity_name}> findAll();
+
+    @Mapping(${entity_name}PartRowMapper.class)
+    @Query("SELECT id, field1 FROM ${table_name}")
+    List<${entity_name}Part> findAllParts();
+
+    @Mapping(${entity_name}PartsResultSetMapper.class)
+    @Query("SELECT id, field1 FROM ${table_name}")
+    Map<Integer, List<${entity_name}Part>> findAllPartsGrouped();
+
+    @Query("UPDATE ${table_name} SET field1 = :fieldType WHERE id = :id")
+    void updateFieldType(String id, @Mapping(FieldTypeWriteMapper.class) FieldType fieldType);
+}

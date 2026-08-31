@@ -1,0 +1,179 @@
+{
+  "evals": [
+    {
+      "id": "kora-telemetry-logging-setup-java",
+      "skills": ["kora-telemetry-logging"],
+      "query": "Set up Logback logging in my Kora 2.0 Java service. What dependency and application module do I need?",
+      "expected_behavior": [
+        "Adds implementation \"io.koraframework:logging-logback\" with the version managed by the io.koraframework:kora-bom platform (no inline version)",
+        "Includes the mandatory annotationProcessor \"io.koraframework:annotation-processors\"",
+        "Also adds a config module (io.koraframework:config-hocon or config-yaml) and explains that LoggingModule reads the `logging` config section, so the graph does not build without one",
+        "Declares @KoraApp interface Application extends LogbackModule (io.koraframework.logging.logback) and a config module",
+        "Bootstraps via KoraApplication.run(ApplicationGraph::graph) from io.koraframework.application.graph",
+        "Does not use ru.tinkoff.kora packages, the kora-parent BOM, foreign-framework annotations, or field injection"
+      ],
+      "tags": ["setup", "java", "basic"]
+    },
+    {
+      "id": "kora-telemetry-logging-setup-kotlin",
+      "skills": ["kora-telemetry-logging"],
+      "query": "Wire up logging in a Kora 2.0 Kotlin service — build.gradle.kts and the application graph.",
+      "expected_behavior": [
+        "Uses ksp(\"io.koraframework:symbol-processors\") rather than an annotation processor",
+        "Adds io.koraframework:logging-logback and a config module, both versioned by the kora-bom platform",
+        "Declares interface Application : LogbackModule, HoconConfigModule annotated @KoraApp with a companion-object main calling KoraApplication.run(ApplicationGraph::graph)",
+        "Does not use ru.tinkoff.kora packages or suspend/reactive contracts"
+      ],
+      "tags": ["setup", "kotlin", "basic"]
+    },
+    {
+      "id": "kora-telemetry-logging-levels-key-plural",
+      "skills": ["kora-telemetry-logging"],
+      "query": "I put this in application.conf and nothing changed:\n\nlogging {\n  level {\n    \"com.example\" = \"DEBUG\"\n  }\n}\n\nWhy are my DEBUG logs still missing in my Kora service?",
+      "expected_behavior": [
+        "Identifies the key as wrong: LoggingConfig exposes Map<String,String> levels(), so the section is logging.levels — plural",
+        "Explains the failure is silent: `logging.level` is simply an unrecognised key, produces no warning, and every logger keeps its default level",
+        "Shows the corrected block, logging.levels { \"com.example\" = \"DEBUG\" }",
+        "Does not invent a foreign application.properties logging.level.* scheme or a per-logger `level` key"
+      ],
+      "tags": ["config", "regression", "basic"]
+    },
+    {
+      "id": "kora-telemetry-logging-levels-vs-logback-xml",
+      "skills": ["kora-telemetry-logging"],
+      "query": "My Kora service ignores the <logger name=\"com.example\" level=\"DEBUG\"/> and <root level=\"WARN\"> entries in logback.xml. What is going on?",
+      "expected_behavior": [
+        "Explains that LoggingModule registers a @Root LoggingLevelRefresher whose init() calls LoggingLevelApplier.reset() during graph initialization",
+        "States what reset() does under LogbackModule: root logger forced to INFO, every other logger's level set to null, and only then are the logging.levels entries applied",
+        "Concludes that logback.xml should carry appenders and encoders only, and that levels belong in logging.levels — including the root level",
+        "Does not suggest removing LogbackModule or editing generated code"
+      ],
+      "tags": ["config", "logback", "regression"]
+    },
+    {
+      "id": "kora-telemetry-logging-two-switches",
+      "skills": ["kora-telemetry-logging"],
+      "query": "I set logging.levels to DEBUG for io.koraframework but my Kora HTTP server and JDBC repository still emit no request or query logs. Fix it.",
+      "expected_behavior": [
+        "Distinguishes the two switches: <path>.telemetry.logging.enabled controls whether the component builds a real logger, logging.levels controls the SLF4J level of that logger",
+        "States that TelemetryConfig.LoggingConfig.enabled() returns false by default in Kora 2.0, so the component otherwise holds a NOPLogger and writes nothing at any level",
+        "Sets httpServer.telemetry.logging.enabled = true and jdbc.telemetry.logging.enabled = true",
+        "Notes the JDBC section is `jdbc` in 2.0, not `db`",
+        "Points out that the JDBC query logger is named io.koraframework.database.<poolName>.query and its records are DEBUG-level, so the level must be raised for that logger too",
+        "Does not claim tracing and metrics share the same default (tracing defaults to true, metrics to false)",
+        "Does not invent a per-component telemetry.logging.level key"
+      ],
+      "tags": ["telemetry", "config", "regression"]
+    },
+    {
+      "id": "kora-telemetry-logging-appender-encoder",
+      "skills": ["kora-telemetry-logging"],
+      "query": "Write the logback.xml for a Kora 2.0 service. I want non-blocking output and I need traceId on every line.",
+      "expected_behavior": [
+        "Uses io.koraframework.logging.logback.KoraAsyncAppender wrapping a ConsoleAppender, not Logback's stock AsyncAppender",
+        "Uses <encoder class=\"io.koraframework.logging.logback.ConsoleTextRecordEncoder\"/> and explains it is what renders traceId/spanId, Kora MDC and structured arguments",
+        "Explains KoraAsyncAppender is required rather than optional: it is the only thing that produces a KoraLoggingEvent carrying koraMdc() and span()",
+        "Notes traceId/spanId come from Span.current().getSpanContext() captured by the appender, so they must not be put into MDC by hand",
+        "Sets only the root level in logback.xml and points per-logger levels at logging.levels",
+        "Does not reference ru.tinkoff.kora.logging.logback.* class names",
+        "Does not invent bufferSize/flushThreshold elements"
+      ],
+      "tags": ["logback", "async", "basic"]
+    },
+    {
+      "id": "kora-telemetry-logging-discarding-threshold",
+      "skills": ["kora-telemetry-logging"],
+      "query": "Tune KoraAsyncAppender so it never drops log events under load. I currently have <discardingThreshold>0</discardingThreshold>.",
+      "expected_behavior": [
+        "States that KoraAsyncAppender extends ch.qos.logback.core.AsyncAppenderBase directly, whose isDiscardable() always returns false, so no event is ever discarded by threshold and discardingThreshold is a no-op here",
+        "Explains that the level-based discarding described in the Logback manual belongs to the subclass ch.qos.logback.classic.AsyncAppender, which KoraAsyncAppender does not extend",
+        "Points at the settings that do matter: queueSize (default 256) and neverBlock (default false, so a full queue blocks the logging thread), plus maxFlushTime on shutdown",
+        "Does not fabricate a Kora-specific tuning knob"
+      ],
+      "tags": ["async", "advanced"]
+    },
+    {
+      "id": "kora-telemetry-logging-structured-argument-jackson3",
+      "skills": ["kora-telemetry-logging"],
+      "query": "Port this Kora 1.x logging code to 2.0:\n\nvar userArg = StructuredArgument.arg(\"user\", gen -> {\n    gen.writeStartObject();\n    gen.writeStringField(\"id\", user.getId());\n    gen.writeEndObject();\n});\nlog.info(\"User created {}\", userArg);",
+      "expected_behavior": [
+        "Changes the import to io.koraframework.logging.common.arg.StructuredArgument",
+        "Replaces writeStringField with writeStringProperty (and writeNumberField with writeNumberProperty, writeFieldName with writeName), because Kora 2.0 uses Jackson 3 under tools.jackson.core",
+        "Keeps writeStartObject/writeEndObject unchanged",
+        "May suggest the log.atInfo().addKeyValue(name, StructuredArgument.value(...)) form as the shape Kora's own telemetry uses",
+        "Does not add a try/catch for IOException — Jackson 3 throws the unchecked JacksonException",
+        "Does not invent a two-argument gen.writeString(name, value)"
+      ],
+      "tags": ["structured", "json", "regression"]
+    },
+    {
+      "id": "kora-telemetry-logging-mdc-no-context",
+      "skills": ["kora-telemetry-logging"],
+      "query": "Port this Kora 1.x MDC helper to Kora 2.0:\n\npublic void withTrace(String traceId, Runnable body) {\n    var ctx = ru.tinkoff.kora.common.Context.current();\n    MDC.put(\"traceId\", traceId);\n    try { body.run(); } finally { MDC.remove(\"traceId\"); }\n}",
+      "expected_behavior": [
+        "States plainly that Context was removed from the entire Kora 2.0 framework — there is no io.koraframework equivalent to port onto",
+        "Uses io.koraframework.logging.common.MDC directly, and explains it is backed by a public static final ScopedValue<MDC> VALUE",
+        "Explains that Kora binds a fresh MDC per HTTP request, gRPC call, Kafka record, scheduled job and JMS message, and that MDC.get() throws outside such a scope",
+        "Suggests guarding with MDC.VALUE.isBound() where the code can run outside a request",
+        "Notes traceId does not need to be set by hand: KoraAsyncAppender captures the span context and ConsoleTextRecordEncoder prints traceId/spanId",
+        "Does not suggest replacing Context with a foreign RequestContextHolder or a hand-rolled ThreadLocal when a ScopedValue is the 2.0 idiom"
+      ],
+      "tags": ["mdc", "regression", "advanced"]
+    },
+    {
+      "id": "kora-telemetry-logging-http-interceptor",
+      "skills": ["kora-telemetry-logging"],
+      "query": "Add a requestId from an incoming header into MDC for all controllers in my Kora 2.0 service.",
+      "expected_behavior": [
+        "Implements io.koraframework.http.server.common.interceptor.HttpServerInterceptor with the synchronous 2.0 signature HttpServerResponse intercept(HttpServerRequest request, InterceptChain chain) throws Exception, returning chain.process(request)",
+        "Registers it as @Component with @Tag(io.koraframework.http.server.common.HttpServer.class)",
+        "Warns that the Kora 1.x @Tag(HttpServerModule.class) still compiles but is never looked up, so the interceptor silently never runs",
+        "Reads the header with request.headers().getFirst(name), treating the result as @Nullable, and notes header names are lower-cased",
+        "Uses io.koraframework.logging.common.MDC.put inside the interceptor",
+        "Does not use a Context parameter, a CompletionStage return type, or a fabricated HttpServerCall/call.proceed API"
+      ],
+      "tags": ["http", "interceptor", "mdc", "advanced"]
+    },
+    {
+      "id": "kora-telemetry-logging-json-output",
+      "skills": ["kora-telemetry-logging"],
+      "query": "Emit one JSON object per log line from my Kora 2.0 service for our log aggregator.",
+      "expected_behavior": [
+        "States that io.koraframework:logging-logback ships exactly one encoder, ConsoleTextRecordEncoder, and that it emits text — Kora 2.0 has no built-in JSON encoder",
+        "Offers a custom Encoder<ILoggingEvent> as the supported route, reading KoraLoggingEvent.koraMdc() and KoraLoggingEvent.span() for MDC and traceId/spanId, and using the Jackson 3 generator",
+        "Notes ConsoleTextRecordEncoder is final and cannot be subclassed",
+        "Keeps the encoder inside a ConsoleAppender wrapped by KoraAsyncAppender, since that is what produces KoraLoggingEvent",
+        "If a third-party JSON encoder is mentioned, states that none appears in the Kora 2.0 source or the migrated examples, that Kora pins Logback 1.6.2 so compatibility must be checked, and that a Kora-unaware encoder will not emit koraMdc() or the span context",
+        "Does not claim Kora ships a JSON encoder class, and does not present logstash-logback-encoder as a verified Kora 2.0 combination"
+      ],
+      "tags": ["json", "advanced"]
+    },
+    {
+      "id": "kora-telemetry-logging-mask",
+      "skills": ["kora-telemetry-logging"],
+      "query": "I log a Payment record and the card number ends up in the log. Hide it, keeping the last four digits.",
+      "expected_behavior": [
+        "Uses io.koraframework.logging.common.annotation.Mask on the record component, with MaskingKeepLast as the strategy: @Mask(MaskingKeepLast.class)",
+        "Puts @Mask on the type itself as well, and explains that LoggingAnnotationProcessor only reacts to @Mask on a class or record and generates <Type>MaskingRulesModule supplying MaskingRules<Type>",
+        "Names the built-in strategies MaskingFull (default, \"***\"), MaskingKeepFirst and MaskingKeepLast, all @DefaultComponents of LoggingModule",
+        "Mentions that rules match a bare field name anywhere, a dotted path from the logged root, or a path with a * wildcard segment",
+        "Does not invent a masking config key or a @Mask attribute that does not exist (the annotation has only value())"
+      ],
+      "tags": ["masking", "structured", "advanced"]
+    },
+    {
+      "id": "kora-telemetry-logging-native-image-metadata",
+      "skills": ["kora-telemetry-logging"],
+      "query": "I migrated my Kora GraalVM service from 1.x. The native binary starts but produces no logs at all, and it seems to ignore logback.xml. I still have src/main/resources/META-INF/native-image/ru.tinkoff.kora.example/logback/reflection-config.json.",
+      "expected_behavior": [
+        "Identifies two separate defects: the directory still carries the old group name, and reflection-config.json is not a file name native-image reads",
+        "States the canonical file names — reflect-config.json, resource-config.json, proxy-config.json, serialization-config.json, jni-config.json, native-image.properties, reachability-metadata.json — and that anything else is ignored with no error and no warning",
+        "Renames the directory to the new group, e.g. META-INF/native-image/io.koraframework.example/logback/",
+        "Renames the Kora class entries inside reflect-config.json from ru.tinkoff.kora.logging.logback.* to io.koraframework.logging.logback.* (ConsoleTextRecordEncoder, KoraAsyncAppender) while leaving third-party entries such as ch.qos.logback.core.status.NopStatusListener untouched",
+        "Notes these resource directories are not touched by OpenRewrite or the rename scripts, so the change is manual",
+        "Does not advise deleting the metadata because the service also runs on the JVM — the JVM never reads it"
+      ],
+      "tags": ["native-image", "regression", "advanced"]
+    }
+  ]
+}

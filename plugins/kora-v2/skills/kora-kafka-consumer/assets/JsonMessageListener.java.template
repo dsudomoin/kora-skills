@@ -1,0 +1,73 @@
+package ${packagePath}.listener;
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.json.common.annotation.Json;
+import io.koraframework.kafka.common.annotation.KafkaListener;
+import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.time.Instant;
+import java.util.concurrent.CopyOnWriteArrayList;
+
+/**
+ * Kafka consumer with JSON deserialization for topics: ${topics}
+ *
+ * Config path: kafka.consumer.${listenerNameLower}
+ *
+ * @Json on the payload type selects the generated JsonReader through JsonKafkaDeserializer.
+ * Requires io.koraframework:json-common and JsonModule on the @KoraApp interface.
+ *
+ * The nullable payload + nullable Exception pair is the production shape: a malformed record is
+ * delivered as (null, exception) instead of throwing, so the consumer keeps running and the offset
+ * is still committed. @Nullable is org.jspecify.annotations.Nullable and is a type-use annotation.
+ */
+@Component
+public final class ${listenerName} {
+
+    private static final Logger log = LoggerFactory.getLogger(${listenerName}.class);
+
+    @Json
+    public record ${eventClassName}(String id, String type, Instant timestamp) {}
+
+    private final CopyOnWriteArrayList<${eventClassName}> received = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<Exception> failed = new CopyOnWriteArrayList<>();
+
+    @KafkaListener("kafka.consumer.${listenerNameLower}")
+    void process(@Json @Nullable ${eventClassName} event, @Nullable Exception exception) {
+        if (exception != null) {
+            log.warn("Failed to deserialize record from ${topicName}", exception);
+            failed.add(exception);
+            // TODO route the raw bytes to a DLQ — see references/kafka-error-handling-reference.md
+            return;
+        }
+        if (event == null) {
+            log.warn("Received a tombstone without an exception");
+            return;
+        }
+
+        log.debug("Consuming event {} of type {}", event.id(), event.type());
+        received.add(event);
+        // TODO business logic
+    }
+
+    public CopyOnWriteArrayList<${eventClassName}> received() {
+        return received;
+    }
+
+    public CopyOnWriteArrayList<Exception> failed() {
+        return failed;
+    }
+}
+
+/*
+ * Variants:
+ *
+ *   void process(String key, @Json ${eventClassName} event)                       // key + JSON value
+ *   void process(ConsumerRecord<String, @Json ${eventClassName}> record)          // metadata, value() may throw
+ *   void process(ConsumerRecords<String, @Json ${eventClassName}> records)        // whole poll batch
+ *
+ * Narrow the failure you catch by replacing Exception with
+ * RecordKeyDeserializationException or RecordValueDeserializationException.
+ * Both expose getRecord() returning the raw ConsumerRecord<byte[], byte[]>.
+ */

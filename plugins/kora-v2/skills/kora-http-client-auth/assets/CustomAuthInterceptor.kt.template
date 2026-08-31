@@ -1,0 +1,64 @@
+package ${package}
+
+import io.koraframework.common.annotation.Component
+import io.koraframework.http.client.common.auth.HttpClientTokenProvider
+import io.koraframework.http.client.common.interceptor.HttpClientInterceptor
+import io.koraframework.http.client.common.request.HttpClientRequest
+import io.koraframework.http.client.common.response.HttpClientResponse
+
+/**
+ * Bearer interceptor that retries once after a 401 with a freshly fetched token.
+ *
+ * Requires: `TokenCache`, and an `HttpClientTokenProvider` in the graph.
+ *
+ * Use this **instead of** `BearerAuthHttpClientInterceptor`, not next to it — both write the
+ * `Authorization` header. Attach it with `@InterceptWith(CustomAuthInterceptor::class)` on the
+ * `@HttpClient` interface (every route) or on a single `@HttpRoute` method.
+ *
+ * `@Component` is required here. The generated client takes each `@InterceptWith` class as a
+ * constructor parameter and nothing in the framework constructs interceptors, so the class must be
+ * in the graph — this holds whether or not it has constructor dependencies. Do not *also* declare
+ * it in a `@Module`: that gives `Multiple components match dependency:`.
+ *
+ * Two Kotlin specifics:
+ *  - the nested chain type must be qualified as `HttpClientInterceptor.InterceptChain`; a wrong
+ *    signature is reported as `'processRequest' overrides nothing` without saying why;
+ *  - no `suspend`, no `runBlocking`, no `Dispatchers.IO`. `suspend` is not a Kora contract and the
+ *    call already runs on a virtual thread, so a dispatcher hop buys nothing.
+ */
+@Component
+class CustomAuthInterceptor(
+    private val tokenProvider: HttpClientTokenProvider,
+    private val tokenCache: TokenCache
+) : HttpClientInterceptor {
+
+    override fun processRequest(
+        chain: HttpClientInterceptor.InterceptChain,
+        request: HttpClientRequest
+    ): HttpClientResponse {
+        val response = chain.process(authorize(request))
+        if (response.code() != 401) {
+            return response
+        }
+
+        // Only the response the generated client finally returns is auto-closed; this one is not.
+        response.close()
+        tokenCache.invalidate()
+
+        // Exactly one retry: a revoked credential in a loop is a request storm against the issuer.
+        // A 403 is deliberately not retried — a fresh token is just as unauthorized.
+        return chain.process(authorize(request))
+    }
+
+    /**
+     * Rebuilt from the original request every time. `header(...)` replaces, so re-authorizing an
+     * already-authorized request would also work — but `queryParam(...)` appends, and rebuilding
+     * from the original is the habit that stays correct for query- and cookie-based schemes.
+     */
+    private fun authorize(request: HttpClientRequest): HttpClientRequest {
+        val token = tokenProvider.getToken(request) ?: return request
+        return request.toBuilder()
+            .header("authorization", "Bearer $token")
+            .build()
+    }
+}

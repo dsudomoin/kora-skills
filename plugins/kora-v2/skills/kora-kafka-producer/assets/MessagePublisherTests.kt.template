@@ -1,0 +1,141 @@
+package ${packagePath}.publisher
+
+import java.time.Duration
+import java.util.Properties
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.test.runTest
+import org.apache.kafka.clients.consumer.ConsumerConfig
+import org.apache.kafka.clients.consumer.ConsumerRecord
+import org.apache.kafka.clients.consumer.KafkaConsumer
+import org.apache.kafka.common.serialization.StringDeserializer
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.fail
+import org.junit.jupiter.api.Test
+import org.testcontainers.kafka.KafkaContainer
+import io.koraframework.test.extension.junit5.KoraAppTest
+import io.koraframework.test.extension.junit5.KoraAppTestConfigModifier
+import io.koraframework.test.extension.junit5.KoraConfigModification
+import io.koraframework.test.extension.junit5.TestComponent
+import ${packagePath}.Application
+
+// Integration test for a Kora 2.0 Kafka publisher (Kotlin).
+//
+// Dependencies (see build.gradle.kts.template):
+//   testImplementation("io.koraframework:test-junit5")
+//   testImplementation("org.testcontainers:testcontainers-kafka:2.0.5")
+// Testcontainers 2.x renamed its modules: "org.testcontainers:kafka" does not exist any
+// more, and the KRaft container class is org.testcontainers.kafka.KafkaContainer.
+//
+// The suspend test additionally needs kotlinx-coroutines-test; drop sendSuspend and that
+// test if the publisher has no suspend method.
+//
+// The container starts from a companion initializer rather than @Testcontainers/@Container
+// so that it is running before ANY JUnit extension callback — the Kora extension builds the
+// application graph in beforeAll, and extension ordering is not something to gamble on.
+//
+// @TestComponent can only inject a publisher that is actually in the graph. Kora prunes every
+// node no @Root depends on, so a publisher nobody injects is pruned and the test fails with
+// "No matching component was found in the application graph" — @KoraAppTest(components = ...)
+// does NOT bring a pruned node back. Keep a root in MAIN sources, exactly like RootPublisher
+// in the kora-kotlin-kafka example:
+//
+//     @Root
+//     @Component
+//     class PublisherRoot(private val messagePublisher: MessagePublisher)
+@KoraAppTest(Application::class)
+class MessagePublisherTests : KoraAppTestConfigModifier {
+
+    companion object {
+        private const val TOPIC = "my-topic"
+
+        @JvmStatic
+        val KAFKA = KafkaContainer("apache/kafka-native:4.3.1").also { it.start() }
+    }
+
+    @TestComponent
+    lateinit var publisher: MessagePublisher
+
+    // application.conf substitutes KAFKA_BOOTSTRAP_SERVERS; nothing else needs overriding.
+    override fun config(): KoraConfigModification =
+        KoraConfigModification.ofSystemProperty("KAFKA_BOOTSTRAP_SERVERS", KAFKA.bootstrapServers)
+
+    @Test
+    fun `send blocks until acknowledged`() {
+        val value = "test-message-" + System.nanoTime()
+
+        consumer("send-blocks").use { consumer ->
+            consumer.subscribe(listOf(TOPIC))
+            consumer.poll(Duration.ofSeconds(1))   // force assignment before producing
+
+            publisher.send(value)
+
+            val record = pollOne(consumer)
+            assertNull(record.key())
+            assertEquals(value, record.value())
+        }
+    }
+
+    @Test
+    fun `send with key`() {
+        val key = "key-" + System.nanoTime()
+        val value = "value-" + System.nanoTime()
+
+        consumer("send-with-key").use { consumer ->
+            consumer.subscribe(listOf(TOPIC))
+            consumer.poll(Duration.ofSeconds(1))
+
+            publisher.send(key, value)
+
+            val record = pollOne(consumer)
+            assertEquals(key, record.key())
+            assertEquals(value, record.value())
+        }
+    }
+
+    @Test
+    fun `sendWithMeta returns broker metadata`() {
+        val metadata = publisher.sendWithMeta("meta-" + System.nanoTime())
+
+        assertEquals(TOPIC, metadata.topic())
+        assertTrue(metadata.offset() >= 0)
+    }
+
+    @Test
+    fun `sendAsync completes with metadata`() {
+        val metadata = publisher.sendAsync("async-" + System.nanoTime()).get(30, TimeUnit.SECONDS)
+
+        assertEquals(TOPIC, metadata.topic())
+    }
+
+    @Test
+    fun `sendSuspend returns broker metadata`() = runTest {
+        val metadata = publisher.sendSuspend("suspend-" + System.nanoTime())
+
+        assertEquals(TOPIC, metadata.topic())
+    }
+
+    private fun consumer(group: String): KafkaConsumer<String, String> {
+        val props = Properties().apply {
+            put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.bootstrapServers)
+            put(ConsumerConfig.GROUP_ID_CONFIG, group + "-" + System.nanoTime())
+            put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer::class.java.name)
+            put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer::class.java.name)
+            put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
+            put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "true")
+        }
+        return KafkaConsumer(props)
+    }
+
+    private fun pollOne(consumer: KafkaConsumer<String, String>): ConsumerRecord<String, String> {
+        val deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos()
+        while (System.nanoTime() < deadline) {
+            val records = consumer.poll(Duration.ofSeconds(1))
+            if (!records.isEmpty) {
+                return records.iterator().next()
+            }
+        }
+        return fail("No record arrived within 30s")
+    }
+}

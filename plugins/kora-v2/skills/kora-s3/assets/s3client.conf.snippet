@@ -1,0 +1,97 @@
+# Kora 2.0 S3 configuration — drop into application.conf.
+#
+# The two S3 artifacts have SEPARATE, INDEPENDENT config sections. Take the block you need:
+#
+#   io.koraframework.experimental:s3-client-kora  →  the path named by @S3.Client("...")
+#   io.koraframework:s3-client-aws                →  the fixed path `s3client.aws`
+#
+# Both also need a Kora HTTP client module, whose own `httpClient { ... }` section applies to S3
+# traffic. Externalize the endpoint and credentials via env vars — never commit keys.
+
+
+# ==========================================================================================
+# Declarative client — matches @S3.Client("s3client.uploads")
+# Keys map to S3ClientConfigWithCredentials. Defaults shown; only `endpoint` and `credentials`
+# are required (and `credentials` only if some method has no S3Credentials parameter).
+# ==========================================================================================
+s3client.uploads {
+
+  # REQUIRED. Kora 1.x called this key `url`; the declarative client calls it `endpoint`.
+  endpoint = ${S3_URL}                    # e.g. https://s3.amazonaws.com or http://minio:9000
+
+  # Read by @S3.Bucket(".bucket") — the client itself never reads a `bucket` key.
+  # A leading dot in @S3.Bucket makes the path relative to the @S3.Client path.
+  bucket = ${S3_BUCKET}
+
+  region = "aws-global"                   # default
+  region = ${?S3_REGION}
+
+  addressStyle   = "PATH"                 # default. PATH | VIRTUAL_HOSTED — keep PATH for MinIO/Ceph
+  requestTimeout = "45s"                  # default
+
+  # REQUIRED unless every client method takes an S3Credentials parameter.
+  # Nested object — the flat s3client.accessKey / secretKey of Kora 1.x is gone.
+  credentials {
+    accessKey = ${S3_ACCESS_KEY}
+    secretKey = ${S3_SECRET_KEY}
+  }
+
+  upload {
+    partSize              = "5MiB"        # default. Multipart part size for an InputStream body.
+                                          # S3 allows 5MiB..5GiB (the last part is exempt).
+    chunkSize             = "64KiB"       # default. aws-chunked chunk size for a ContentWriter body.
+                                          # S3 minimum 8KiB.
+    singlePartUploadLimit = "100MiB"      # default
+  }
+
+  telemetry {
+    logging.enabled = false               # DEFAULT IS false — turn on explicitly.
+                                          # Logger name = the @S3.Client interface's canonical name.
+    metrics.enabled = false               # DEFAULT IS false. Emits rpc.client.duration, rpc.system=s3
+    tracing.enabled = true                # default (needs a Tracer component in the graph)
+  }
+}
+
+
+# ==========================================================================================
+# AWS SDK wrapper — fixed path, set by AwsS3ClientModule.
+# Keys map to AwsS3Config. NOTE: `url`, not `endpoint`. No `bucket` key, no `upload` section.
+# ==========================================================================================
+s3client.aws {
+
+  url = ${S3_URL}                         # REQUIRED
+
+  region = "aws-global"                   # default
+  region = ${?S3_REGION}
+
+  addressStyle           = "PATH"         # default. PATH | VIRTUAL_HOSTED
+  requestTimeout         = "45s"          # default
+  chunkedEncodingEnabled = true           # default
+
+  # WHEN_REQUIRED (default) | WHEN_SUPPORTED — replaces Kora 1.x `checksumValidationEnabled`
+  checksumCalculationRequest = "WHEN_REQUIRED"
+  checksumValidationResponse = "WHEN_REQUIRED"
+
+  credentials {
+    accessKey = ${S3_ACCESS_KEY}
+    secretKey = ${S3_SECRET_KEY}
+  }
+
+  telemetry {
+    logging.enabled = false               # DEFAULT IS false.
+                                          # Logger name = software.amazon.awssdk.services.s3.S3Client
+    metrics.enabled = false               # DEFAULT IS false. rpc.client.duration, rpc.system=s3-aws
+    tracing.enabled = true                # default
+  }
+}
+
+
+# The AWS wrapper knows nothing about buckets — keep the bucket name in your own @ConfigSource.
+my.bucket = ${S3_BUCKET}
+
+
+# The transport both artifacts run on.
+httpClient {
+  connectTimeout = "5s"
+  readTimeout    = "30s"
+}

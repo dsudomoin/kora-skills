@@ -1,0 +1,106 @@
+// Kora 2.x — implementation of a generated *ApiDelegate (Java)
+//
+// The delegate is the ONLY implementation point of a generated OpenAPI server.
+// Never hand-write an @HttpController / @HttpRoute for an operation the generator covers.
+// Never edit anything under build/generated.
+package com.example.petapi.delegate;
+
+import io.koraframework.common.Principal;
+import io.koraframework.common.annotation.Component;
+import io.koraframework.http.server.common.response.HttpServerResponseException;
+import org.jspecify.annotations.Nullable;
+
+import java.util.List;
+
+// Generated into apiPackage / modelPackage by the openApiGenerateHttpServer task.
+import com.example.petapi.api.PetApiDelegate;
+import com.example.petapi.api.PetApiResponses;
+import com.example.petapi.model.Pet;
+import com.example.petapi.model.ErrorResponse;
+
+@Component                       // io.koraframework.common.annotation.Component — required
+public final class PetDelegate implements PetApiDelegate {
+
+    private final PetService petService;
+
+    public PetDelegate(PetService petService) {
+        this.petService = petService;
+    }
+
+    // Multi-status operation: one record per declared status inside a sealed interface.
+    // A status that is not in the contract has no record — add it to the spec and regenerate.
+    @Override
+    public PetApiResponses.AddPetApiResponse addPet(Pet pet) {
+        return new PetApiResponses.AddPetApiResponse.AddPet200ApiResponse(petService.save(pet));
+    }
+
+    @Override
+    public PetApiResponses.GetPetByIdApiResponse getPetById(long petId) {
+        if (petId < 0) {
+            return new PetApiResponses.GetPetByIdApiResponse.GetPetById400ApiResponse();
+        }
+        var pet = petService.find(petId);
+        return pet == null
+                ? new PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse()
+                : new PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse(pet);
+    }
+
+    // Generated enums expose fromValue(raw). Enum.valueOf compares against the CONSTANT name
+    // (AVAILABLE) while the wire value is whatever the contract says ("available"), so valueOf
+    // fails on perfectly valid data — at runtime only, never at compile time.
+    @Override
+    public PetApiResponses.FindPetsByStatusApiResponse findPetsByStatus(@Nullable String status) {
+        final Pet.StatusEnum parsed;
+        try {
+            parsed = Pet.StatusEnum.fromValue(status);
+        } catch (IllegalArgumentException e) {
+            return new PetApiResponses.FindPetsByStatusApiResponse
+                    .FindPetsByStatus400ApiResponse(new ErrorResponse("unknown status: " + status));
+        }
+        List<Pet> pets = petService.byStatus(parsed);
+        // The contract declares a required `x-total-count` response header, so it is a trailing
+        // component of the generated record. Undeclared headers cannot be set from here.
+        return new PetApiResponses.FindPetsByStatusApiResponse
+                .FindPetsByStatus200ApiResponse(pets, String.valueOf(pets.size()));
+    }
+
+    // Copy a generated model with the generated withX methods, or with the required-only
+    // constructor. Do not re-list every record component by hand.
+    @Override
+    public PetApiResponses.UpdatePetApiResponse updatePet(Pet pet) {
+        var existing = petService.find(pet.id());
+        if (existing == null) {
+            return new PetApiResponses.UpdatePetApiResponse.UpdatePet404ApiResponse();
+        }
+        var updated = existing.withName(pet.name()).withStatus(pet.status());
+        return new PetApiResponses.UpdatePetApiResponse
+                .UpdatePet200ApiResponse(petService.save(updated));
+    }
+
+    // The `default` response record takes the status code as its first component.
+    @Override
+    public PetApiResponses.DeletePetApiResponse deletePet(long petId, @Nullable String apiKey) {
+        try {
+            petService.delete(petId);
+        } catch (IllegalStateException e) {
+            return new PetApiResponses.DeletePetApiResponse
+                    .DeletePetDefaultApiResponse(409, new ErrorResponse(e.getMessage()));
+        }
+        return new PetApiResponses.DeletePetApiResponse.DeletePet204ApiResponse();
+    }
+
+    // whoAmI declares exactly ONE response in the contract, so its generated type is a record
+    // directly — there is no sealed interface and no per-status nested type.
+    //
+    // The authenticated identity established by the generated ApiSecurity interceptor is bound
+    // to a JDK ScopedValue. Kora 2.0 has no Context.
+    @Override
+    public PetApiResponses.WhoAmIApiResponse whoAmI() {
+        var principal = Principal.current();
+        if (principal == null) {
+            // Only for conditions the contract does not model; prefer a declared status record.
+            throw HttpServerResponseException.of(401, "Unauthorized");
+        }
+        return new PetApiResponses.WhoAmIApiResponse(principal.toString());
+    }
+}

@@ -1,0 +1,17 @@
+package ${packagePath};
+
+/**
+ * A tag marker.
+ *
+ * <p>{@code @Tag} (io.koraframework.common.annotation.Tag) takes a {@code Class}, never a string —
+ * so rename and find-usages keep working. Any type can serve as a tag; an empty, purpose-named,
+ * non-instantiable class states the intent and nothing else.
+ *
+ * <p>Matching rules: an untagged injection point sees only untagged components, a tagged one only
+ * the same tag, and {@code @Tag(Tag.Any.class)} sees everything. Tagging one implementation of an
+ * interface therefore removes it from every untagged consumer of that interface.
+ */
+public final class ${ClassName} {
+
+    private ${ClassName}() {}
+}

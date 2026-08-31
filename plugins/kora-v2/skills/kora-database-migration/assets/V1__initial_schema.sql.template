@@ -1,0 +1,59 @@
+-- =============================================================================
+-- Flyway initial migration — Kora 2.0
+-- Copy to: src/main/resources/db/migration/V1__initial_schema.sql
+--
+-- Wiring required for this file to run on startup:
+--
+--   build.gradle
+--     implementation "io.koraframework:database-jdbc"
+--     implementation "io.koraframework:database-flyway"
+--     // database-flyway ships flyway-core only; without a dialect artifact the
+--     // app dies at startup with "Unsupported Database: PostgreSQL <version>"
+--     implementation "org.flywaydb:flyway-database-postgresql:13.3.0"
+--
+--   @KoraApp extends JdbcDatabaseModule, FlywayJdbcDatabaseModule
+--
+--   application.conf
+--     jdbc { jdbcUrl = ..., username = ..., password = ..., maxPoolSize = 10 }
+--     flyway { locations = "db/migration" }
+--
+-- The datasource section is `jdbc` in Kora 2.0 (it was `db` in 1.x), and
+-- maxPoolSize must be >= 2 while in-app Flyway migration is enabled: Flyway
+-- holds one connection for the migration and one for the schema-history lock.
+--
+-- Never edit this file once it has been applied — Flyway records its checksum
+-- in flyway_schema_history and a later run fails with "Checksum changed".
+-- Add a new V2__*.sql instead.
+-- =============================================================================
+
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+CREATE TABLE users (
+    id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    email      VARCHAR(255) NOT NULL UNIQUE,
+    first_name VARCHAR(100),
+    last_name  VARCHAR(100),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_created_at ON users(created_at DESC);
+
+CREATE TABLE audit_log (
+    id         BIGSERIAL PRIMARY KEY,
+    table_name VARCHAR(255) NOT NULL,
+    record_id  UUID NOT NULL,
+    action     VARCHAR(50) NOT NULL,  -- INSERT | UPDATE | DELETE
+    old_data   JSONB,
+    new_data   JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    created_by UUID
+);
+
+CREATE INDEX idx_audit_table_record ON audit_log(table_name, record_id);
+CREATE INDEX idx_audit_created_at ON audit_log(created_at DESC);
+
+-- CREATE INDEX CONCURRENTLY cannot run inside a transaction. If a migration
+-- needs it, set flyway.mixed = true — that makes the WHOLE run
+-- non-transactional, so prefer moving such a script to an out-of-process run.

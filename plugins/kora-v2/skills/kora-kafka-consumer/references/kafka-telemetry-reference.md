@@ -1,0 +1,273 @@
+# Kafka Consumer Telemetry Reference (Kora 2.0)
+
+Logging, metrics and tracing for `@KafkaListener`, and how to replace any of them.
+
+## Contents
+
+- [Defaults changed in 2.0](#defaults-changed-in-20)
+- [Configuration](#configuration)
+- [Logging](#logging)
+- [Metrics](#metrics)
+- [Tracing](#tracing)
+- [Replacing a telemetry component](#replacing-a-telemetry-component)
+- [Pitfalls](#pitfalls)
+
+---
+
+## Defaults changed in 2.0
+
+`KafkaConsumerTelemetryConfig` extends the framework-wide `TelemetryConfig`, whose defaults are:
+
+| | Default |
+|---|---|
+| `logging.enabled` | **`false`** |
+| `metrics.enabled` | **`false`** |
+| `metrics.driverMetrics` | `false` |
+| `tracing.enabled` | `true` |
+
+Logging and metrics must be switched on **per listener**. Any example that claims to show consumer
+logs or `messaging.*` meters and does not enable them is showing nothing.
+
+`logging.enabled` also gates the container's own lifecycle log lines: with it `false` the container
+installs `NOPLogger`, so "KafkaListener started / stopped / backing off" never appears — which makes
+a misconfigured consumer look completely silent.
+
+If tracing, metrics **and** logging are all off, the factory short-circuits to
+`NoopKafkaConsumerTelemetry.INSTANCE` and no telemetry object is built at all.
+
+---
+
+## Configuration
+
+```hocon
+kafka.consumer.orders {
+  topics = ["orders"]
+  driverProperties {
+    "bootstrap.servers" = ${?KAFKA_BOOTSTRAP}
+    "group.id" = "order-service"
+  }
+
+  telemetry {
+    logging.enabled = true
+
+    metrics {
+      enabled = true
+      driverMetrics = false
+      slo = [1, 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+      tags {
+        "consumer-type" = "orders"
+        "environment" = "production"
+      }
+    }
+
+    tracing {
+      enabled = true
+      attributes { "service.name" = "order-service" }
+    }
+  }
+}
+```
+
+`tags` are added to every consumer meter and `attributes` to every poll span.
+
+**`slo` changed type, and the bare-number form changed meaning.** In 2.0 it is `Duration[]`, and
+`DurationConfigValueMapper` maps a bare number with `Duration.ofMillis(number.longValue())` — so
+`slo = [1, 10, 50]` still means milliseconds and still works. The hazard is a 1.x config written
+against `OpentelemetrySpec.V123`, where `slo` was a `double[]` of **seconds**
+(`DEFAULT_SLO_V123 = {0.001, 0.010, 0.050, …}`). Carried over unchanged, every one of those values
+truncates to `Duration.ofMillis(0)` — the histogram silently collapses to zero-width buckets, with
+no error. `OpentelemetrySpec` itself no longer exists in 2.0. Convert such values to milliseconds,
+or write them as duration strings (`"1ms"`, `"10ms"`), which the same mapper also accepts.
+
+Metrics need `io.koraframework:micrometer-module` (and an exporter) for a `MeterRegistry` to exist;
+tracing needs `io.koraframework:opentelemetry-tracing` plus an exporter for a `Tracer`. Both are
+injected as `@Nullable` — without them `enabled = true` silently produces nothing. See
+[kora-telemetry-metrics](../../kora-telemetry-metrics/SKILL.md) and
+[kora-telemetry-tracing](../../kora-telemetry-tracing/SKILL.md).
+
+---
+
+## Logging
+
+`DefaultKafkaConsumerLoggerFactory.DefaultKafkaConsumerLogger` logs under the **listener's canonical
+class name**, so levels are controlled per listener:
+
+```hocon
+logging.levels {
+  "com.example.OrderListener" = "DEBUG"
+  "io.koraframework.kafka" = "INFO"
+}
+```
+
+The section is `logging.levels`, not `logging.level`.
+
+| Event | Level | Structured fields |
+|---|---|---|
+| poll starting | TRACE | `listenerConfig` |
+| records polled | TRACE (with topic/partition map) / DEBUG (count only) | `listenerConfig`, `topics`, `recordsCount` |
+| records handled | INFO | `listenerConfig`, `recordsCount` |
+| records handling failed | WARN | + `exceptionType`, `exceptionMessage` |
+| record starting | DEBUG | `listenerConfig`, `topic`, `partition`, `offset` |
+| record finished / failed | DEBUG / WARN | same, plus exception fields on failure |
+
+---
+
+## Metrics
+
+Three meters, registered on the injected `MeterRegistry`:
+
+| Meter | Type | Scope |
+|---|---|---|
+| `messaging.process.duration` | Timer | one record |
+| `messaging.process.batch.duration` | Timer | one poll |
+| `messaging.kafka.consumer.lag` | Gauge | per partition — **assign mode only** |
+
+Common tags on all three:
+
+`messaging.system` (`kafka`), `messaging.client.id`, `messaging.consumer.group.name`,
+`system.config` (the `@KafkaListener` path), `system.name.simple`, `system.name.canonical`, plus
+everything in `telemetry.metrics.tags`.
+
+Additional tags:
+
+| Meter | Extra tags |
+|---|---|
+| `messaging.process.duration` | `error.type` (empty string on success), `messaging.destination.name`, `messaging.destination.partition.id` |
+| `messaging.process.batch.duration` | `error.type` |
+| `messaging.kafka.consumer.lag` | `messaging.destination.name`, `messaging.destination.partition.id` |
+
+The lag gauge is emitted **only by the assign container** — `reportLag` is never called from the
+subscribe container. For consumer-group lag, scrape it from the broker (`kafka_consumergroup_lag`
+from a Kafka exporter) or from the driver metrics below.
+
+`driverMetrics = true` binds Micrometer's `KafkaClientMetrics` to the underlying client, publishing
+the whole `kafka.consumer.*` family (fetch rates, records-lag-max, coordinator stats). It is a lot of
+series — enable it deliberately.
+
+Meter names reach Prometheus through Micrometer's naming convention: dots become underscores and the
+registry appends a unit suffix for timers. Confirm the exact exported names against your own
+`/metrics` output rather than guessing, since the suffix depends on the registry configuration.
+
+---
+
+## Tracing
+
+Two span kinds, both `SpanKind.CONSUMER`:
+
+| Span | When | Parent |
+|---|---|---|
+| `kafka.poll` | one per poll | none (`setNoParent`), so each poll is a trace root |
+| `<topic> process record` | one per record | the W3C context extracted from the record's headers, plus a link to the poll span |
+
+`kafka.poll` attributes: `messaging.system`, `messaging.client.id`,
+`messaging.consumer.group.name`, `system.config`, `system.name.simple`, `system.name.canonical`,
+plus `telemetry.tracing.attributes`.
+
+Record span attributes: the same identity attributes plus `messaging.destination.name`,
+`messaging.destination.partition.id`, `messaging.kafka.offset` and, when the key can be stringified,
+`messaging.kafka.message.key`.
+
+Context propagation is W3C `traceparent` read from the record headers, so a trace started by a Kora
+publisher continues in the consumer with no code on your side.
+
+The batch handler establishes the poll observation and the OpenTelemetry context around your method;
+the single-record handler scopes a per-record observation and a forked MDC around each call. Nothing
+is exposed to your method as a parameter — a telemetry-context parameter is a compile error.
+
+---
+
+## Replacing a telemetry component
+
+`KafkaModule` declares the factory as a `@DefaultComponent` with three optional collaborators:
+
+```java
+@DefaultComponent
+default KafkaConsumerTelemetryFactory defaultKafkaConsumerTelemetryFactory(
+        @Nullable Tracer tracer,
+        @Nullable MeterRegistry meterRegistry,
+        @Nullable DefaultKafkaConsumerLoggerFactory loggerFactory,
+        @Nullable DefaultKafkaConsumerMetricsFactory metricsFactory) {
+    return new DefaultKafkaConsumerTelemetryFactory(tracer, meterRegistry, loggerFactory, metricsFactory);
+}
+```
+
+There is **no `KafkaConsumerLoggerFactory` interface in 2.0** — the extension points are the concrete
+`Default*Factory` classes and the `KafkaConsumerTelemetryFactory` interface. Three levels, from
+narrow to broad:
+
+**1. Custom logger** — subclass `DefaultKafkaConsumerLoggerFactory` and register it as a
+`@Component`; the module picks it up through the `@Nullable` parameter:
+
+```java
+@Component
+public final class OrderConsumerLoggerFactory extends DefaultKafkaConsumerLoggerFactory {
+
+    @Override
+    public DefaultKafkaConsumerLogger create(DefaultKafkaConsumerTelemetry.TelemetryContext context) {
+        return new DefaultKafkaConsumerLogger(LoggerFactory.getLogger("kafka.consumer.audit"), context) {
+            @Override
+            public void logRecordEnd(ConsumerRecord<?, ?> record, @Nullable Throwable error) {
+                super.logRecordEnd(record, error);
+                audit.record(record.topic(), record.offset(), error);
+            }
+        };
+    }
+}
+```
+
+It is consulted **only when `telemetry.logging.enabled = true`**; otherwise the factory substitutes
+`NoopKafkaConsumerLoggerFactory`. The same pattern works for
+`DefaultKafkaConsumerMetricsFactory` (`create` returns a `DefaultKafkaConsumerMetrics` whose
+`createMetricRecordDuration` / `createMetricRecordsDuration` / `createMetricLag` builders are
+`protected` and overridable).
+
+**2. Custom telemetry object** — subclass `DefaultKafkaConsumerTelemetryFactory` and override the
+`protected build(...)` hook, registering it as a plain `@Component` so it wins over the
+`@DefaultComponent`.
+
+**3. Full replacement** — implement `KafkaConsumerTelemetryFactory` yourself:
+
+```java
+KafkaConsumerTelemetry get(String listenerConfig, String listenerCanonicalName,
+                           Properties driverProperties, KafkaConsumerTelemetryConfig config);
+```
+
+`KafkaConsumerTelemetry` exposes `meterRegistry()`, `observePoll()` and
+`reportLag(TopicPartition, long)`; `KafkaConsumerPollObservation` yields per-record
+`KafkaConsumerRecordObservation`s. A `@Component` of this type replaces the default for **every**
+listener in the application — there is no per-listener tag on this parameter.
+
+Migrating from a 1.x custom telemetry listener: port the logging bits into a
+`DefaultKafkaConsumerLoggerFactory` subclass, the metric bits into a
+`DefaultKafkaConsumerMetricsFactory` subclass, and prefer configuration (`tags`, `attributes`, `slo`,
+`driverMetrics`) wherever it covers the requirement.
+
+---
+
+## Pitfalls
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| No consumer logs at all, not even lifecycle | `telemetry.logging.enabled` is `false` by default | enable it on the listener |
+| No `messaging.*` meters | `telemetry.metrics.enabled` is `false` by default | enable it |
+| Enabled but still nothing | no `MeterRegistry` / `Tracer` in the graph | add `micrometer-module` / `opentelemetry-tracing` and an exporter |
+| Lag gauge missing | subscribe mode never reports lag | use broker-side lag, or `driverMetrics = true` |
+| Custom logger never used | not a `@Component`, or logging disabled | register it and enable logging |
+| `KafkaConsumerLoggerFactory` does not resolve | 1.x interface, removed in 2.0 | subclass `DefaultKafkaConsumerLoggerFactory` |
+| Telemetry parameter on a listener does not compile | no such parameter kind in 2.0 | drop it; observations are not injectable |
+| Metric cardinality explosion | `driverMetrics = true`, or per-record tags | disable driver metrics; keep `tags` low-cardinality |
+| Every poll is its own trace | `kafka.poll` is created with `setNoParent()` | expected; per-record spans still continue the producer's trace |
+
+---
+
+## Related references
+
+- [Consumer configuration](kafka-consumer-reference.md)
+- [Error handling](kafka-error-handling-reference.md)
+- [Strategies](kafka-strategies-reference.md) — why lag is assign-only
+- [kora-telemetry-metrics](../../kora-telemetry-metrics/SKILL.md) · [kora-telemetry-tracing](../../kora-telemetry-tracing/SKILL.md) · [kora-telemetry-logging](../../kora-telemetry-logging/SKILL.md)
+
+**Source:** framework tag `2.0.0.RC1` —
+[consumer telemetry](https://github.com/kora-projects/kora/tree/2.0.0.RC1/kafka/kafka/src/main/java/io/koraframework/kafka/common/consumer/telemetry) ·
+[KafkaModule](https://github.com/kora-projects/kora/blob/2.0.0.RC1/kafka/kafka/src/main/java/io/koraframework/kafka/common/KafkaModule.java) ·
+[TelemetryConfig](https://github.com/kora-projects/kora/blob/2.0.0.RC1/telemetry/telemetry-common/src/main/java/io/koraframework/telemetry/common/TelemetryConfig.java)

@@ -1,0 +1,112 @@
+// Kora 2.x — OpenAPI HTTP server (Kotlin)
+//
+// gradle.properties:
+//   koraVersion=2.0.0.RC1
+//
+// IMPORTANT: the JVM that RUNS GRADLE must be 25+, because
+// io.koraframework:openapi-generator lands on the buildscript classpath below and is
+// resolved by the Gradle JVM, not by the toolchain. On an older Gradle JVM configuration
+// fails with:
+//   Dependency requires at least JVM runtime version 25. This build uses a Java 21 JVM.
+
+import org.openapitools.generator.gradle.plugin.tasks.GenerateTask
+
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+    dependencies {
+        // The "kora" generator itself. Versioned by koraVersion, NOT by the plugin version.
+        classpath("io.koraframework:openapi-generator:${property("koraVersion")}")
+    }
+}
+
+plugins {
+    id("application")
+    kotlin("jvm") version "2.4.10"                       // must match the Kotlin Kora is built with
+    id("com.google.devtools.ksp") version "2.3.11"
+    id("org.openapi.generator") version "7.24.0"
+}
+
+kotlin {
+    jvmToolchain {
+        languageVersion.set(JavaLanguageVersion.of(25))
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+
+    // MANDATORY: without it the generated @HttpController produces no routes at all.
+    ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
+
+    implementation("io.koraframework:http-server-undertow")
+    implementation("io.koraframework:json-common")
+    implementation("io.koraframework:config-hocon")
+    implementation("io.koraframework:logging-logback")
+
+    // Required by configOptions.enableServerValidation = "true".
+    implementation("io.koraframework:validation-module")
+
+    // Optional: serves /openapi and /swagger-ui — see the kora-openapi-management skill.
+    // implementation("io.koraframework:openapi-management")
+
+    testImplementation("io.koraframework:test-junit5")
+}
+
+application {
+    mainClass.set("com.example.petapi.ApplicationKt")     // note the Kt suffix for a top-level main
+    applicationDefaultJvmArgs = listOf("-Dfile.encoding=UTF-8")
+}
+
+val openApiGenerateHttpServer = tasks.register<GenerateTask>("openApiGenerateHttpServer") {
+    generatorName.set("kora")
+    group = "openapi tools"
+    inputSpec.set("$projectDir/src/main/resources/openapi/pet-api.yaml")
+
+    // One outputDir per spec.
+    outputDir.set(layout.buildDirectory.dir("generated/pet-api-server").get().asFile.absolutePath)
+
+    val corePackage = "com.example.petapi"
+    apiPackage.set("$corePackage.api")
+    modelPackage.set("$corePackage.model")
+    invokerPackage.set("$corePackage.invoker")
+
+    configOptions.set(
+        mapOf(
+            // Only java-client, java-server, kotlin-client, kotlin-server exist in Kora 2.0.
+            "mode" to "kotlin-server",
+            "enableServerValidation" to "true",
+
+            // Defaults shown for reference:
+            // "enableServerValidationInterceptor" to "true",
+            // "requestInDelegateParams" to "false",
+            // "delegateMethodBodyMode" to "none",        // "throwException" also generates a default delegate
+            // "rawBodyMode" to "BYTES",
+            // "prefixPath" to "/api/v1",                 // Kotlin quotes it for you, unlike java-server
+        )
+    )
+}
+
+kotlin.sourceSets.main {
+    kotlin.srcDir(openApiGenerateHttpServer.get().outputDir)
+}
+
+// BOTH hooks are needed: KSP reads the generated sources, compileKotlin compiles them.
+tasks.matching { it.name.startsWith("ksp") }.configureEach {
+    dependsOn(openApiGenerateHttpServer)
+}
+tasks.compileKotlin {
+    dependsOn(openApiGenerateHttpServer)
+}
+
+tasks.test {
+    useJUnitPlatform()
+}
+
+// After changing apiPackage / modelPackage, run once:
+//   ./gradlew clean build --no-build-cache

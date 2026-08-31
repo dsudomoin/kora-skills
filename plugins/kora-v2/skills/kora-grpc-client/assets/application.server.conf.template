@@ -1,0 +1,34 @@
+// Counterpart gRPC server configuration (Kora 2.0) — keys from io.koraframework.grpc.server.GrpcServerConfig.
+// The authoritative server guidance is the kora-grpc-server skill; this file exists so the client
+// templates have something to talk to locally.
+grpcServer {
+  port = 8090
+
+  // Size is parsed by io.koraframework.common.util.Size: "4MiB" (binary) or "4MB" (decimal);
+  // a bare number is bytes.
+  maxMessageSize = "4MiB"
+
+  // Requires io.grpc:grpc-services on the classpath; the server checks for
+  // io.grpc.protobuf.services.ProtoReflectionServiceV1 and skips reflection when it is absent.
+  reflectionEnabled = false
+
+  // Grace period for in-flight calls during shutdown.
+  shutdownWait = "30s"
+
+  // maxConnectionAge = "30m"
+  // maxConnectionAgeGrace = "30s"
+  // keepAliveTime = "30s"
+  // keepAliveTimeout = "5s"
+
+  telemetry {
+    // Same defaults as everywhere in Kora 2.0: logging false, metrics false, tracing true.
+    logging.enabled = true
+    // metrics.enabled = true
+  }
+}
+
+logging.levels {
+  "root": "WARN"
+  "io.koraframework": "INFO"
+  "${package}": "INFO"
+}

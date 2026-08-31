@@ -1,0 +1,71 @@
+// Kora 2.0 — declarative method logging with @Log and @Mdc (Kotlin / KSP).
+//
+// Requires, in build.gradle.kts:
+//     implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))  // 2.0.0.RC1
+//     ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
+//     implementation("io.koraframework:logging-logback")
+//
+// and, on the @KoraApp interface:
+//     @KoraApp interface Application : LogbackModule, ...
+//
+// Levels live in application.conf, NOT in logback.xml — LoggingLevelRefresher clears
+// per-logger levels from logback.xml at graph init:
+//     logging.levels {
+//       "ROOT": "WARN"
+//       "com.example.app.service.OrdersService": "DEBUG"   # arguments + result appear
+//     }
+//
+// Kotlin specifics: the class AND every annotated function must be `open`, `in` is a keyword
+// so the annotation is written @Log.`in`, and `$` in an @Mdc value must be escaped as \$.
+//
+// Replace `com.example.app.service` with your package.
+
+package com.example.app.service
+
+import io.koraframework.common.annotation.Component
+import io.koraframework.logging.common.annotation.Log
+import io.koraframework.logging.common.annotation.Mdc
+import org.slf4j.event.Level
+import java.util.UUID
+
+@Component
+open class OrdersService(                                          // must be open
+    private val repository: OrdersRepository
+) {
+
+    // Logger name: com.example.app.service.OrdersService.create
+    //   INFO  -> ">"                        and "<"
+    //   DEBUG -> "> {\"data\":{...}}"       and "< {\"data\":{\"out\":...}}"
+    // MDC keys held for the duration of the call: operation, requestId, tenantId.
+    @Log
+    @Mdc(key = "operation", value = "create-order")
+    @Mdc(key = "requestId", value = "\${java.util.UUID.randomUUID().toString()}")
+    open fun create(                                               // must be open
+        @Mdc(key = "tenantId") tenant: String,                     // argument value goes into the MDC
+        body: CreateOrderDto,
+        @Log.off idempotencyKey: String                            // never rendered into the record
+    ): Order = repository.save(body.toEntity(tenant))
+
+    // Exit record only. The result payload is written at DEBUG.
+    @Log.out
+    open fun get(id: UUID): Order = repository.findById(id)
+
+    // Entry record only, emitted at DEBUG. `in` is a Kotlin keyword — backticks are mandatory.
+    // Arguments already default to DEBUG, so the ">" marker and the "id" payload appear together.
+    // Put the level on ONE annotation: with both @Log(A) and @Log.`in`(B), Kotlin uses A and
+    // Java uses B.
+    @Log.`in`(Level.DEBUG)
+    open fun reconcile(id: UUID) {
+        repository.reconcile(id)
+    }
+
+    // No @Log* annotation at all: this is how you keep a per-item method out of the log.
+    // (@Log.off on a function would NOT silence it — it only drops the result payload.)
+    internal fun applyDiscountInternal(order: Order) {
+        // Also note: calling this from create() above would bypass the aspect anyway,
+        // because the aspect lives in the generated $OrdersService__AopProxy subclass.
+    }
+
+    // To redact fields *inside* a logged object rather than dropping the whole argument,
+    // see references/logging-masking.md — KSP generates the MaskingRules module for you.
+}

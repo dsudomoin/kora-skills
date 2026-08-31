@@ -1,0 +1,105 @@
+// Kora 2.0 gRPC client — Gradle (Groovy DSL).
+//
+// kora-bom constrains io.koraframework:* ONLY. gRPC and protobuf versions are the application's
+// responsibility, and a mismatch fails at RUNTIME with an error that names nothing useful:
+//   AbstractMethodError: ... 'buildClientTransportServers(List, MetricRecorder)'
+// Keep every io.grpc:* on 1.83.1, in main AND test.
+plugins {
+    id "java"
+    id "application"
+    id "com.google.protobuf" version "0.10.0"
+}
+
+// Kora 2.0 artifacts are compiled for Java 25 — this is a hard floor, not a preference.
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+        vendor = JvmVendorSpec.ADOPTIUM
+    }
+}
+
+configurations {
+    koraBom
+    annotationProcessor.extendsFrom(koraBom)
+    compileOnly.extendsFrom(koraBom)
+    implementation.extendsFrom(koraBom)
+    testAnnotationProcessor.extendsFrom(koraBom)
+    testImplementation.extendsFrom(koraBom)
+}
+
+dependencies {
+    // gradle.properties: koraVersion=2.0.0.RC1  (plain mavenCentral(), no snapshot repository)
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+
+    // Carries the kora-app extension that turns a generated *Stub into an injectable component.
+    annotationProcessor "io.koraframework:annotation-processors"
+
+    implementation "io.koraframework:grpc-client"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
+
+    // Not managed by kora-bom — pin explicitly. protobuf-java arrives transitively from
+    // grpc-protobuf at 3.25.9; leaving it transitive is what keeps it in step with protoc.
+    implementation "io.grpc:grpc-protobuf:1.83.1"
+
+    // Generated stubs reference javax.annotation.Generated, which is @Retention(SOURCE).
+    compileOnly "javax.annotation:javax.annotation-api:1.3.2"
+
+    testImplementation "io.koraframework:test-junit5"
+    // Must match the grpc-core that arrives with io.koraframework:grpc-client.
+    testImplementation "io.grpc:grpc-inprocess:1.83.1"
+}
+
+application {
+    applicationName = "application"
+    mainClass = "${package}.Application"
+    applicationDefaultJvmArgs = ["-Dfile.encoding=UTF-8"]
+}
+
+protobuf {
+    // protoc 3.25.3 matches the protobuf-java 3.25.9 that io.grpc:grpc-protobuf:1.83.1 brings in
+    // transitively, so the runtime is never older than the generated code and no override is needed.
+    // All eight migrated Kora gRPC projects pin this version.
+    //
+    // Optional upgrade — protoc 4.35.1 is what Kora itself builds with, and it works, but ONLY as a
+    // PAIR. protoc 4.x generated code references com.google.protobuf.Generated, which does not exist
+    // in protobuf-java 3.25.9, so taking the protoc line without the runtime line fails with
+    // "cannot find symbol: class Generated / location: package com.google.protobuf":
+    //     protoc { artifact = "com.google.protobuf:protoc:4.35.1" }
+    //     implementation "com.google.protobuf:protobuf-java:4.35.1"   // must outrank the transitive 3.25.9
+    protoc { artifact = "com.google.protobuf:protoc:3.25.3" }
+    plugins {
+        grpc { artifact = "io.grpc:protoc-gen-grpc-java:1.83.1" }
+    }
+    generateProtoTasks {
+        all()*.plugins { grpc {} }
+    }
+}
+
+// Without these the generated classes exist on disk but are invisible to javac and to the
+// annotation processor, and the graph fails with "Required dependency not found: ...BlockingStub".
+sourceSets {
+    main {
+        java {
+            srcDirs "build/generated/source/proto/main/grpc"
+            srcDirs "build/generated/source/proto/main/java"
+        }
+    }
+}
+
+test {
+    dependsOn tasks.generateProto
+    useJUnitPlatform()
+}
+
+// Makes the gRPC alignment above enforceable instead of advisory: no transitive dependency can drag
+// a test transport onto a different grpc-java line. protobuf is deliberately NOT forced here —
+// protobuf-java resolves transitively from grpc-protobuf, so the two can never disagree, and pinning
+// it would only fight that. grpc-kotlin has its own version line (1.5.0) and is excluded by name.
+configurations.configureEach {
+    resolutionStrategy.eachDependency {
+        if (it.requested.group == "io.grpc" && !it.requested.name.contains("kotlin")) {
+            it.useVersion "1.83.1"
+        }
+    }
+}

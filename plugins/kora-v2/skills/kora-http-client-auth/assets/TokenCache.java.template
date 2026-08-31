@@ -1,0 +1,75 @@
+package ${package};
+
+import io.koraframework.common.annotation.Component;
+import org.jspecify.annotations.Nullable;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Supplier;
+
+/**
+ * Single-flight, thread-safe store for one access token.
+ *
+ * <p>Self-contained: no other generated file is required to compile this one.</p>
+ *
+ * <p>The fast path reads a volatile reference without locking. Only a caller that finds the token
+ * missing or inside the refresh margin takes the lock, and it re-checks after acquiring it, so a
+ * burst of concurrent requests produces exactly one token fetch.</p>
+ *
+ * <p>Holds one token. For several audiences declare one instance per audience from a
+ * {@code @Module} under distinct {@code @Tag}s and drop {@code @Component} from this class.</p>
+ */
+@Component
+public final class TokenCache {
+
+    /** A token together with the absolute instant it stops being valid. */
+    public record Token(String value, Instant expiresAt) {
+
+        public static Token of(String value, Duration lifetime) {
+            return new Token(value, Instant.now().plus(lifetime));
+        }
+
+        public boolean isFreshFor(Duration margin) {
+            return Instant.now().plus(margin).isBefore(expiresAt);
+        }
+    }
+
+    /** Refresh this long before expiry so a token cannot expire while a request is in flight. */
+    private static final Duration REFRESH_MARGIN = Duration.ofSeconds(60);
+
+    private final ReentrantLock lock = new ReentrantLock();
+
+    /** One volatile reference to an immutable record: value and expiry are published together. */
+    private volatile @Nullable Token token;
+
+    /**
+     * Returns the cached token, fetching a new one if it is missing or about to expire.
+     * The supplier must return the token <em>and</em> its real lifetime, taken from the
+     * authorization server's response — never an assumed one.
+     */
+    public String getOrRefresh(Supplier<Token> refresh) {
+        var cached = this.token;
+        if (cached != null && cached.isFreshFor(REFRESH_MARGIN)) {
+            return cached.value();
+        }
+
+        lock.lock();
+        try {
+            cached = this.token;
+            if (cached != null && cached.isFreshFor(REFRESH_MARGIN)) {
+                return cached.value();
+            }
+            var fresh = refresh.get();
+            this.token = fresh;
+            return fresh.value();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Drops the cached token so the next caller re-fetches. Call this after a 401. */
+    public void invalidate() {
+        this.token = null;
+    }
+}

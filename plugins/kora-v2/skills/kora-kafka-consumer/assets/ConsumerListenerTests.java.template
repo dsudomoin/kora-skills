@@ -1,0 +1,98 @@
+package ${packagePath}.listener;
+
+import io.goodforgod.testcontainers.extensions.ContainerMode;
+import io.goodforgod.testcontainers.extensions.kafka.ConnectionKafka;
+import io.goodforgod.testcontainers.extensions.kafka.Event;
+import io.goodforgod.testcontainers.extensions.kafka.KafkaConnection;
+import io.goodforgod.testcontainers.extensions.kafka.TestcontainersKafka;
+import io.goodforgod.testcontainers.extensions.kafka.Topics;
+import io.koraframework.application.graph.Lifecycle;
+import io.koraframework.common.annotation.Tag;
+import io.koraframework.test.extension.junit5.KoraAppTest;
+import io.koraframework.test.extension.junit5.KoraAppTestConfigModifier;
+import io.koraframework.test.extension.junit5.KoraConfigModification;
+import io.koraframework.test.extension.junit5.TestComponent;
+import ${packagePath}.Application;
+import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Test;
+
+import java.time.Duration;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+/**
+ * Integration test for ${listenerName} against a real broker.
+ *
+ * Two things make a Kora Kafka test work:
+ *
+ *  1. `bootstrap.servers` in application.conf must be overridable — write the literal first and
+ *     override it with ${?KAFKA_BOOTSTRAP}, then set that system property here.
+ *  2. The generated container must be pulled into the test graph by its tag, otherwise @KoraAppTest
+ *     prunes it and the listener never starts.
+ *
+ * The Testcontainers Kafka module is `org.testcontainers:testcontainers-kafka` in Testcontainers 2.x
+ * (`org.testcontainers:kafka` is the 1.x coordinate and no longer resolves).
+ */
+@TestcontainersKafka(mode = ContainerMode.PER_RUN, topics = @Topics({"${topicName}"}))
+@KoraAppTest(Application.class)
+class ${listenerName}Tests implements KoraAppTestConfigModifier {
+
+    @ConnectionKafka
+    private KafkaConnection connection;
+
+    @Tag(${listenerName}Module.${listenerName}ProcessTag.class)
+    @TestComponent
+    private Lifecycle consumerLifecycle;
+
+    @TestComponent
+    private ${listenerName} listener;
+
+    @Override
+    public KoraConfigModification config() {
+        return KoraConfigModification.ofSystemProperty(
+            "KAFKA_BOOTSTRAP", connection.params().bootstrapServers());
+    }
+
+    @Test
+    void consumesRecord() {
+        connection.send("${topicName}", Event.ofValueAndRandomKey("payload"));
+
+        Awaitility.await()
+            .atMost(Duration.ofSeconds(20))
+            .until(() -> listener.processedCount() == 1);
+    }
+
+    @Test
+    void skipsBlankRecord() {
+        connection.send("${topicName}", Event.ofValueAndRandomKey(""));
+
+        Awaitility.await()
+            .atMost(Duration.ofSeconds(20))
+            .until(() -> listener.skippedCount() == 1);
+
+        assertEquals(0, listener.processedCount());
+    }
+}
+
+/*
+ * Test config requirements (application.conf, or an inline KoraConfigModification.ofString):
+ *
+ *   kafka.consumer.${listenerNameLower} {
+ *     topics = ["${topicName}"]
+ *     pollTimeout = 250ms
+ *     driverProperties {
+ *       "bootstrap.servers" = "localhost:9092"
+ *       "bootstrap.servers" = ${?KAFKA_BOOTSTRAP}
+ *       "group.id" = "${consumerGroupId}"
+ *       "auto.offset.reset" = "earliest"      # otherwise records sent before the join are missed
+ *     }
+ *     telemetry.logging.enabled = true        # off by default in Kora 2.0
+ *   }
+ *
+ * To assert what the listener published, subscribe before sending:
+ *
+ *   var output = connection.subscribe("${topicName}-processed");
+ *   connection.send("${topicName}", Event.ofValue("payload"));
+ *   assertTrue(output.assertReceivedAtLeast(1).stream()
+ *       .anyMatch(e -> "processed:payload".equals(e.value().asString())));
+ */

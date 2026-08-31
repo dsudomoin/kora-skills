@@ -1,0 +1,156 @@
+package ${package};
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.database.common.annotation.Column;
+import io.koraframework.database.common.annotation.Id;
+import io.koraframework.database.common.annotation.Query;
+import io.koraframework.database.common.annotation.Repository;
+import io.koraframework.database.common.annotation.Table;
+import io.koraframework.database.jdbc.JdbcExecutor;
+import io.koraframework.database.jdbc.JdbcRepository;
+import io.koraframework.database.jdbc.annotation.EntityJdbc;
+import org.jspecify.annotations.Nullable;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+
+/**
+ * Transactional service on Kora 2.0 JDBC.
+ *
+ * Shows:
+ * - executor().inTx(...) as the transaction boundary — JdbcRepository.executor() returns the
+ *   JdbcExecutor; this REPLACES the 1.x getJdbcConnectionFactory();
+ * - the inTx overload that hands you the ConnectionContext, so post-commit and post-rollback
+ *   actions can be registered without the nullable currentContext();
+ * - an explicit isolation level through JdbcExecutor.TxIsolation;
+ * - SELECT ... FOR UPDATE, which only holds its lock inside a transaction.
+ *
+ * There is no @Transactional and no declarative propagation: the boundary is the lambda. Every
+ * repository call inside it joins the same transaction; any exception rolls the whole block back.
+ * A nested inTx reuses the open transaction rather than starting a new one.
+ *
+ * Kotlin note: the overloads no longer infer from a bare lambda — write
+ * inTx(JdbcExecutor.SqlSupplier { ... }) for a value and inTx(JdbcExecutor.SqlRunnable { ... })
+ * for none, otherwise the compiler reports "Cannot infer type for type parameter T".
+ *
+ * LAYOUT — this is a single-file sample: Java allows one public top-level type per file, so only
+ * AccountService is public and the file must be named AccountService.java. In a real project split
+ * it into five files and make Account, Transfer, AccountRepository and TransferRepository public
+ * too. Package-private repositories only work while @KoraApp sits in the same package — the
+ * generated <App>Graph has to name the repository type, and cannot reach it from elsewhere.
+ *
+ * Matching DDL:
+ *   CREATE TABLE accounts (
+ *       id      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ *       name    VARCHAR(255) NOT NULL,
+ *       balance NUMERIC(19, 2) NOT NULL DEFAULT 0
+ *   );
+ *   CREATE TABLE transfers (
+ *       id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ *       from_account_id BIGINT NOT NULL REFERENCES accounts(id),
+ *       to_account_id   BIGINT NOT NULL REFERENCES accounts(id),
+ *       amount          NUMERIC(19, 2) NOT NULL,
+ *       created_at      TIMESTAMP NOT NULL DEFAULT NOW()
+ *   );
+ */
+@EntityJdbc
+@Table("accounts")
+record Account(
+        @Id Long id,
+        String name,
+        BigDecimal balance) {
+
+    Account(String name, BigDecimal balance) {
+        this(null, name, balance);
+    }
+}
+
+@EntityJdbc
+@Table("transfers")
+record Transfer(
+        @Id Long id,
+        @Column("from_account_id") Long fromAccountId,
+        @Column("to_account_id") Long toAccountId,
+        BigDecimal amount,
+        LocalDateTime createdAt) {
+
+    Transfer(Long fromAccountId, Long toAccountId, BigDecimal amount) {
+        this(null, fromAccountId, toAccountId, amount, LocalDateTime.now());
+    }
+}
+
+@Repository
+interface AccountRepository extends JdbcRepository {
+
+    /** FOR UPDATE only holds the row lock for the life of the surrounding transaction. */
+    @Query("SELECT %{return#selects} FROM %{return#table} WHERE id = :id FOR UPDATE")
+    @Nullable
+    Account findByIdForUpdate(Long id);
+
+    @Query("INSERT INTO %{entity#inserts -= @id}")
+    @Id
+    Long insert(Account entity);
+
+    @Query("UPDATE accounts SET balance = :balance WHERE id = :id")
+    void updateBalance(Long id, BigDecimal balance);
+}
+
+@Repository
+interface TransferRepository extends JdbcRepository {
+
+    @Query("INSERT INTO %{entity#inserts -= @id}")
+    @Id
+    Long insert(Transfer entity);
+}
+
+@Component
+public final class AccountService {
+
+    private final AccountRepository accountRepository;
+    private final TransferRepository transferRepository;
+
+    public AccountService(AccountRepository accountRepository,
+                          TransferRepository transferRepository) {
+        this.accountRepository = accountRepository;
+        this.transferRepository = transferRepository;
+    }
+
+    /**
+     * Moves money between two accounts atomically and notifies only after the commit succeeds.
+     * REPEATABLE_READ keeps both balance reads consistent for the life of the transaction; the
+     * executor restores the connection's previous isolation level afterwards.
+     */
+    public Long transfer(Long fromId, Long toId, BigDecimal amount) {
+        return accountRepository.executor()
+                .inTx(JdbcExecutor.TxIsolation.REPEATABLE_READ, ctx -> {
+                    var from = accountRepository.findByIdForUpdate(fromId);
+                    var to = accountRepository.findByIdForUpdate(toId);
+                    if (from == null || to == null) {
+                        throw new IllegalArgumentException("Account not found");
+                    }
+                    if (from.balance().compareTo(amount) < 0) {
+                        throw new IllegalStateException("Insufficient funds");
+                    }
+
+                    accountRepository.updateBalance(fromId, from.balance().subtract(amount));
+                    accountRepository.updateBalance(toId, to.balance().add(amount));
+
+                    var transferId = transferRepository.insert(new Transfer(fromId, toId, amount));
+
+                    // Runs after commit; a failure here does NOT undo the committed transaction.
+                    ctx.afterCommit(connection -> notifyTransferCompleted(transferId));
+                    // Runs during rollback handling; anything it throws is suppressed onto the cause.
+                    ctx.afterRollback((connection, e) -> logTransferFailed(fromId, toId, e));
+
+                    return transferId;
+                });
+    }
+
+    private void notifyTransferCompleted(Long transferId) {
+        // publish an event / send a notification after the commit
+    }
+
+    private void logTransferFailed(Long fromId, Long toId, Exception e) {
+        // alert or record the failed transfer after the rollback
+    }
+}
