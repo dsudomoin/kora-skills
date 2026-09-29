@@ -1,7 +1,7 @@
 # `@KoraAppTest` for Kotlin (Kora 2.x)
 
 Verified against the Kora 2.0 sources —
-[`test/test-junit5`](https://github.com/kora-projects/kora/tree/2.0.0.RC1/test/test-junit5)
+[`test/test-junit5`](https://github.com/kora-projects/kora/tree/2.0.0.RC2/test/test-junit5)
 (including its own Kotlin tests under `src/test/kotlin/.../kotlin/mockk`) — and the migrated
 [`kora-kotlin-guide-testing-junit-app`](https://github.com/kora-projects/kora-examples/tree/migration/2.0/guides/kotlin/kora-kotlin-guide-testing-junit-app),
 [`kora-kotlin-guide-testing-integration-app`](https://github.com/kora-projects/kora-examples/tree/migration/2.0/guides/kotlin/kora-kotlin-guide-testing-integration-app)

@@ -9,7 +9,7 @@ no Kora S3 models**. If you want declarative `@S3.Client` interfaces, you want
 [s3-client-kora.md](s3-client-kora.md) instead — the two artifacts are independent and neither
 provides the other's API.
 
-AWS SDK version: `software.amazon.awssdk:s3` **2.52.1**, pulled transitively.
+AWS SDK version: `software.amazon.awssdk:s3` **2.55.7**, pulled transitively.
 
 ---
 
@@ -17,7 +17,7 @@ AWS SDK version: `software.amazon.awssdk:s3` **2.52.1**, pulled transitively.
 
 ```groovy
 dependencies {
-    koraBom platform("io.koraframework:kora-bom:$koraVersion")   // koraVersion=2.0.0.RC1
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")   // koraVersion=2.0.0.RC2
     annotationProcessor "io.koraframework:annotation-processors"
 
     implementation "io.koraframework:s3-client-aws"
@@ -140,7 +140,7 @@ any other path). Unrelated to the declarative client's `@S3.Client(...)` path.
 |---|---|---|---|
 | `url` | `String` | **required** | The endpoint. The declarative client calls this key `endpoint` — they are different modules. |
 | `region` | `String` | `"aws-global"` | Passed to `Region.of(...)` |
-| `addressStyle` | `PATH` \| `VIRTUAL_HOSTED` | `PATH` | `PATH` → `S3Configuration.pathStyleAccessEnabled(true)`. Keep `PATH` for MinIO / Ceph. |
+| `addressStyle` | `PATH` \| `VIRTUAL_HOSTED` | `PATH` | `PATH` → `S3Configuration.pathStyleAccessEnabled(true)`. Keep `PATH` for self-hosted servers (RustFS, SeaweedFS, LocalStack, MinIO, Ceph). |
 | `requestTimeout` | `Duration` | `45s` | |
 | `chunkedEncodingEnabled` | `boolean` | `true` | `S3Configuration.chunkedEncodingEnabled` |
 | `checksumCalculationRequest` | `WHEN_SUPPORTED` \| `WHEN_REQUIRED` | `WHEN_REQUIRED` | → SDK `RequestChecksumCalculation` |
@@ -357,8 +357,8 @@ logging.levels { "software.amazon.awssdk.services.s3.S3Client" = "DEBUG" }
 
 ## Source of truth
 
-- Framework source, tag `2.0.0.RC1`:
-  [s3/s3-client-aws](https://github.com/kora-projects/kora/tree/2.0.0.RC1/s3/s3-client-aws)
+- Framework source, tag `2.0.0.RC2`:
+  [s3/s3-client-aws](https://github.com/kora-projects/kora/tree/2.0.0.RC2/s3/s3-client-aws)
 - Migrated examples, branch `migration/2.0`:
   [kora-java-s3-client-aws](https://github.com/kora-projects/kora-examples/tree/migration/2.0/examples/java/kora-java-s3-client-aws) ·
   [kora-kotlin-s3-client-aws](https://github.com/kora-projects/kora-examples/tree/migration/2.0/examples/kotlin/kora-kotlin-s3-client-aws) ·

@@ -28,7 +28,10 @@
     "openapi",
     "telemetry",
     "caching",
-    "resilience"
+    "resilience",
+    "postgresql",
+    "scheduling",
+    "db-scheduler"
   ],
   "skills": "skills",
   "interface": {

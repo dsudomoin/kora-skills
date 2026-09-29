@@ -24,7 +24,7 @@ scheduling config bug.
 
 | Path | Read by | Contains |
 |---|---|---|
-| `scheduling.jdk` | `SchedulingJdkModule` | `shutdownWait` — nothing else |
+| `scheduling.jdk` | `SchedulingJdkModule` | `shutdownWait`, `maxConcurrentExecutions` |
 | `scheduling.telemetry` | `SchedulingModule` (shared with Quartz) | `logging` / `metrics` / `tracing` defaults for **all** jobs |
 | whatever you write in `config = "…"` | the generated per-job config | that job's timing plus its own `telemetry` overrides |
 
@@ -46,7 +46,7 @@ public interface Application extends
 
 ```groovy
 dependencies {
-    koraBom platform("io.koraframework:kora-bom:$koraVersion")   // koraVersion=2.0.0.RC1
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")   // koraVersion=2.0.0.RC2
     annotationProcessor "io.koraframework:annotation-processors" // Kotlin: ksp("io.koraframework:symbol-processors")
 
     implementation "io.koraframework:scheduling-jdk"
@@ -64,7 +64,8 @@ dependencies {
 scheduling {
 
   jdk {
-    shutdownWait = 30s           # executor termination grace period; default 30s
+    shutdownWait = 30s           # graceful drain budget for running jobs; default 30s
+    maxConcurrentExecutions = 50 # cap on runs executing at once; default Integer.MAX_VALUE (unlimited)
   }
 
   telemetry {
@@ -94,6 +95,7 @@ scheduling {
 scheduling:
   jdk:
     shutdownWait: "30s"
+    maxConcurrentExecutions: 50
   telemetry:
     logging:
       enabled: false
@@ -112,7 +114,8 @@ scheduling:
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
-| `scheduling.jdk.shutdownWait` | duration | `30s` | How long the executor waits for termination before `shutdownNow()`. It does **not** bound a running job — see [graceful-shutdown-reference.md](graceful-shutdown-reference.md) |
+| `scheduling.jdk.shutdownWait` | duration | `30s` | How long the executor lets running jobs finish at shutdown; after that it calls `shutdownNow()`, which interrupts them — see [graceful-shutdown-reference.md](graceful-shutdown-reference.md) |
+| `scheduling.jdk.maxConcurrentExecutions` | int | `Integer.MAX_VALUE` (unlimited) | Cap on job runs executing at once across all jobs; values below 1 act as 1; excess runs queue FIFO |
 | `scheduling.telemetry.logging.enabled` | boolean | `false` | Start/end job logs |
 | `scheduling.telemetry.metrics.enabled` | boolean | `false` | `scheduling.job.duration` timer; also needs a `MeterRegistry` component |
 | `scheduling.telemetry.metrics.slo` | duration list | 14 buckets, 1 ms → 90 s | Timer service-level objectives |
@@ -120,9 +123,9 @@ scheduling:
 | `scheduling.telemetry.tracing.enabled` | boolean | `true` | No-op unless a `Tracer` component exists |
 | `scheduling.telemetry.tracing.attributes` | map | `{}` | Extra static span attributes |
 
-**There is no thread-pool key.** The `ScheduledThreadPoolExecutor` core size is the number of jobs
-declared with `config = "…"`; with none, the pool runs on a single thread. See the *Thread model*
-section of the [skill](../SKILL.md).
+**There is no thread-pool key.** Every run gets a fresh virtual thread and one platform timer thread
+drives the schedule; the job count does not size anything. See the *Thread model* section of the
+[skill](../SKILL.md#thread-model).
 
 ---
 
@@ -247,9 +250,8 @@ scheduling {
 | `tracing.enabled` | boolean | `scheduling.telemetry.tracing.enabled` |
 | `tracing.attributes` | map | `scheduling.telemetry.tracing.attributes` |
 
-Jobs **without** a `config` path cannot be tuned individually — they only see the global block. That,
-plus the pool-sizing behaviour, is a good reason to give production jobs a `config` path even when the
-timings are static.
+Jobs **without** a `config` path cannot be tuned individually — they only see the global block. That
+is a good reason to give production jobs a `config` path even when the timings are static.
 
 Jobs with a `config` path also get a meaningful `system.config` metric tag / span attribute carrying
 that path, which lets dashboards address a job without hard-coding class names. Without a config path
@@ -266,7 +268,7 @@ at all — the setting simply stops applying.
 
 | Stale 1.x key | Status in 2.0 |
 |---|---|
-| `scheduling.threads` | **Removed.** No replacement. Pool size is derived from the number of `config`-driven jobs |
+| `scheduling.threads` | **Removed.** Runs are virtual threads; the optional cap is `scheduling.jdk.maxConcurrentExecutions` |
 | `scheduling.shutdownWait` | **Moved** to `scheduling.jdk.shutdownWait` |
 
 If you are porting a 1.x `application.conf`, grep for both and fix them explicitly — nothing else will

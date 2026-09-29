@@ -1,6 +1,6 @@
 ---
 name: kora-aop-scheduling-quartz
-description: "Quartz-backed scheduling in Kora 2.x — io.koraframework.scheduling.quartz.QuartzModule from artifact scheduling-quartz (Quartz 2.5.2). Covers @ScheduleWithCron (cron expression, identity, config path), @ScheduleWithTrigger(MyJob.class) taking a class tag that binds an org.quartz.Trigger from the graph, @DisallowConcurrentExecution, @PersistJobDataAfterExecution, the org.quartz.JobExecutionContext job argument, scheduling.quartz.properties / scheduling.quartz.waitForJobComplete / scheduling.telemetry config, and JDBC JobStore clustering. Use for cron jobs, custom Quartz triggers, misfire policies or persistent job stores; for fixed-rate, fixed-delay and one-shot timers use kora-aop-scheduling-jdk."
+description: "Quartz-backed scheduling in Kora 2.x — io.koraframework.scheduling.quartz.QuartzModule from artifact scheduling-quartz (Quartz 2.5.2). Covers @ScheduleWithCron (cron expression, identity, config path), @ScheduleWithTrigger(MyJob.class) taking a class tag that binds an org.quartz.Trigger from the graph, @DisallowConcurrentExecution, @PersistJobDataAfterExecution, the org.quartz.JobExecutionContext job argument, scheduling.quartz.properties / scheduling.quartz.waitForJobComplete / scheduling.telemetry config, and JDBC JobStore clustering. Use for cron jobs, custom Quartz triggers, misfire policies or persistent job stores; for fixed-rate, fixed-delay and one-shot timers use kora-aop-scheduling-jdk; for one execution per cluster on a plain database table use kora-aop-scheduling-db."
 license: Apache-2.0
 metadata:
   kora-version: "2.x"
@@ -8,11 +8,11 @@ metadata:
 
 # Kora Quartz Scheduling
 
-> **Kora sub-skill — obey the [kora-v2 meta rules](../../SKILL.md) on every task:** **R0** ground the workspace on Kora 2.0 refs before starting (framework source at tag `2.0.0.RC1` + `kora-examples` at `migration/2.0`; `kora-docs` is 1.x only) · **R1** read this sub-skill before writing code · **R2** Kora 2.0 APIs only — no Spring/Micronaut/Quarkus, no Kora 1.x APIs, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
+> **Kora sub-skill — obey the [kora-v2 meta rules](../../SKILL.md) on every task:** **R0** ground the workspace on Kora 2.0 refs before starting (framework source at tag `2.0.0.RC2` + `kora-examples` at `migration/2.0` + Kora 2.0 docs at koraframework.io/v2, which trail the source; 1.x `kora-docs` pages are never an authority) · **R1** read this sub-skill before writing code · **R2** Kora 2.0 APIs only — no Spring/Micronaut/Quarkus, no Kora 1.x APIs, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
 
 | | |
 |---|---|
-| **Artifact** | `io.koraframework:scheduling-quartz` (BOM `io.koraframework:kora-bom:2.0.0.RC1`) |
+| **Artifact** | `io.koraframework:scheduling-quartz` (BOM `io.koraframework:kora-bom:2.0.0.RC2`) |
 | **Module** | `io.koraframework.scheduling.quartz.QuartzModule` |
 | **Annotations** | `io.koraframework.scheduling.quartz.*` — a flat package, **no** `.annotation` segment |
 | **Quartz** | `org.quartz-scheduler:quartz:2.5.2`, pulled in transitively (`api`) |
@@ -37,7 +37,7 @@ examples do exactly that. `open` is only needed if you *also* stack a method-wra
 ```groovy
 // build.gradle (Java)
 dependencies {
-    koraBom platform("io.koraframework:kora-bom:$koraVersion")   // koraVersion=2.0.0.RC1
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")   // koraVersion=2.0.0.RC2
     annotationProcessor "io.koraframework:annotation-processors"
 
     implementation "io.koraframework:scheduling-quartz"
@@ -112,26 +112,43 @@ package-private (Java) / `internal` or public (Kotlin) is enough.
 
 ---
 
-## Quartz or JDK?
+## Quartz, JDK or DB?
 
-**Both modules ship a `@ScheduleWithCron`** in Kora 2.0 — they are different annotations in
-different packages and route to different schedulers:
+**All three scheduling modules ship a `@ScheduleWithCron`** in Kora 2.0 — they are different
+annotations in different packages and route to different schedulers:
 
 | Annotation | Package | Scheduler |
 |---|---|---|
 | `@ScheduleWithCron` | `io.koraframework.scheduling.quartz` | Quartz |
-| `@ScheduleWithCron` | `io.koraframework.scheduling.jdk.annotation` | JDK `ScheduledThreadPoolExecutor` |
+| `@ScheduleWithCron` | `io.koraframework.scheduling.jdk.annotation` | JDK `VirtualThreadSchedulingJdkExecutor` (in-process) |
+| `@ScheduleWithCron` | `io.koraframework.scheduling.db.scheduler.annotation` | db-scheduler (database table, cluster-wide) |
 
-Importing the wrong one compiles and silently schedules the job on the other engine. Check the
+Importing the wrong one compiles and silently schedules the job on another engine. Check the
 import, not the simple name.
 
 | Need | Use |
 |------|-----|
 | Custom `org.quartz.Trigger` (`@ScheduleWithTrigger`) | **Quartz** |
 | Misfire policies, Quartz calendars, `JobExecutionContext` / `JobDataMap` | **Quartz** |
-| Persistent or clustered job store (JDBC) | **Quartz** |
+| Persistent or clustered job store (JDBC) with Quartz semantics | **Quartz** |
+| One execution per firing across replicas, no Quartz tables or triggers | **DB** — see [kora-aop-scheduling-db](../kora-aop-scheduling-db/SKILL.md) |
 | Cron with no extra dependency | **JDK** — `io.koraframework.scheduling.jdk.annotation.ScheduleWithCron` (also accepts 5-field cron) |
 | Fixed rate / fixed delay / run once | **JDK** — see [kora-aop-scheduling-jdk](../kora-aop-scheduling-jdk/SKILL.md) |
+
+Same three-way table in all three scheduling sub-skills:
+
+| Need | JDK | Quartz (this skill) | DB (db-scheduler) |
+|---|---|---|---|
+| Extra infrastructure | none | none; a JDBC JobStore + Quartz tables for persistence/clustering | a JDBC `DataSource` + one table |
+| Who runs a firing | every replica | every replica (`RAMJobStore`); one node when clustered on a JDBC JobStore | one replica, cluster-wide |
+| Survives restart | no | only with a JDBC JobStore | yes — the next execution time lives in the table |
+| Fixed rate | `@ScheduleAtFixedRate` | via a custom `Trigger` | no |
+| Fixed delay | `@ScheduleWithFixedDelay` | via a custom `Trigger` | `@ScheduleWithFixedDelay` |
+| One-shot | `@ScheduleOnce`, every process start | via a custom `Trigger` | `@ScheduleOnce`, one pending execution cluster-wide |
+| Cron | Kora `CronExpression`, 5/6/7 fields, no `L W # C` | Quartz cron, 6/7 fields, `L W # C` | db-scheduler `CronSchedule`, Spring-style 6 fields |
+| Custom trigger, misfire policy, `JobDataMap` | no | yes | no |
+| Runs on | virtual threads, cap `maxConcurrentExecutions` (unlimited) | Quartz `SimpleThreadPool` platform threads (10) | virtual threads, cap `executionParallelism` (10) |
+| Shutdown | waits `shutdownWait`, then interrupts | `waitForJobComplete`, never interrupts | waits `shutdownWait`, then interrupts |
 
 ---
 
@@ -287,9 +304,9 @@ generated job class is `final` and `KoraQuartzJob.execute` is `final`, so it can
 `org.quartz.InterruptableJob` and `Scheduler.interrupt(...)` cannot reach it.
 
 Bound the work inside the job body instead (deadline or batch cap) and make jobs idempotent and
-restartable. Note the Quartz wait has no timeout of its own — unlike `scheduling-jdk`, which caps
-it at `scheduling.jdk.shutdownWait` (30s) and then calls `shutdownNow()`, so `isInterrupted()`
-*does* work there. Shutdown is not shared code: `scheduling-common` carries only config and
+restartable. Note the Quartz wait has no timeout of its own — unlike `scheduling-jdk`, whose
+virtual-thread executor waits `scheduling.jdk.shutdownWait` (30s) and then calls `shutdownNow()`,
+interrupting running jobs, so `isInterrupted()` *does* work there. Shutdown is not shared code: `scheduling-common` carries only config and
 telemetry. Patterns and the full contrast in
 [graceful-shutdown-reference.md](references/graceful-shutdown-reference.md).
 
@@ -326,6 +343,7 @@ failure.
 ## Related skills
 
 - [kora-aop-scheduling-jdk](../kora-aop-scheduling-jdk/SKILL.md) — fixed rate/delay/once and JDK cron
+- [kora-aop-scheduling-db](../kora-aop-scheduling-db/SKILL.md) — cluster-wide single execution on db-scheduler, without Quartz
 - [kora-aop-logging](../kora-aop-logging/SKILL.md) — `@Log` on a scheduled method (that one *does* need `open`)
 - [kora-config-hocon](../kora-config-hocon/SKILL.md) — typed config for externalised cron
 - [kora-telemetry-metrics](../kora-telemetry-metrics/SKILL.md) — enabling the metrics that scheduling reports

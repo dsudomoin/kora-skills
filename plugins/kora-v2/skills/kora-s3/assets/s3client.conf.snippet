@@ -17,7 +17,7 @@
 s3client.uploads {
 
   # REQUIRED. Kora 1.x called this key `url`; the declarative client calls it `endpoint`.
-  endpoint = ${S3_URL}                    # e.g. https://s3.amazonaws.com or http://minio:9000
+  endpoint = ${S3_URL}                    # e.g. https://s3.amazonaws.com or http://s3-server:9000
 
   # Read by @S3.Bucket(".bucket") — the client itself never reads a `bucket` key.
   # A leading dot in @S3.Bucket makes the path relative to the @S3.Client path.
@@ -26,7 +26,7 @@ s3client.uploads {
   region = "aws-global"                   # default
   region = ${?S3_REGION}
 
-  addressStyle   = "PATH"                 # default. PATH | VIRTUAL_HOSTED — keep PATH for MinIO/Ceph
+  addressStyle   = "PATH"                 # default. PATH | VIRTUAL_HOSTED — keep PATH for self-hosted S3 servers
   requestTimeout = "45s"                  # default
 
   # REQUIRED unless every client method takes an S3Credentials parameter.

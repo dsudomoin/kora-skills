@@ -7,7 +7,7 @@
       "expected_behavior": [
         "Annotates the test class with @KoraAppTest(Application.class) imported from io.koraframework.test.extension.junit5",
         "Injects UserService with @TestComponent on a non-static, non-final field",
-        "Adds testImplementation \"io.koraframework:test-junit5\" versioned through platform(\"io.koraframework:kora-bom:$koraVersion\") with koraVersion=2.0.0.RC1, plus annotationProcessor \"io.koraframework:annotation-processors\"",
+        "Adds testImplementation \"io.koraframework:test-junit5\" versioned through platform(\"io.koraframework:kora-bom:$koraVersion\") with koraVersion=2.0.0.RC2, plus annotationProcessor \"io.koraframework:annotation-processors\"",
         "Pins JUnit through platform(\"org.junit:junit-bom:$junitVersion\") with junitVersion=6.1.3, and a Java 25 toolchain",
         "Asserts on the value the synchronous method returned; does not block, join or subscribe",
         "Does not use ru.tinkoff.kora coordinates, the kora-parent BOM, or foreign-framework test annotations"
@@ -23,7 +23,7 @@
         "States that @Mock on its own is invisible to the extension, which only inspects elements that also carry @TestComponent",
         "Stubs with Mockito.when(...).thenReturn(...) on plain values and checks interactions with verify(...)",
         "Explicitly avoids @ExtendWith(MockitoExtension.class) because @KoraAppTest already creates, injects, resets and strictness-checks the mocks",
-        "Adds org.mockito:mockito-core at 5.23.0 or newer",
+        "Adds org.mockito:mockito-core at 5.24.0 or newer",
         "Does not rely on a mock-bean construct or any foreign-framework testing construct"
       ],
       "tags": ["mock", "basic"]
@@ -158,7 +158,7 @@
       "query": "After migrating to Kora 2.0 my tests fail with 'Application graph failed to initialize with 3 errors' and no cause. Sometimes I see 'IllegalArgumentException: Java 25 (69) is not supported by the current version of Byte Buddy'. My build has org.mockito:mockito-core:5.18.0.",
       "expected_behavior": [
         "Identifies the root cause as a Byte Buddy that predates Java 25 class files, pulled in transitively by the old mockito-core",
-        "Raises mockito-core to 5.23.0 (Byte Buddy 1.18.x), the version in Kora's own catalog, and notes that several migrated examples still carry 5.18.0",
+        "Raises mockito-core to 5.24.0 (Byte Buddy 1.18.x), the version in Kora's own catalog, and notes that several migrated examples still carry 5.18.0",
         "Explains that the failure is hidden inside 'Application graph failed to initialize with N errors' with no visible suppressed exception, so it looks like a dependency-injection problem",
         "Suggests ./gradlew <module>:dependencyInsight --dependency byte-buddy --configuration testRuntimeClasspath to confirm the resolved version, and temporarily enabling junitXml.required to see suppressed exceptions",
         "Treats -Dnet.bytebuddy.experimental=true as a diagnostic probe only, not a fix",

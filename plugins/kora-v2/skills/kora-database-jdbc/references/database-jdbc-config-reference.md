@@ -179,6 +179,9 @@ The Kora build tests against PostgreSQL `42.7.13`; the migrated example applicat
 and the guides pin `42.7.3`. Any recent `42.7.x` works — pick the newest patch your organisation
 allows. MySQL and Oracle versions are your choice; Kora constrains neither through the BOM.
 
+`io.koraframework:database-jdbc-postgres` is the exception: it declares `org.postgresql:postgresql`
+(`42.7.13`) as an `api` dependency, so a service on that module needs no separate driver line.
+
 `JdbcDataSource` derives the telemetry "database" label from the URL scheme
 (`jdbc:postgresql:…` → `postgresql`), so a malformed `jdbcUrl` fails during construction rather
 than on first use.

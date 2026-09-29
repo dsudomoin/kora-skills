@@ -1,6 +1,6 @@
 ---
 name: kora-aop-scheduling-jdk
-description: "In-process scheduled jobs in Kora 2.x — @ScheduleAtFixedRate, @ScheduleWithFixedDelay, @ScheduleOnce and the new @ScheduleWithCron from io.koraframework.scheduling.jdk.annotation, contributed by SchedulingJdkModule (artifact io.koraframework:scheduling-jdk) on top of a ScheduledThreadPoolExecutor of platform threads. Covers the config attribute for externalising timings, the scheduling.jdk.shutdownWait and scheduling.telemetry keys, per-job telemetry overrides, and why a scheduled method must be a no-argument, non-suspend member of a @Component. Use for heartbeat, cleanup, cache-warm and in-process cron jobs. For persistent, clustered or Quartz-flavoured cron jobs use kora-aop-scheduling-quartz."
+description: "In-process scheduled jobs in Kora 2.x — @ScheduleAtFixedRate, @ScheduleWithFixedDelay, @ScheduleOnce and the new @ScheduleWithCron from io.koraframework.scheduling.jdk.annotation, contributed by SchedulingJdkModule (artifact io.koraframework:scheduling-jdk): one platform timer thread dispatches each run onto a fresh virtual thread. Covers the config attribute for externalising timings, the scheduling.jdk.shutdownWait / maxConcurrentExecutions and scheduling.telemetry keys, cron DST handling, per-job telemetry overrides, and why a scheduled method must be a no-argument, non-suspend member of a @Component. Use for heartbeat, cleanup, cache-warm and in-process cron jobs. For one execution per cluster use kora-aop-scheduling-db; for Quartz triggers, misfire policies or L/W/# cron use kora-aop-scheduling-quartz."
 license: Apache-2.0
 metadata:
   kora-version: "2.x"
@@ -8,7 +8,7 @@ metadata:
 
 # Kora AOP Scheduling (JDK)
 
-> **Kora sub-skill — obey the [kora-v2 meta rules](../../SKILL.md) on every task:** **R0** ground the workspace on Kora 2.0 refs before starting (framework source at tag `2.0.0.RC1` + `kora-examples` at `migration/2.0`; `kora-docs` is 1.x only) · **R1** read this sub-skill before writing code · **R2** Kora 2.0 APIs only — no Spring/Micronaut/Quarkus, no Kora 1.x APIs, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
+> **Kora sub-skill — obey the [kora-v2 meta rules](../../SKILL.md) on every task:** **R0** ground the workspace on Kora 2.0 refs before starting (framework source at tag `2.0.0.RC2` + `kora-examples` at `migration/2.0` + Kora 2.0 docs at koraframework.io/v2, which trail the source; 1.x `kora-docs` pages are never an authority) · **R1** read this sub-skill before writing code · **R2** Kora 2.0 APIs only — no Spring/Micronaut/Quarkus, no Kora 1.x APIs, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
 
 | | |
 |---|---|
@@ -17,10 +17,12 @@ metadata:
 | **Annotations** | `io.koraframework.scheduling.jdk.annotation.*` |
 | **Processor** | Java `annotationProcessor "io.koraframework:annotation-processors"` · Kotlin `ksp("io.koraframework:symbol-processors")` |
 | **Config roots** | `scheduling.jdk` · `scheduling.telemetry` · one arbitrary path per job via `config = "…"` |
+| **Runtime** | `VirtualThreadSchedulingJdkExecutor` — one platform timer thread, one fresh virtual thread per run |
 
-Scheduling on top of a JVM `ScheduledThreadPoolExecutor`. No external scheduler, no job store — jobs
-live for the lifetime of the process only. Since 2.0 this module also has its **own cron evaluator**,
-so a plain cron job no longer requires Quartz.
+In-process scheduling: a single platform timer thread decides *when*, and every run executes on its
+own virtual thread. No external scheduler, no job store — jobs live for the lifetime of the process
+only, and every replica runs every job. The module has its **own cron evaluator**, so a plain cron job
+does not require Quartz.
 
 ---
 
@@ -33,9 +35,9 @@ only the Quartz `@ScheduleWithTrigger` change.
 |---|---|---|
 | `ru.tinkoff.kora.scheduling.jdk.annotation.*` | `io.koraframework.scheduling.jdk.annotation.*` | Compile error — loud, harmless |
 | `ru.tinkoff.kora:scheduling-jdk`, BOM `kora-parent` | `io.koraframework:scheduling-jdk`, BOM `io.koraframework:kora-bom` | Unresolved dependency |
-| Kotlin processor `scheduling-ksp` | `scheduling-symbol-processor`, normally via the aggregate `symbol-processors` | `scheduling-ksp` on Central is a 1.x leftover, **not** in the RC1 BOM |
+| Kotlin processor `scheduling-ksp` | `scheduling-symbol-processor`, normally via the aggregate `symbol-processors` | `scheduling-ksp` on Central is a 1.x leftover, **not** in the 2.0 BOM |
 | `scheduling.shutdownWait` | **`scheduling.jdk.shutdownWait`** | Stale key is an unknown HOCON key: ignored silently, shutdown falls back to 30 s |
-| `scheduling.threads` | **removed — no replacement key** | Ignored silently; pool size is derived (see [Thread model](#thread-model)) |
+| `scheduling.threads` (pool size) | **removed** — runs are virtual threads; the optional cap is `scheduling.jdk.maxConcurrentExecutions` (default unlimited) | Ignored silently (see [Thread model](#thread-model)) |
 | Cron only via `scheduling-quartz` | **`@ScheduleWithCron` in `scheduling-jdk`** | You may be pulling in Quartz for nothing |
 | "fixed rate may overlap" | **never overlaps** | See [Overlap](#overlap-fixed-rate-does-not-overlap) |
 | "class must be non-`final` / `open`" | **not required by scheduling** | See [What a scheduled method must satisfy](#what-a-scheduled-method-must-satisfy) |
@@ -58,7 +60,7 @@ configurations {
 }
 
 dependencies {
-    koraBom platform("io.koraframework:kora-bom:$koraVersion")   // koraVersion=2.0.0.RC1
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")   // koraVersion=2.0.0.RC2
     annotationProcessor "io.koraframework:annotation-processors" // mandatory — generates the job module
 
     implementation "io.koraframework:scheduling-jdk"
@@ -143,11 +145,11 @@ Either period() or config() annotation parameter must be provided
 
 ### Overlap: fixed rate does **not** overlap
 
-`@ScheduleAtFixedRate` delegates to `ScheduledExecutorService.scheduleAtFixedRate`, whose contract is:
-*"If any execution of this task takes longer than its period, then subsequent executions may start
-late, but will not concurrently execute."* Kora adds a per-job `ReentrantLock` around every run on top
-of that. Verified empirically on JDK 25.0.2: a 150 ms task on a 20 ms period reaches a maximum of **1**
-concurrent execution.
+`VirtualThreadSchedulingJdkExecutor` schedules the next periodic run only after the current one has
+returned, and each job additionally serialises its runs behind a per-job lock. A fixed-rate job keeps
+its original timetable: if a run overruns the period, the next run starts as soon as it returns
+(catching up), never in parallel with it. The framework test
+`fixedRateCatchesUpWithoutOverlappingExecutions` pins exactly that.
 
 So the choice between the two periodic annotations is about **where the interval is measured**, not
 about overlap:
@@ -156,9 +158,10 @@ about overlap:
 - `@ScheduleWithFixedDelay` — always leaves `delay` idle after the previous run returned, so the cadence
   drifts with execution time.
 
-Two *different* jobs can still run at the same time — subject to the pool size below.
+Two *different* jobs can run at the same time — each run gets its own virtual thread, subject only to
+the optional `maxConcurrentExecutions` cap below.
 
-### `@ScheduleWithCron` (new in 2.0)
+### `@ScheduleWithCron`
 
 ```java
 @ScheduleWithCron("0 0 3 * * ?")     // 03:00 every day, JVM default time zone
@@ -166,9 +169,16 @@ void nightlyCompaction() { }
 ```
 
 5, 6 or 7 space-separated fields (`[second] minute hour day-of-month month day-of-week [year]`),
-`* , - / ?`, `JAN`–`DEC`, `SUN`–`SAT`. Quartz modifiers `L`, `W`, `#`, `C` are **not** supported and
+`* , - / ?`, month aliases `JAN`–`DEC` and day aliases `SUN`–`SAT` (including ranges, lists and steps
+such as `JUL-OCT`, `JUL/2`, `WED-FRI`). Quartz modifiers `L`, `W`, `#`, `C` are **not** supported and
 `@ScheduleWithCron` is still in-process only. The expression is parsed while the graph is being built,
 so a bad expression fails startup with `IllegalArgumentException`, not at compile time.
+
+**Daylight-saving transitions** (JVM default zone): a local time that does not exist on the
+spring-forward day is **skipped**, not shifted — `0 30 2 * * ?` in `Europe/Berlin` does not fire on the
+day 02:30 is missing. A local time that occurs twice on the fall-back day fires **twice**, once per
+occurrence, in instant order. Schedule daily jobs outside the transition hour, or run the JVM in UTC,
+if that matters.
 
 Details, config form and the routing rule against Quartz:
 [references/jdk-scheduling-reference.md](references/jdk-scheduling-reference.md).
@@ -249,7 +259,10 @@ Defaults below are the ones in source — nothing here is aspirational.
 
 ```hocon
 scheduling {
-  jdk.shutdownWait = 30s         # executor termination grace period (default 30s)
+  jdk {
+    shutdownWait = 30s              # graceful drain budget for running jobs (default 30s)
+    maxConcurrentExecutions = 100   # cap on runs executing at once (default Integer.MAX_VALUE = unlimited)
+  }
 
   telemetry {
     logging.enabled = false      # default false
@@ -260,7 +273,8 @@ scheduling {
 ```
 
 There is **no `scheduling.threads` key in Kora 2.0.** Writing one is not an error — it is an unknown
-HOCON key, silently ignored.
+HOCON key, silently ignored. Runs are virtual threads, so there is no pool to size; the only knob is the
+concurrency cap `scheduling.jdk.maxConcurrentExecutions`.
 
 Full key list, per-job overrides, metric names and span attributes:
 [references/scheduling-config-reference.md](references/scheduling-config-reference.md).
@@ -269,41 +283,43 @@ Full key list, per-job overrides, metric names and span attributes:
 
 ## Thread model
 
-Scheduled jobs run on **platform threads**, not virtual threads. `ThreadPoolSchedulingJdkExecutor`
-builds a `ScheduledThreadPoolExecutor` whose factory produces `new Thread(runnable, "kora-scheduler-N")`
-with `setDaemon(false)`, `keepAliveTime = 30s` and `allowCoreThreadTimeOut(true)`.
+`SchedulingJdkModule` provides `VirtualThreadSchedulingJdkExecutor` as the default
+`SchedulingJdkExecutor`:
 
-The core pool size is **not configurable**. It is the number of `SchedulingJobConfig` components in the
-graph — and those are generated **only for jobs declared with `config = "…"`**. Consequences, verified
-on JDK 25.0.2:
+- **one platform timer thread**, `kora-jdk-scheduler-timer` (non-daemon), only decides *when* a run is
+  due;
+- every run executes on a **fresh virtual thread** named `kora-jdk-scheduler-job-N` — threads are not
+  reused and do not inherit `InheritableThreadLocal` values;
+- `scheduling.jdk.maxConcurrentExecutions` caps how many runs execute at once across **all** jobs.
+  Default `Integer.MAX_VALUE` (unlimited); a value below 1 is treated as 1. Runs over the cap wait in a
+  FIFO queue.
 
-- N jobs declared with `config = "…"` → core pool N, those jobs can run in parallel with each other.
-- **Zero** config-driven jobs → the pool is constructed with core size 0, and a
-  `ScheduledThreadPoolExecutor` then runs on exactly **one** worker thread. Every annotation-only job in
-  the service shares it, so one slow job delays all the others.
+The executor does not depend on the jobs, and the job count does not size anything: one job or fifty,
+annotation-only or `config`-driven, a slow job no longer delays the others. Blocking calls inside a job
+(JDBC, HTTP clients) are ordinary blocking calls on a virtual thread.
 
-If jobs must not delay each other, declare them with `config = "…"` (which is good practice anyway) or
-move the heavy work off the scheduler thread.
+Set `maxConcurrentExecutions` only when the jobs share a scarce resource — for example to keep
+concurrent jobs below the JDBC pool size.
 
 ---
 
 ## Graceful shutdown
 
-The 1.x advice — "check `Thread.currentThread().isInterrupted()`" — no longer describes what happens.
-The 2.0 shutdown path never interrupts a running job:
-
 1. Graph release runs in reverse dependency order, so every job is released before the executor it
-   depends on.
-2. A job's `release()` takes the same fair lock its run holds, so it **blocks until the current run
-   returns**, then cancels the schedule with `cancel(false)` — which explicitly does *not* interrupt.
-3. Only afterwards does the executor release: `shutdown()`, wait `scheduling.jdk.shutdownWait`, and
-   `shutdownNow()` if that expires. `shutdownNow()` is the only interrupt in the whole path, and by then
-   the jobs are already quiescent.
+   depends on. A job's `release()` cancels its future schedule with `cancel(false)` and returns at
+   once — it does **not** wait for an in-flight run, and it does not interrupt it.
+2. The executor's `release()` stops accepting work and cancels every periodic task, then waits up to
+   `scheduling.jdk.shutdownWait` (default 30 s) for running jobs to finish.
+3. If the budget runs out it calls `shutdownNow()`: queued runs are dropped and **running job threads
+   are interrupted**, and it logs `SchedulingJdkExecutor failed completing graceful shutdown in PT30S`.
+   `release()` then returns without waiting further.
 
-So: **a job that never returns hangs shutdown indefinitely — `shutdownWait` does not bound it.**
-Cooperative cancellation is the job's own responsibility: bounded batches, a poll/timeout on every
-blocking call, an owned `volatile` stop flag. Keep the interrupt check only where you already block
-on something interruptible.
+So `shutdownWait` **does** bound shutdown, and an interrupt is the signal that the budget is gone. A
+job should still be short or cooperatively bounded (batch cap, in-run deadline, timeouts on blocking
+calls) so it finishes inside the budget, and it should handle `InterruptedException` /
+`Thread.currentThread().isInterrupted()` by stopping cleanly. Because the job itself no longer blocks
+release, components the job uses may be released while its last run is still draining — another reason
+to keep runs short.
 
 Patterns and the failure modes: [references/graceful-shutdown-reference.md](references/graceful-shutdown-reference.md).
 
@@ -312,7 +328,8 @@ Patterns and the failure modes: [references/graceful-shutdown-reference.md](refe
 ## Error handling
 
 A throwable escaping the job is caught by the job wrapper, recorded on the span, counted under the
-`error.type` metric tag and logged at WARN as `Scheduled Job execution failed with error`. The schedule
+`error.type` metric tag and — with `scheduling.telemetry.logging.enabled = true` — logged at WARN as
+`Scheduled Job execution failed with error`. The schedule
 survives — the next run happens as planned, for every annotation including `@ScheduleWithCron`.
 
 Kora does not retry the job for you. For retries put [`@Retryable`](../kora-aop-resilient/SKILL.md) on
@@ -330,9 +347,10 @@ in the job body.
 | `Suspend methods are not supported by the scheduling generator` | Drop `suspend`; use `StructuredTaskScope` inside a plain function for parallelism |
 | Timings from config ignored | The `config` path in the annotation and the path in the file disagree; or the key name is wrong for that annotation (`period` vs `delay`) |
 | No job metrics | `scheduling.telemetry.metrics.enabled` defaults to **`false`** — and a `MeterRegistry` component must exist |
-| Jobs serialize unexpectedly | Core pool is the count of `config`-driven jobs; with none it is a single thread |
-| Shutdown hangs | A job body that does not return; no interrupt is delivered before the executor stage |
-| `scheduling.threads` / `scheduling.shutdownWait` have no effect | Both are 1.x keys. Use `scheduling.jdk.shutdownWait`; there is no thread-count key |
+| Jobs wait for each other | `scheduling.jdk.maxConcurrentExecutions` is set too low; the default is unlimited |
+| `SchedulingJdkExecutor failed completing graceful shutdown` | A run outlived `scheduling.jdk.shutdownWait` and was interrupted — bound the run or raise the budget |
+| Daily cron job ran twice / not at all | DST fall-back repeats the local time, spring-forward skips it; move the job out of the transition hour or use UTC |
+| `scheduling.threads` / `scheduling.shutdownWait` have no effect | Both are 1.x keys. Use `scheduling.jdk.shutdownWait`; the only concurrency knob is `scheduling.jdk.maxConcurrentExecutions` |
 
 ---
 
@@ -367,19 +385,40 @@ from `io.koraframework.scheduling.jdk` — matching the annotation under test. S
 |---|---|
 | [references/jdk-scheduling-reference.md](references/jdk-scheduling-reference.md) | Per-annotation reference, generated code, cron syntax, telemetry |
 | [references/scheduling-config-reference.md](references/scheduling-config-reference.md) | Complete `scheduling.*` key set, HOCON + YAML, per-job overrides |
-| [references/graceful-shutdown-reference.md](references/graceful-shutdown-reference.md) | The real 2.0 shutdown path and cooperative-cancellation patterns |
+| [references/graceful-shutdown-reference.md](references/graceful-shutdown-reference.md) | The shutdown path, what `shutdownWait` bounds, cooperative-cancellation patterns |
 | [assets/ScheduledJobs.java.template](assets/ScheduledJobs.java.template) | Java scheduled-jobs starter |
 | [assets/ScheduledJobs.kt.template](assets/ScheduledJobs.kt.template) | Kotlin scheduled-jobs starter |
 | [scripts/setup-jdk.sh](scripts/setup-jdk.sh) | Add `scheduling-jdk`, a job template and config to a project (`--dry-run` supported) |
 
 ---
 
+## Which scheduler?
+
+Kora ships three schedulers. Same table in all three scheduling sub-skills:
+
+| Need | JDK (this skill) | Quartz | DB (db-scheduler) |
+|---|---|---|---|
+| Extra infrastructure | none | none; a JDBC JobStore + Quartz tables for persistence/clustering | a JDBC `DataSource` + one table |
+| Who runs a firing | every replica | every replica (`RAMJobStore`); one node when clustered on a JDBC JobStore | one replica, cluster-wide |
+| Survives restart | no | only with a JDBC JobStore | yes — the next execution time lives in the table |
+| Fixed rate | `@ScheduleAtFixedRate` | via a custom `Trigger` | no |
+| Fixed delay | `@ScheduleWithFixedDelay` | via a custom `Trigger` | `@ScheduleWithFixedDelay` |
+| One-shot | `@ScheduleOnce`, every process start | via a custom `Trigger` | `@ScheduleOnce`, one pending execution cluster-wide |
+| Cron | Kora `CronExpression`, 5/6/7 fields, no `L W # C` | Quartz cron, 6/7 fields, `L W # C` | db-scheduler `CronSchedule`, Spring-style 6 fields |
+| Custom trigger, misfire policy, `JobDataMap` | no | yes | no |
+| Runs on | virtual threads, cap `maxConcurrentExecutions` (unlimited) | Quartz `SimpleThreadPool` platform threads (10) | virtual threads, cap `executionParallelism` (10) |
+| Shutdown | waits `shutdownWait`, then interrupts | `waitForJobComplete`, never interrupts | waits `shutdownWait`, then interrupts |
+
+---
+
 ## Related skills
 
-- [kora-aop-scheduling-quartz](../kora-aop-scheduling-quartz/SKILL.md) — use it when you need a
-  **persistent job store, clustering / cluster-wide single execution, `@ScheduleWithTrigger` with a
-  custom Quartz `Trigger`, `@DisallowConcurrentExecution` / `@PersistJobDataAfterExecution`, or the
-  Quartz-only cron modifiers `L` `W` `#` `C`**. Plain in-process cron no longer needs it.
+- [kora-aop-scheduling-db](../kora-aop-scheduling-db/SKILL.md) — use it when a job must run **once per
+  cluster** and survive restarts: db-scheduler on a table in your own database
+- [kora-aop-scheduling-quartz](../kora-aop-scheduling-quartz/SKILL.md) — use it for
+  **`@ScheduleWithTrigger` with a custom Quartz `Trigger`, misfire policies,
+  `@DisallowConcurrentExecution` / `@PersistJobDataAfterExecution`, a Quartz JDBC JobStore, or the
+  Quartz-only cron modifiers `L` `W` `#` `C`**. Plain in-process cron does not need it.
 - [kora-di-compile](../kora-di-compile/SKILL.md) — `@Component`, `@Module`, `@Root`, graph errors
 - [kora-config-hocon](../kora-config-hocon/SKILL.md) / [kora-config-yaml](../kora-config-yaml/SKILL.md) — config sources for the `config` attribute
 - [kora-aop-logging](../kora-aop-logging/SKILL.md) — `@Log` / `@Mdc` on job methods

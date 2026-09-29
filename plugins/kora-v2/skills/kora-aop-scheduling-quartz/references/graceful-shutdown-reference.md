@@ -55,12 +55,13 @@ the advice it gave is correct for the JDK one and wrong for Quartz.
 
 | | Quartz (`scheduling-quartz`) | JDK (`scheduling-jdk`) |
 |---|---|---|
-| Component | `KoraQuartzScheduler.release()` | `ThreadPoolSchedulingJdkExecutor.release()` |
-| Call | `Scheduler.shutdown(waitForJobComplete)` | `shutdown()` → `awaitTermination(shutdownWait)` → `shutdownNow()` on timeout |
+| Component | `KoraQuartzScheduler.release()` | `VirtualThreadSchedulingJdkExecutor.release()` |
+| Call | `Scheduler.shutdown(waitForJobComplete)` | stop accepting, cancel periodic tasks → wait for running jobs up to `shutdownWait` → `shutdownNow()` on timeout |
+| Threads | Quartz `SimpleThreadPool` platform workers | one platform timer thread + a virtual thread per run |
 | Config key | `scheduling.quartz.waitForJobComplete` | `scheduling.jdk.shutdownWait` |
 | Default | `true` | `30s` |
 | Wait is bounded | **no** — `true` waits indefinitely | **yes** — capped at `shutdownWait` |
-| Running job interrupted | **never** | **yes**, once `shutdownWait` elapses (`shutdownNow()`) |
+| Running job interrupted | **never** | **yes**, once `shutdownWait` elapses (`shutdownNow()` interrupts the job's virtual thread) |
 
 So `Thread.currentThread().isInterrupted()` is a real signal on the JDK scheduler and dead code
 on Quartz. That single row is why the shared 1.x guidance had to be split. It also means the
@@ -330,3 +331,4 @@ Expected. Nothing interrupts a Quartz worker — see
 - [quartz-scheduling-reference.md](quartz-scheduling-reference.md) — annotations and generated code
 - [scheduling-config-reference.md](scheduling-config-reference.md) — `scheduling.quartz.*` keys
 - [kora-di-runtime](../../kora-di-runtime/SKILL.md) — `Lifecycle`, `@Root` and graph release order
+- [kora-aop-scheduling-db](../../kora-aop-scheduling-db/SKILL.md) — db-scheduler shutdown (`scheduling.dbScheduler.shutdownWait`, then interrupt)

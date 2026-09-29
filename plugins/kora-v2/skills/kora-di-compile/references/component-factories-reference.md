@@ -364,6 +364,10 @@ default ServiceB serviceB(ValueOf<ServiceA> a) { return new ServiceB(a); }
 ```
 
 The error prints the whole cycle and the `Fix:` list suggests `ValueOf<T>` or `PromiseOf<T>`.
+The same error is reported when the cycle runs through an `All<T>` parameter — for example a
+`GraphCondition` that injects `All<Foo>` while one `Foo` is `@Conditional` on that very condition.
+The processor can substitute a generated proxy for a single component but never for a collection,
+so there the only fix is to remove the back-edge.
 
 ### `@FactoryModule` on a normal provider
 

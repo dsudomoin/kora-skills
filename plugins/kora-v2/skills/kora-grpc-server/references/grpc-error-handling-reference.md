@@ -1,6 +1,6 @@
 # gRPC Error Handling Reference — Kora 2.0
 
-**Framework source (authority):** [`TelemetryInterceptor`](https://github.com/kora-projects/kora/blob/2.0.0.RC1/grpc/grpc-server/src/main/java/io/koraframework/grpc/server/interceptor/TelemetryInterceptor.java) · [`DefaultGrpcServerLoggerFactory`](https://github.com/kora-projects/kora/blob/2.0.0.RC1/grpc/grpc-server/src/main/java/io/koraframework/grpc/server/telemetry/impl/DefaultGrpcServerLoggerFactory.java)
+**Framework source (authority):** [`TelemetryInterceptor`](https://github.com/kora-projects/kora/blob/2.0.0.RC2/grpc/grpc-server/src/main/java/io/koraframework/grpc/server/interceptor/TelemetryInterceptor.java) · [`DefaultGrpcServerLoggerFactory`](https://github.com/kora-projects/kora/blob/2.0.0.RC2/grpc/grpc-server/src/main/java/io/koraframework/grpc/server/telemetry/impl/DefaultGrpcServerLoggerFactory.java)
 **Migrated example:** [`UserServiceGrpcHandler.java`](https://github.com/kora-projects/kora-examples/blob/migration/2.0/guides/java/kora-java-guide-grpc-server-advanced-app/src/main/java/io/koraframework/guide/grpcserver/advanced/grpc/UserServiceGrpcHandler.java)
 
 Error handling on a Kora gRPC server is plain grpc-java: `io.grpc.Status`, `StatusRuntimeException`,

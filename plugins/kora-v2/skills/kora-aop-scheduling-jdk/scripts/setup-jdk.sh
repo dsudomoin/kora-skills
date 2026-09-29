@@ -255,7 +255,8 @@ Next steps (manual):
 
   2. Review $TARGET_FILE and delete the annotations you do not need.
   3. Note the 2.x config keys: 'scheduling.jdk.shutdownWait' (not 'scheduling.shutdownWait'),
-     and there is NO 'scheduling.threads' key.
+     and there is NO 'scheduling.threads' key — runs are virtual threads; cap them with
+     'scheduling.jdk.maxConcurrentExecutions' if needed (default unlimited).
   4. Job metrics and logging default to disabled — enable them under scheduling.telemetry
      if you expect to see them.
 NEXT

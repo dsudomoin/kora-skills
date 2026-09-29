@@ -40,6 +40,7 @@ grpcClient {
     telemetry {
       // Both default to FALSE in Kora 2.0 — nothing is logged or measured unless set here.
       logging.enabled = true
+      // logging.maskHeaders = ["authorization", "cookie", "set-cookie"]   // the default; a list replaces it
 
       // Metrics additionally need a MeterRegistry in the graph
       // (implementation "io.koraframework:micrometer-module"); without one the flag is accepted

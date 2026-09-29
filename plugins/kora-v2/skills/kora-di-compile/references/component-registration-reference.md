@@ -26,7 +26,7 @@ there, and only if something reachable from a `@Root` asks for it. Every compone
 
 All DI annotations live in **`io.koraframework.common.annotation`** — including `@Root`, which was
 already in `…common.annotation` under 1.x and only changed group. The table below is the complete
-package contents, verified against the published `common-2.0.0.RC1.jar`.
+package contents, verified against the published `common-2.0.0.RC2.jar`.
 
 | Annotation | Target | Purpose |
 |---|---|---|
@@ -208,7 +208,7 @@ processor artifact is on the processor path. The ones shipped with Kora 2.0:
 | a config interface / `@ConfigMapper` type | `config-annotation-processor` / `config-symbol-processor` | `ConfigLinkerExtensionFactory` |
 | `Validator<T>` for a `@Valid` type | `validation-annotation-processor` / `validation-symbol-processor` | `ValidKoraExtensionFactory` |
 | a generated gRPC stub | `grpc-client-annotation-processor` / `grpc-client-symbol-processor` | `GrpcClientExtensionFactory` |
-| a MapStruct `@Mapper` / Konvert converter | `mapstruct-java-extension`, `mapstruct-ksp-extension`, `konvert-ksp-extension` | mapper implementations |
+| a MapStruct `@Mapper` (Java) / Konvert `@Konverter` (Kotlin) | `mapstruct-java-extension` / `konvert-ksp-extension` | mapper implementations |
 
 Aspect proxies are **not** extensions: the AOP processor generates a `…_AopProxy` subclass, and the
 `@KoraApp` processor registers that instead of the annotated class.

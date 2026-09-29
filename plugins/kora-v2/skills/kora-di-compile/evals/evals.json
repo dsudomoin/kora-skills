@@ -258,6 +258,21 @@
         "Cites a real example such as UndertowPublicHttpServerModule / UndertowSystemHttpServerModule or OkHttpClientModule rather than inventing one"
       ],
       "tags": ["factory-module", "kora-2.0", "advanced"]
+    },
+    {
+      "id": "kora-di-compile-cycle-through-all",
+      "skills": ["kora-di-compile"],
+      "query": "Kora 2.0 fails to compile with 'Circular dependency found:'. My @Tag(PluginsEnabled::class) GraphCondition takes All<Plugin> to decide, and each Plugin implementation is @Conditional(tag = PluginsEnabled::class). What is going on?",
+      "expected_behavior": [
+        "Identifies the cycle: the condition depends on every Plugin, and each Plugin depends on the condition through @Conditional",
+        "Explains that the processor breaks ordinary cycles with a generated promised proxy for a single component, but never for an All<T>, TypeRef<T> or Graph claim, so a cycle through All<T> is always reported as a circular dependency",
+        "Fixes it by removing the back-edge, e.g. making the condition depend on config instead of on the plugins it gates, or moving the shared state into a separate component"
+      ],
+      "anti_behavior": [
+        "Calls the error a Kora internal error or a processor bug",
+        "Suggests wrapping the plugins in a lazy wrapper as the fix without checking that the cycle is gone"
+      ],
+      "tags": ["cycle", "conditional", "errors"]
     }
   ]
 }

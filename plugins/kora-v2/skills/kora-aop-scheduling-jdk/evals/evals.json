@@ -42,7 +42,7 @@
       "skills": ["kora-aop-scheduling-jdk"],
       "query": "Kotlin Kora 2 project: which KSP artifact do I need so @ScheduleAtFixedRate actually generates something? I found ru.tinkoff.kora:scheduling-ksp on Maven Central.",
       "expected_behavior": [
-        "Rejects scheduling-ksp: it is a Kora 1.x leftover on Maven Central and is not constrained by the 2.0.0.RC1 kora-bom",
+        "Rejects scheduling-ksp: it is a Kora 1.x leftover on Maven Central and is not constrained by the 2.0.0.RC2 kora-bom",
         "Gives ksp(\"io.koraframework:symbol-processors\") as the normal aggregate, noting the module-specific artifact is io.koraframework:scheduling-symbol-processor",
         "Keeps the version coming from platform(\"io.koraframework:kora-bom:...\") rather than pinning the artifact",
         "Adds implementation(\"io.koraframework:scheduling-jdk\") and the SchedulingJdkModule on @KoraApp"
@@ -56,9 +56,9 @@
       "expected_behavior": [
         "Explains that both are Kora 1.x keys and unknown HOCON keys are ignored without any warning, which is why the app starts green",
         "States that scheduling.shutdownWait moved to scheduling.jdk.shutdownWait (SchedulingJdkModule reads the config at path scheduling.jdk)",
-        "States that scheduling.threads was removed with no replacement key: the ScheduledThreadPoolExecutor core size is the number of jobs declared with config = \"...\"",
-        "Warns that with zero config-driven jobs the pool runs on a single thread, so annotation-only jobs serialize behind each other",
-        "Does not invent a replacement thread-count key or claim the 1.x keys still work"
+        "States that there is no thread-pool size any more: each run executes on a fresh virtual thread (kora-jdk-scheduler-job-N) dispatched by one platform timer thread (kora-jdk-scheduler-timer)",
+        "Names scheduling.jdk.maxConcurrentExecutions as the only concurrency knob — a cap on runs executing at once across all jobs, default Integer.MAX_VALUE (unlimited) — rather than a replacement for threads = 10",
+        "Does not claim the pool size equals the number of config-driven jobs, and does not claim the 1.x keys still work"
       ],
       "tags": ["scheduling", "config", "regression", "silent-failure"]
     },
@@ -80,11 +80,11 @@
       "skills": ["kora-aop-scheduling-jdk"],
       "query": "My Kora job with @ScheduleAtFixedRate(period = 60, unit = ChronoUnit.SECONDS) sometimes takes 90 seconds. Will two copies run at the same time, and should I add a synchronized block?",
       "expected_behavior": [
-        "Says no: @ScheduleAtFixedRate delegates to ScheduledExecutorService.scheduleAtFixedRate, whose contract is that a late execution starts late but never runs concurrently, and Kora additionally wraps every run of a job in a per-job ReentrantLock",
+        "Says no: the JDK executor schedules the next periodic run only after the current one returns, and each job also serialises its runs behind a per-job lock, so runs of the same job never overlap",
+        "Explains that a fixed-rate job keeps its original timetable, so after a 90 s run on a 60 s period the next run starts as soon as the long one finishes (catch-up), not in parallel",
         "Explains the real difference: fixed rate measures start-to-start and tries to keep cadence, fixed delay measures end-to-start and always leaves an idle gap",
-        "Rejects the synchronized block as unnecessary for the same job, while noting different jobs can run concurrently subject to the pool",
-        "If pool sizing comes up, says the core size is the number of jobs declared with config = \"...\" and that there is no scheduling.threads key in 2.0",
-        "Does not repeat the Kora 1.x claim that @ScheduleAtFixedRate allows overlapping executions"
+        "Rejects the synchronized block as unnecessary for the same job, while noting different jobs run concurrently on their own virtual threads, optionally capped by scheduling.jdk.maxConcurrentExecutions",
+        "Does not repeat the Kora 1.x claim that @ScheduleAtFixedRate allows overlapping executions, and does not mention a scheduling.threads key"
       ],
       "tags": ["scheduling", "concurrency", "regression"]
     },
@@ -96,6 +96,7 @@
         "Says no: Kora 2.0 ships @ScheduleWithCron in io.koraframework.scheduling.jdk.annotation, backed by the in-process CronExpression evaluator in scheduling-jdk",
         "Shows @ScheduleWithCron(\"0 0 3 * * ?\") on a no-argument method of a @Component, with 5, 6 or 7 space-separated fields",
         "Notes the expression is parsed during graph build so a bad expression fails startup with IllegalArgumentException, and that it fires in the JVM default time zone",
+        "Accepts month and day-of-week aliases in lists, ranges and steps (e.g. JUL-OCT, WED-FRI, JUL/2)",
         "Notes the Quartz-only modifiers L, W, # and C are not supported by the JDK evaluator",
         "Does not add the scheduling-quartz artifact or QuartzModule for this requirement"
       ],
@@ -107,8 +108,8 @@
       "query": "We run four replicas of a Kora service and a nightly reconciliation job must execute exactly once across the cluster and survive restarts. Can the JDK scheduler do that?",
       "expected_behavior": [
         "Says no: scheduling-jdk holds no state, so every replica runs every job and nothing survives the process",
-        "Routes to the kora-aop-scheduling-quartz skill for a persistent JDBC job store, clustering and misfire handling",
-        "Distinguishes clearly: plain in-process cron is fine on the JDK scheduler via @ScheduleWithCron, but persistence, clustering, @ScheduleWithTrigger, @DisallowConcurrentExecution and Quartz-only cron modifiers are the Quartz module's job",
+        "Routes to the kora-aop-scheduling-db skill (io.koraframework:scheduling-db-scheduler, DbSchedulerModule, @ScheduleWithCron from io.koraframework.scheduling.db.scheduler.annotation): one execution per firing across replicas, next execution time persisted in a database table",
+        "Mentions Quartz with a clustered JDBC JobStore (kora-aop-scheduling-quartz) as the alternative when Quartz triggers, misfire policies or L/W/#/C cron are needed",
         "Does not invent a cluster or persistence option on the JDK annotations"
       ],
       "tags": ["scheduling", "routing", "advanced"]
@@ -116,13 +117,13 @@
     {
       "id": "kora-aop-scheduling-jdk-graceful-shutdown",
       "skills": ["kora-aop-scheduling-jdk"],
-      "query": "My Kora 2 batch import job processes a long list and blocks shutdown for minutes. I already check Thread.currentThread().isInterrupted() in the loop but it never triggers. What is going on?",
+      "query": "My Kora 2 batch import job processes a long list. On shutdown the service waits about 30 seconds, logs 'SchedulingJdkExecutor failed completing graceful shutdown in PT30S', and the job seems to keep going. What is happening and how should I write the job?",
       "expected_behavior": [
-        "Explains that Kora 2.0 never interrupts a running scheduled job: the job's release() blocks on the same lock the run holds until the method returns, and it cancels the schedule with cancel(false), which does not interrupt",
-        "Explains that scheduling.jdk.shutdownWait is the executor's awaitTermination budget after the jobs are already stopped, so it does not bound a running job",
-        "Recommends cooperative cancellation instead: a bounded batch per run, an in-run deadline, and timeouts on every blocking call, keeping the work unit well under the container kill timeout",
-        "Keeps interrupt handling only where the code genuinely blocks on something interruptible, rather than as the shutdown mechanism",
-        "Does not tell the user to raise scheduling.shutdownWait (a 1.x key) or claim SIGTERM interrupts the job"
+        "Explains the shutdown path: the job's release() cancels its next run with cancel(false) and returns immediately; the executor then waits up to scheduling.jdk.shutdownWait (default 30s) for running jobs",
+        "Explains that when shutdownWait expires the executor calls shutdownNow(), which interrupts running job threads and logs the 'failed completing graceful shutdown' warning, and that release() does not wait again afterwards",
+        "Tells the job to honour the interrupt: check Thread.currentThread().isInterrupted() in the loop and restore the flag instead of swallowing InterruptedException",
+        "Recommends finishing before the interrupt: a bounded batch per run or an in-run deadline below shutdownWait, timeouts on blocking calls, idempotent resumable work",
+        "Does not claim Kora never interrupts a scheduled job, does not claim shutdownWait fails to bound a running job, and does not use the 1.x key scheduling.shutdownWait"
       ],
       "tags": ["scheduling", "shutdown", "regression", "advanced"]
     },
@@ -144,13 +145,39 @@
       "skills": ["kora-aop-scheduling-jdk"],
       "query": "What Gradle dependencies and processors do I need to make @ScheduleAtFixedRate work in a Java Kora 2 project?",
       "expected_behavior": [
-        "Adds platform(\"io.koraframework:kora-bom:$koraVersion\") with koraVersion=2.0.0.RC1 from mavenCentral(), and io.koraframework:scheduling-jdk with no explicit version",
+        "Adds platform(\"io.koraframework:kora-bom:$koraVersion\") with koraVersion=2.0.0.RC2 from mavenCentral(), and io.koraframework:scheduling-jdk with no explicit version",
         "Includes annotationProcessor \"io.koraframework:annotation-processors\" (Kotlin: ksp(\"io.koraframework:symbol-processors\")) and explains that without it no job component is generated",
         "Extends SchedulingJdkModule on the @KoraApp interface and adds a config module such as HoconConfigModule",
         "Mentions the Java 25 toolchain requirement for Kora 2.0 artifacts",
         "Does not use ru.tinkoff.kora:kora-parent, does not pin individual io.koraframework artifact versions, and does not omit the processor"
       ],
       "tags": ["scheduling", "java", "setup", "basic"]
+    },
+    {
+      "id": "kora-aop-scheduling-jdk-thread-model",
+      "skills": ["kora-aop-scheduling-jdk"],
+      "query": "Our Kora 2 Java service has 12 @ScheduleWithFixedDelay jobs, several of them do JDBC calls. What threads do they run on, can a slow job block the others, and how do I stop them from exhausting a 10-connection Hikari pool?",
+      "expected_behavior": [
+        "States that SchedulingJdkModule provides VirtualThreadSchedulingJdkExecutor: one platform timer thread named kora-jdk-scheduler-timer plus a fresh virtual thread per run named kora-jdk-scheduler-job-N",
+        "Explains that a slow job does not delay other jobs, because each run gets its own virtual thread and the job count does not size any pool",
+        "Recommends scheduling.jdk.maxConcurrentExecutions (default Integer.MAX_VALUE, i.e. unlimited; excess runs queue FIFO) set below the JDBC pool size to cap concurrent runs",
+        "Keeps the job methods as plain blocking code on no-argument @Component methods",
+        "Does not mention ScheduledThreadPoolExecutor, kora-scheduler-N platform threads, a scheduling.threads key, or pool size derived from config-driven jobs"
+      ],
+      "tags": ["scheduling", "threading", "config", "regression"]
+    },
+    {
+      "id": "kora-aop-scheduling-jdk-cron-dst",
+      "skills": ["kora-aop-scheduling-jdk"],
+      "query": "Kora 2 JDK scheduler, server in Europe/Berlin. I have @ScheduleWithCron(\"0 30 2 * * ?\") for a daily billing export. What happens on the daylight-saving change days?",
+      "expected_behavior": [
+        "Explains the cron is evaluated in the JVM default time zone",
+        "States that on the spring-forward day 02:30 does not exist and that run is skipped (not shifted to 03:30); the next fire is 02:30 the following day",
+        "States that on the fall-back day 02:30 occurs twice and the job fires twice, once per occurrence, in instant order",
+        "Recommends moving a once-per-day job out of the 01:00-03:00 transition window or running the JVM in UTC, and making the export idempotent",
+        "Does not claim the job silently runs exactly once on both days"
+      ],
+      "tags": ["scheduling", "cron", "timezone"]
     }
   ]
 }

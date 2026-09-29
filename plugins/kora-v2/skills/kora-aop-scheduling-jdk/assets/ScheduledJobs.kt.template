@@ -47,8 +47,8 @@ class ScheduledJobs {
      */
     @ScheduleWithFixedDelay(config = "scheduling.jobs.cleanup")
     fun cleanup() {
-        // Shutdown waits for this function to return — it is never interrupted.
-        // Bound the run so shutdown latency stays predictable.
+        // Shutdown waits up to scheduling.jdk.shutdownWait, then interrupts this function.
+        // Bound the run so it finishes inside that budget.
         val deadline = Instant.now().plus(Duration.ofSeconds(20))
 
         while (Instant.now().isBefore(deadline)) {
@@ -71,6 +71,7 @@ class ScheduledJobs {
     /**
      * Cron — in-process, no Quartz. 5, 6 or 7 fields, JVM default time zone.
      * Quartz-only modifiers L, W, # and C are not supported here.
+     * DST: a skipped local time does not fire, a repeated local time fires twice.
      */
     @ScheduleWithCron("0 0 3 * * ?")
     fun nightlyCompaction() {
@@ -88,9 +89,11 @@ class ScheduledJobs {
 // application.conf (HOCON):
 //
 // scheduling {
-//   jdk.shutdownWait = 30s          # executor termination budget; default 30s.
-//                                   # NOTE: there is no `threads` key in Kora 2.x — the pool size is
-//                                   # the number of jobs declared with `config = "..."`.
+//   jdk {
+//     shutdownWait = 30s            # drain budget for running jobs, then interrupt; default 30s
+//     maxConcurrentExecutions = 50  # optional cap on concurrent runs; default unlimited.
+//                                   # No `threads` key: every run is a fresh virtual thread.
+//   }
 //   telemetry {
 //     logging.enabled = false       # default false
 //     metrics.enabled = false       # default false — job metrics are OFF unless you enable them
@@ -109,6 +112,7 @@ class ScheduledJobs {
 // scheduling:
 //   jdk:
 //     shutdownWait: "30s"
+//     maxConcurrentExecutions: 50
 //   telemetry:
 //     logging:
 //       enabled: false

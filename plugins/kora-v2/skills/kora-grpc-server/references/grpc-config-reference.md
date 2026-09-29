@@ -1,6 +1,6 @@
 # gRPC Server Configuration Reference — Kora 2.0
 
-**Config interfaces (authority):** [`GrpcServerConfig`](https://github.com/kora-projects/kora/blob/2.0.0.RC1/grpc/grpc-server/src/main/java/io/koraframework/grpc/server/GrpcServerConfig.java) · [`GrpcServerTelemetryConfig`](https://github.com/kora-projects/kora/blob/2.0.0.RC1/grpc/grpc-server/src/main/java/io/koraframework/grpc/server/telemetry/GrpcServerTelemetryConfig.java) · [`TelemetryConfig`](https://github.com/kora-projects/kora/blob/2.0.0.RC1/telemetry/telemetry-common/src/main/java/io/koraframework/telemetry/common/TelemetryConfig.java)
+**Config interfaces (authority):** [`GrpcServerConfig`](https://github.com/kora-projects/kora/blob/2.0.0.RC2/grpc/grpc-server/src/main/java/io/koraframework/grpc/server/GrpcServerConfig.java) · [`GrpcServerTelemetryConfig`](https://github.com/kora-projects/kora/blob/2.0.0.RC2/grpc/grpc-server/src/main/java/io/koraframework/grpc/server/telemetry/GrpcServerTelemetryConfig.java) · [`TelemetryConfig`](https://github.com/kora-projects/kora/blob/2.0.0.RC2/telemetry/telemetry-common/src/main/java/io/koraframework/telemetry/common/TelemetryConfig.java)
 **Migrated configs:** [`kora-java-grpc-server/application.conf`](https://github.com/kora-projects/kora-examples/blob/migration/2.0/examples/java/kora-java-grpc-server/src/main/resources/application.conf) · [`kora-java-guide-grpc-server-advanced-app/application.conf`](https://github.com/kora-projects/kora-examples/blob/migration/2.0/guides/java/kora-java-guide-grpc-server-advanced-app/src/main/resources/application.conf)
 
 ## Contents
@@ -50,12 +50,13 @@ package).
 
 ## 3. Telemetry properties and their real defaults
 
-`GrpcServerTelemetryConfig extends TelemetryConfig` and narrows the three nested types without
-overriding a single default, so the framework-wide `TelemetryConfig` defaults apply verbatim:
+`GrpcServerTelemetryConfig extends TelemetryConfig`; the framework-wide `TelemetryConfig` defaults
+apply verbatim, and the logging section adds one key, `maskHeaders`:
 
 | Property | Type | Default | |
 |---|---|---|---|
 | `telemetry.logging.enabled` | `boolean` | **`false`** | ⚠ off |
+| `telemetry.logging.maskHeaders` | `Set<String>` | `["authorization", "cookie", "set-cookie"]` | metadata keys whose values are masked in logs |
 | `telemetry.metrics.enabled` | `boolean` | **`false`** | ⚠ off |
 | `telemetry.metrics.slo` | `Duration[]` | `1, 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000, 90000` ms | |
 | `telemetry.metrics.tags` | `Map<String,String>` | `{}` | added to every metric |
@@ -117,7 +118,8 @@ Field detail scales with the logger level:
 
 - `INFO` — `serverName`, `serverPort`, `serviceName`, `operation`, and on the response
   `processingTime` (ms), `status`, `exceptionType`.
-- `DEBUG` on the request logger — adds `headers`.
+- `DEBUG` on the request logger — adds `headers` (the request metadata, one `key: value` line per
+  value; `-bin` values Base64-encoded), with the `maskHeaders` keys masked.
 - `TRACE` on either logger — adds `body` (the protobuf message rendered via
   `DefaultGrpcServerBodyConverter`).
 
@@ -129,7 +131,47 @@ logging.levels {
 ```
 
 Bodies are protobuf payloads: turning on `TRACE` will put request and response contents into the
-log stream. Do not do that on a service handling personal data.
+log stream **unmasked**. Do not do that on a service handling personal data unless you replace the
+body converter (below).
+
+### Log masking
+
+| What | Selected by | Masked by | Default |
+|---|---|---|---|
+| Metadata values (`DEBUG`) | `telemetry.logging.maskHeaders` | `@Tag(GrpcServerTelemetry.class) MaskingStrategy` | `authorization`, `cookie`, `set-cookie` → `***` |
+| Message bodies (`TRACE`) | — | a `DefaultGrpcServerBodyConverter` you provide | protobuf `toString()`, nothing masked |
+
+- `maskHeaders` **replaces** its default — restate `authorization`, `cookie`, `set-cookie` next to
+  your own keys. Keys are lower-cased before matching; gRPC metadata keys are lower-case anyway.
+  A binary key (`x-token-bin`) is matched by its full name and the strategy receives the raw
+  `byte[]`.
+- There is no `mask` key; the replacement text is the `MaskingStrategy`
+  (`io.koraframework.logging.common.masking`, tag
+  `io.koraframework.grpc.server.telemetry.GrpcServerTelemetry`). A tagged component of your own
+  replaces the module's `@DefaultComponent`:
+
+```java
+@Tag(GrpcServerTelemetry.class)
+default MaskingStrategy grpcServerMaskingStrategy() {
+    return new MaskingKeepLast("***", 4);
+}
+```
+
+```kotlin
+@Tag(GrpcServerTelemetry::class)
+fun grpcServerMaskingStrategy(): MaskingStrategy = MaskingKeepLast("***", 4)
+```
+
+- Payloads are not run through a `DataMasker`. To redact them, subclass
+  `DefaultGrpcServerBodyConverter` (`io.koraframework.grpc.server.telemetry.impl`) and override
+  `convertRequestMessage(String service, String method, Metadata requestHeaders, @Nullable Object requestMessage)`
+  and `convertResponseMessage(Object message)` — or the shared `convertMessage(@Nullable Object)` —
+  then return it from a factory method typed `DefaultGrpcServerBodyConverter`; the telemetry
+  factory picks it up. Returning `null` omits the body.
+
+The shared masking model (`MaskingStrategy`, ready-made strategies, `DataMasker` for JSON/XML
+payloads on other transports) is described in
+[kora-aop-logging → masking](../../kora-aop-logging/references/logging-masking.md).
 
 ## 5. Full HOCON / YAML
 
@@ -152,6 +194,7 @@ grpcServer {
   telemetry {
     logging {
       enabled = true                # DEFAULT false — must be set explicitly
+      maskHeaders = [ "authorization", "cookie", "set-cookie", "x-api-key" ]   # replaces the default set
     }
     metrics {
       enabled = true                # DEFAULT false — must be set explicitly
@@ -182,6 +225,7 @@ grpcServer:
   telemetry:
     logging:
       enabled: true       # DEFAULT false
+      maskHeaders: [ "authorization", "cookie", "set-cookie", "x-api-key" ]
     metrics:
       enabled: true       # DEFAULT false
       slo: [ 1, 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000, 90000 ]
@@ -213,7 +257,7 @@ grpcServer.port = ${?GRPC_PORT}     # optional override of the literal above
 and a `@Tag`; the `@Tag(Tag.Factory.class)` claims inside then resolve to **that** tag, so its
 handlers and interceptors must carry the same tag. This is not a pattern any migrated example
 exercises — verify it against
-[`GrpcServerFactoryModule`](https://github.com/kora-projects/kora/blob/2.0.0.RC1/grpc/grpc-server/src/main/java/io/koraframework/grpc/server/GrpcServerFactoryModule.java)
+[`GrpcServerFactoryModule`](https://github.com/kora-projects/kora/blob/2.0.0.RC2/grpc/grpc-server/src/main/java/io/koraframework/grpc/server/GrpcServerFactoryModule.java)
 before relying on it.
 
 ## 7. Common issues

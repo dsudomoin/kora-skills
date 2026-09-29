@@ -124,7 +124,7 @@
       "expected_behavior": [
         "Recommends the lighter scheduling-jdk module with @ScheduleAtFixedRate or @ScheduleWithFixedDelay from io.koraframework.scheduling.jdk.annotation",
         "Explains Quartz earns its place for custom org.quartz.Trigger instances, misfire policies, JobExecutionContext/JobDataMap, or a persistent/clustered job store",
-        "Warns that both modules ship a @ScheduleWithCron in different packages, so the import decides which scheduler runs the job",
+        "Warns that the JDK, Quartz and DB modules each ship a @ScheduleWithCron in different packages, so the import decides which scheduler runs the job",
         "Does not add io.koraframework:scheduling-quartz for a plain fixed interval",
         "Does not reference a non-Kora @Scheduled annotation"
       ],
@@ -185,6 +185,19 @@
         "Does not claim Quartz jobs are virtual threads and does not confuse this with the JDK scheduler's executor"
       ],
       "tags": ["quartz", "threading", "kora-2.0"]
+    },
+    {
+      "id": "kora-aop-scheduling-quartz-vs-db-cluster",
+      "skills": ["kora-aop-scheduling-quartz", "kora-aop-scheduling-db"],
+      "query": "Kora 2.0, three replicas, PostgreSQL already in place. A cron job must fire once per hour on exactly one replica and keep its schedule across deploys. We don't need custom triggers or misfire policies. Do I have to set up a clustered Quartz JDBC JobStore?",
+      "expected_behavior": [
+        "Says no: kora-aop-scheduling-db (io.koraframework:scheduling-db-scheduler, DbSchedulerModule) covers this with db-scheduler on one table in the existing database",
+        "Uses @ScheduleWithCron from io.koraframework.scheduling.db.scheduler.annotation, not the Quartz or JDK annotation of the same simple name",
+        "Keeps Quartz with a clustered JDBC JobStore for needs the DB scheduler lacks: custom org.quartz.Trigger, misfire policies, JobDataMap, L/W/#/C cron",
+        "Explains that the JDK scheduler is not an option because every replica runs every job and nothing is persisted",
+        "Does not add io.koraframework:scheduling-quartz or Quartz qrtz_* tables for this requirement"
+      ],
+      "tags": ["quartz", "decision", "routing"]
     }
   ]
 }

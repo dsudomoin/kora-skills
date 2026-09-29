@@ -80,6 +80,9 @@ interface Application : HoconConfigModule, LogbackModule
 fun main() { KoraApplication.run(ApplicationGraph::graph) }
 ```
 
+`run(supplier)` = `run(supplier, true)`: blocks until the shutdown hook released the graph.
+`run(supplier, false)` returns after init.
+
 ### Tagged
 ```java
 public final class RedisTag { private RedisTag() {} }
@@ -139,7 +142,7 @@ configurations {
 }
 
 dependencies {
-    koraBom platform("io.koraframework:kora-bom:$koraVersion")   // koraVersion=2.0.0.RC1
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")   // koraVersion=2.0.0.RC2
     annotationProcessor "io.koraframework:annotation-processors"
 }
 
@@ -149,8 +152,8 @@ java { toolchain { languageVersion = JavaLanguageVersion.of(25) } }
 ### Kotlin
 ```kotlin
 plugins {
-    kotlin("jvm") version "2.4.10"
-    id("com.google.devtools.ksp") version "2.3.11"
+    kotlin("jvm") version "2.4.20"
+    id("com.google.devtools.ksp") version "2.3.12"
 }
 
 dependencies {
@@ -170,7 +173,7 @@ kotlin {
 |---|---|
 | `No component found for dependency:` | add `@Component` / a provider / `extends` the module — read the `Note:` block for tag mismatches |
 | `Multiple components match dependency:` | distinct `@Tag`, or `@DefaultComponent` on the fallback |
-| `Circular dependency found:` | `ValueOf<T>` or `PromiseOf<T>` on one side |
+| `Circular dependency found:` | `ValueOf<T>` or `PromiseOf<T>` on one side; through `All<T>` — split out the shared piece |
 | `@Component class must have exactly one public constructor.` | keep one public constructor |
 | `@KoraApp can only be applied to interfaces.` | make it an interface (same for `@Module`) |
 | `Kora submodule was not generated yet:` | add the processor to that Gradle subproject |

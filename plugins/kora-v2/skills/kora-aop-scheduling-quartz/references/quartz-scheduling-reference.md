@@ -414,4 +414,5 @@ The nested-`@Tag` form is a hard compile error in 2.0 —
 - [scheduling-config-reference.md](scheduling-config-reference.md) — config keys, telemetry, JDBC JobStore, clustering
 - [graceful-shutdown-reference.md](graceful-shutdown-reference.md) — shutdown semantics
 - [kora-aop-scheduling-jdk](../../kora-aop-scheduling-jdk/SKILL.md) — the JDK scheduler
+- [kora-aop-scheduling-db](../../kora-aop-scheduling-db/SKILL.md) — cluster-wide jobs on db-scheduler, without Quartz
 - [Quartz cron trigger tutorial](https://www.quartz-scheduler.org/documentation/quartz-2.3.0/tutorials/crontrigger.html) — upstream cron grammar

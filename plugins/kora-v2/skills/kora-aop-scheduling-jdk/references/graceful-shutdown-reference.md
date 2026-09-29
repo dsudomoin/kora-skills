@@ -1,7 +1,7 @@
 # Graceful Shutdown Reference (JDK scheduler)
 
-How `io.koraframework:scheduling-jdk` actually stops jobs in Kora 2.0, and what a job must do to be a
-good citizen during shutdown.
+How `io.koraframework:scheduling-jdk` stops jobs, and what a job must do to be a good citizen during
+shutdown.
 
 For Quartz jobs (`scheduling.quartz.waitForJobComplete`) see the sibling skill
 [kora-aop-scheduling-quartz](../../kora-aop-scheduling-quartz/SKILL.md).
@@ -9,7 +9,7 @@ For Quartz jobs (`scheduling.quartz.waitForJobComplete`) see the sibling skill
 ## Contents
 
 - [The shutdown path](#the-shutdown-path)
-- [Why the 1.x interrupt advice no longer applies](#why-the-1x-interrupt-advice-no-longer-applies)
+- [Handling the interrupt](#handling-the-interrupt)
 - [What `shutdownWait` bounds](#what-shutdownwait-bounds)
 - [Cooperative cancellation patterns](#cooperative-cancellation-patterns)
 - [Resource cleanup](#resource-cleanup)
@@ -21,47 +21,63 @@ For Quartz jobs (`scheduling.quartz.waitForJobComplete`) see the sibling skill
 
 ## The shutdown path
 
-Kora releases the graph in reverse dependency order: every node takes read locks on its dependencies
-before releasing itself, so a dependency can only be released after all its dependents are done. Each
-scheduled job depends on the executor, so the order is fixed:
+Kora releases the graph in reverse dependency order: a node is released only after every node that
+depends on it has been released. Each scheduled job depends on the `SchedulingJdkExecutor`, and the
+executor depends on nothing but its config, so the order is fixed:
 
-1. **The job releases first.** `release()` acquires the same fair `ReentrantLock` that wraps every run
-   of that job, so it **blocks until the in-flight run returns**. It then cancels the schedule with
-   `cancel(false)` — the `false` means *do not interrupt the running task*.
-2. **Then the executor releases.** `shutdown()`, then `awaitTermination(scheduling.jdk.shutdownWait)`,
-   then `shutdownNow()` if that expires. `shutdownNow()` is the only interrupt anywhere in the path —
-   and by the time it can fire, every job has already stopped.
+1. **The job releases first — and returns immediately.** `release()` marks the job stopped and cancels
+   its pending schedule with `cancel(false)`. It does not wait for an in-flight run and does not
+   interrupt it; a run that is already executing keeps going, and no later run of that job starts.
+2. **Then the executor releases** (`VirtualThreadSchedulingJdkExecutor.release()`):
+   - stops accepting work and cancels every remaining periodic task;
+   - shuts the timer thread down and waits for running job threads, both within one shared
+     `scheduling.jdk.shutdownWait` budget (default 30 s);
+   - if the budget expires: `shutdownNow()` — queued runs are dropped, **running job threads are
+     interrupted**, outstanding futures are cancelled — and it logs
+     `SchedulingJdkExecutor failed completing graceful shutdown in PT30S`;
+   - it does not wait again after the interrupt; it logs `SchedulingJdkExecutor stopped in …` and
+     returns.
 
 ```
 SIGTERM
-  └─ job.release()        → waits for the current run to return (no timeout, no interrupt)
-      └─ future.cancel(false)
-  └─ executor.release()   → shutdown() → awaitTermination(shutdownWait) → shutdownNow()
+  └─ job.release()        → cancel(false) the next run; the current run keeps going
+  └─ executor.release()   → stop accepting, cancel periodic tasks
+                           → wait for running jobs, up to shutdownWait
+                           → timeout: shutdownNow() → running jobs are interrupted
 ```
+
+Two consequences:
+
+- Shutdown latency caused by jobs is bounded by `shutdownWait`. A job that ignores the interrupt keeps
+  running on a virtual thread, but it no longer holds up `release()`.
+- Because the job's own `release()` returns at once, the components the job uses (repositories, a
+  `JdbcDataSource`, HTTP clients) can be released while its last run is still draining in the
+  executor. A run that is still busy late in shutdown may see closed resources — keep runs short.
 
 ---
 
-## Why the 1.x interrupt advice no longer applies
+## Handling the interrupt
 
-Kora 1.x guidance was "check `Thread.currentThread().isInterrupted()` in your loop". In 2.0 the
-framework **never interrupts a running scheduled job**:
+The interrupt from `shutdownNow()` is the only signal a running job gets, and it only arrives once
+`shutdownWait` has elapsed. Treat it as "stop now":
 
-- `cancel(false)` is explicitly non-interrupting.
-- The executor's `shutdownNow()` happens only after every job has already been released, i.e. after the
-  runs it would have interrupted have already returned.
+```java
+@ScheduleWithFixedDelay(config = "scheduling.jobs.import")
+void importRecords() {
+    for (var page : source.pages()) {
+        if (Thread.currentThread().isInterrupted()) {
+            return;                              // budget is gone, leave the rest for the next start
+        }
+        sink.upsert(page);
+    }
+}
+```
 
-An `isInterrupted()` check is therefore not wrong, just inert — it will not fire during a normal
-shutdown, and code that relies on it to stop will not stop.
+Blocking calls that honour interrupts (`Thread.sleep`, `BlockingQueue.poll`, `Future.get`) throw `InterruptedException` or fail; restore the flag
+(`Thread.currentThread().interrupt()`) and return. Do not swallow the interrupt and loop again.
 
-The real consequence is the opposite of what the 1.x text implied:
-
-> **A job body that does not return blocks shutdown indefinitely.** `shutdownWait` does not bound it.
-> The process only dies when the container's own kill timeout (`SIGKILL` after
-> `terminationGracePeriodSeconds` in Kubernetes, `docker stop -t`) runs out.
-
-Keep an `isInterrupted()` / `InterruptedException` path only where you genuinely block on something
-interruptible (`Thread.sleep`, `BlockingQueue.poll`, `Future.get`) — it is correct hygiene there, it is
-simply not the shutdown mechanism.
+Relying on the interrupt alone still wastes the whole budget, so prefer to be done **before** it
+fires — that is what the patterns below are for.
 
 ---
 
@@ -71,27 +87,23 @@ simply not the shutdown mechanism.
 scheduling.jdk.shutdownWait = 30s   # default 30s
 ```
 
-It is the executor's `awaitTermination` budget: how long the pool waits for its worker threads to
-finish draining before `shutdownNow()`. Because jobs are already released and quiescent at that point,
-it is normally consumed in milliseconds. If it does expire you get:
+It is the executor's graceful drain budget: from the start of `release()`, how long running job runs
+(and delayed one-shot tasks submitted directly to the executor) get to finish before `shutdownNow()`
+interrupts them. Keep it comfortably below the container kill timeout so the interrupt path gets to
+run: `terminationGracePeriodSeconds` in Kubernetes (default 30 s), `docker stop -t` (default 10 s).
 
-```
-WARN  SchedulingJdkExecutor failed completing graceful shutdown in PT30S
-```
+A thread your job body started itself is **not** an executor worker: nothing waits for it and nothing
+interrupts it. Own its lifecycle explicitly.
 
-which means a pool worker was still busy with work that no job release cancelled — in practice, tasks
-submitted straight to the injected `SchedulingJdkExecutor` component rather than declared with a
-scheduling annotation. A thread your job body started itself is *not* a pool worker, so it does not
-produce this warning (and is not waited for at all).
-
-> The 1.x key `scheduling.shutdownWait` is gone. It is now an unknown HOCON key: ignored silently, no
+> The 1.x key `scheduling.shutdownWait` is not read. It is an unknown HOCON key: ignored silently, no
 > warning, and the default 30 s applies.
 
 ---
 
 ## Cooperative cancellation patterns
 
-Since the framework will wait rather than interrupt, the job decides how quickly shutdown can proceed.
+The framework waits up to `shutdownWait` and then interrupts. The job decides whether it finishes
+cleanly inside that window or is cut off.
 
 ### 1. Bound the batch — the default choice
 
@@ -134,14 +146,13 @@ void importRecords() {
 }
 ```
 
-Keep the deadline comfortably below the container's kill timeout and you have a hard upper bound on
-shutdown latency, whatever the data looks like.
+Keep the deadline below `scheduling.jdk.shutdownWait` and a run always finishes before the interrupt,
+whatever the data looks like.
 
 ### 3. An owned stop flag, for a job that must poll
 
-If the job genuinely has to loop, it needs a flag that a `Lifecycle` component can flip. Kora releases
-the flag holder and the job in dependency order, so a job that depends on the flag is released first —
-which is exactly why the flag must be flipped by something the *job* depends on.
+If the job genuinely has to loop, it can poll a flag that a `Lifecycle` component flips. Kora releases
+the flag holder only after the jobs that depend on it.
 
 ```java
 @Component
@@ -157,8 +168,9 @@ public final class ShutdownFlag implements Lifecycle {
 ```
 
 The flag flips when `ShutdownFlag` is released, which happens **after** the jobs depending on it are
-released — so on its own it does not shorten the current run. Use it for background threads a job
-spawned, not as the primary mechanism. Prefer bounded batches and deadlines.
+released — job release returns immediately, so this can be early in shutdown, but the ordering is not
+guaranteed relative to the executor's wait. Use it for background threads a job spawned, not as the
+primary mechanism. Prefer bounded batches, deadlines and the interrupt check.
 
 ### 4. Blocking calls
 
@@ -175,8 +187,8 @@ httpClient.get(...)                     // with a per-request timeout configured
 
 ## Resource cleanup
 
-Nothing special applies during shutdown — because the run is allowed to finish, ordinary
-try-with-resources is enough and `finally` always executes.
+Ordinary try-with-resources is enough: a run either finishes inside `shutdownWait` or is interrupted,
+and in both cases `finally` executes on the way out.
 
 ```java
 @ScheduleAtFixedRate(config = "scheduling.jobs.report")
@@ -201,12 +213,12 @@ cancelled schedule may mean the next run never happens.
 |---|---|
 | < 1 s | Nothing to do — it returns before shutdown notices |
 | 1–30 s | Fine as-is; make sure blocking calls have timeouts |
-| > 30 s | Bounded batch or an in-run deadline; otherwise shutdown waits for the whole run |
+| > 30 s | Bounded batch or an in-run deadline; otherwise the run is interrupted once `shutdownWait` expires |
 | Unbounded / streaming | Must not exist as a scheduled job. Bound it, or make it a `Lifecycle` component with its own thread and stop protocol |
 
-The container-level number to stay under is the kill timeout —
-`terminationGracePeriodSeconds` (Kubernetes, default 30 s) or `docker stop -t` (default 10 s). Anything
-longer than that is not a graceful shutdown, it is a `SIGKILL` with extra steps.
+Two numbers to stay under: `scheduling.jdk.shutdownWait` (after which the run is interrupted) and, above
+it, the container kill timeout — `terminationGracePeriodSeconds` (Kubernetes, default 30 s) or
+`docker stop -t` (default 10 s). Past the kill timeout it is not a graceful shutdown, it is a `SIGKILL`.
 
 ---
 
@@ -243,7 +255,7 @@ public final class DataImportJob {
         var deadline = Instant.now().plus(RUN_BUDGET);
         var imported = 0;
 
-        while (Instant.now().isBefore(deadline)) {
+        while (Instant.now().isBefore(deadline) && !Thread.currentThread().isInterrupted()) {
             var page = source.nextPage(PAGE);      // bounded, resumable
             if (page.isEmpty()) {
                 break;
@@ -267,31 +279,32 @@ scheduling.jobs.import {
 }
 ```
 
-Three properties make this shutdown-safe: the run is time-bounded, each page is idempotent so a
-truncated run is not a lost run, and progress is durable in the source cursor rather than in memory.
+Three properties make this shutdown-safe: the run is time-bounded (20 s, inside the default 30 s
+`shutdownWait`) and also stops on interrupt, each page is idempotent so a truncated run is not a lost
+run, and progress is durable in the source cursor rather than in memory.
 
 ---
 
 ## Troubleshooting
 
-### Shutdown hangs after SIGTERM
+### Shutdown takes `shutdownWait` every time
 
-The current run has not returned. Nothing interrupts it. Find the job in a thread dump — the scheduler
-threads are named `kora-scheduler-N` — and give it a bounded batch or a deadline.
+A run is still busy when release starts and uses the whole budget. Find it in a thread dump: the timer
+thread is `kora-jdk-scheduler-timer`, job runs are virtual threads named `kora-jdk-scheduler-job-N`
+(dump virtual threads with `jcmd <pid> Thread.dump_to_file`). Give the job a bounded batch or a
+deadline below `shutdownWait`.
 
 ### `SchedulingJdkExecutor failed completing graceful shutdown in PT30S`
 
-A pool worker is still busy after all jobs were released. Every annotated job has been cancelled by
-then, so the work came from somewhere else — typically a component that injected
-`SchedulingJdkExecutor` and submitted to it directly. Give that work its own `Lifecycle`, or raise
-`scheduling.jdk.shutdownWait` if it is legitimately that long. Note that a thread a job body spawned
-itself is not a pool worker: it never triggers this warning, and nothing waits for it — own its
-lifecycle explicitly.
+A run outlived `scheduling.jdk.shutdownWait` and was interrupted by `shutdownNow()`. Either bound the
+run, or raise `scheduling.jdk.shutdownWait` if the work is legitimately that long — and keep it below
+the container kill timeout.
 
-### The `isInterrupted()` check never fires
+### The job keeps running after that warning
 
-Expected — see [above](#why-the-1x-interrupt-advice-no-longer-applies). It is not the shutdown signal in
-Kora 2.0.
+It ignores the interrupt. Check `Thread.currentThread().isInterrupted()` in loops and do not swallow
+`InterruptedException`. The executor does not wait after interrupting, so such a run only ends with
+the JVM.
 
 ### A run is cut off mid-way and data is inconsistent
 

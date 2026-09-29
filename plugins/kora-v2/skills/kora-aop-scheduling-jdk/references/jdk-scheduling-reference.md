@@ -3,7 +3,7 @@
 **Artifact:** `io.koraframework:scheduling-jdk`
 **Module:** `io.koraframework.scheduling.jdk.SchedulingJdkModule`
 **Annotations:** `io.koraframework.scheduling.jdk.annotation.*`
-**Runtime:** `java.util.concurrent.ScheduledThreadPoolExecutor`, in-process, non-persistent
+**Runtime:** `VirtualThreadSchedulingJdkExecutor` — one platform timer thread, a fresh virtual thread per run; in-process, non-persistent
 
 ## Contents
 
@@ -11,7 +11,7 @@
 - [What the processor generates](#what-the-processor-generates)
 - [Method requirements](#method-requirements)
 - [Cron syntax](#cron-syntax)
-- [JDK vs Quartz](#jdk-vs-quartz)
+- [JDK vs Quartz vs DB](#jdk-vs-quartz-vs-db)
 - [Error handling](#error-handling)
 - [Telemetry](#telemetry)
 
@@ -30,10 +30,10 @@ All four target `METHOD`, have `RetentionPolicy.CLASS`, and expose `String confi
 | `unit` | `ChronoUnit` | `MILLIS` |
 | `config` | `String` | `""` |
 
-The period is measured **start → start**. Backed by `ScheduledExecutorService.scheduleAtFixedRate`,
-so if a run overruns the period the next run starts late; it is never started concurrently. Kora also
-holds a per-job `ReentrantLock` for the whole run, which makes non-overlap structural rather than
-incidental.
+The period is measured **start → start** against the original timetable. The executor schedules the
+next run only after the current one returns, so if a run overruns the period the next run starts as
+soon as it finishes (catching up) — never concurrently. Each job also serialises its runs behind a
+per-job lock. A `period` of 0 or less is rejected by the executor with `IllegalArgumentException`.
 
 Use for a cadence you want to keep: heartbeat, metric scrape, health poll, cache refresh.
 
@@ -87,9 +87,10 @@ void warmup() { }
 | `value` | `String` | `""` |
 | `config` | `String` | `""` |
 
-New in Kora 2.0 — an in-process cron evaluator (`io.koraframework.scheduling.jdk.CronExpression`) with
-no Quartz dependency. Each run schedules the next one from `ZonedDateTime.now()`, i.e. in the **JVM
-default time zone**; set `-Duser.timezone` / `TZ` if you need a fixed one.
+An in-process cron evaluator (`io.koraframework.scheduling.jdk.CronExpression`) with no Quartz
+dependency. After each run the job computes the next fire time from the current time in the **JVM
+default time zone** (`Clock.systemDefaultZone()`); set `-Duser.timezone` / `TZ` if you need a fixed one.
+The delay to the next fire time is kept in nanoseconds, so sub-millisecond remainders are not lost.
 
 ```java
 @ScheduleWithCron("0 0 3 * * ?")
@@ -230,6 +231,9 @@ Day-of-week also accepts `0` for Sunday.
 | `-` | inclusive range, e.g. `MON-FRI`, `9-17` |
 | `/` | step, e.g. `*/10` or `5/10` |
 
+Month (`JAN`–`DEC`) and day-of-week (`SUN`–`SAT`) aliases work everywhere a number does: single values,
+lists (`JUL,DEC`), ranges (`JUL-OCT`, `WED-FRI`) and steps (`JUL/2`).
+
 **Not supported:** the Quartz modifiers `L`, `W`, `#`, `C`. Those still require
 [kora-aop-scheduling-quartz](../../kora-aop-scheduling-quartz/SKILL.md).
 
@@ -243,6 +247,19 @@ Day-of-week also accepts `0` for Sunday.
 | `0 0 9-17 ? * MON-FRI` | hourly 09:00–17:00 on weekdays |
 | `0 0 0 25 DEC ?` | Christmas Day, midnight |
 | `0 0 0 1 JAN ? 2027` | 1 Jan 2027, midnight |
+
+### Daylight-saving transitions
+
+Fire times are searched per constant-offset interval of the zone, so transitions behave predictably:
+
+| Transition | Effect on `0 30 2 * * ?` (`Europe/Berlin`) |
+|---|---|
+| Spring forward — 02:00–02:59 does not exist | that day's 02:30 is **skipped**; next fire is 02:30 the following day |
+| Fall back — 02:00–02:59 happens twice | fires at 02:30+02:00 **and** again at 02:30+01:00 |
+| Every-second / every-minute expressions across the jump | no fire time exactly at the transition is lost |
+
+Offsets that are not whole hours (e.g. `Australia/Lord_Howe`, 30 minutes) follow the same rule. If a
+job must run exactly once per day, schedule it outside 01:00–03:00 local time or run the JVM in UTC.
 
 Cron can also come from config:
 
@@ -265,19 +282,19 @@ With no `value` on the annotation, the `cron` key is mandatory.
 
 ---
 
-## JDK vs Quartz
+## JDK vs Quartz vs DB
 
 | Need | Module |
 |---|---|
-| fixed rate / fixed delay / one-shot | **JDK** |
-| plain cron, in-process, one instance | **JDK** — `@ScheduleWithCron` |
+| fixed rate / fixed delay / one-shot, in-process | **JDK** |
+| plain cron, in-process, every replica runs it | **JDK** — `@ScheduleWithCron` |
+| exactly one execution per firing across replicas, surviving restarts | **DB** — [kora-aop-scheduling-db](../../kora-aop-scheduling-db/SKILL.md) |
 | cron with `L` / `W` / `#` / `C` | Quartz |
-| persistent job store, misfire policy | Quartz |
-| clustering — one execution across replicas | Quartz |
-| custom Quartz `Trigger` via `@ScheduleWithTrigger` | Quartz |
+| misfire policy, custom `Trigger` via `@ScheduleWithTrigger` | Quartz |
 | `@DisallowConcurrentExecution` / `@PersistJobDataAfterExecution` | Quartz |
 
-The JDK scheduler holds no state anywhere: every replica of your service runs every job.
+The JDK scheduler holds no state anywhere: every replica of your service runs every job. The full
+three-way table is in the [skill](../SKILL.md#which-scheduler).
 
 ---
 
@@ -371,6 +388,7 @@ path when you want `system.config` to mean something.
 ## See Also
 
 - [scheduling-config-reference.md](scheduling-config-reference.md) — complete configuration reference
-- [graceful-shutdown-reference.md](graceful-shutdown-reference.md) — the real 2.0 shutdown path
-- [kora-aop-scheduling-quartz](../../kora-aop-scheduling-quartz/SKILL.md) — persistence, clustering, custom triggers
+- [graceful-shutdown-reference.md](graceful-shutdown-reference.md) — the shutdown path and what `shutdownWait` bounds
+- [kora-aop-scheduling-quartz](../../kora-aop-scheduling-quartz/SKILL.md) — custom triggers, misfire policies, Quartz cron
+- [kora-aop-scheduling-db](../../kora-aop-scheduling-db/SKILL.md) — one execution per cluster, persisted in your database
 - [kora-telemetry-metrics](../../kora-telemetry-metrics/SKILL.md) — wiring the `MeterRegistry`

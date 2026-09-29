@@ -8,7 +8,7 @@ metadata:
 
 # Kora Testing JUnit (Java)
 
-> **Kora sub-skill — obey the [kora-v2 meta rules](../../SKILL.md) on every task:** **R0** ground the workspace on Kora 2.0 refs before starting (framework source at tag `2.0.0.RC1` + `kora-examples` at `migration/2.0`; `kora-docs` is 1.x only) · **R1** read this sub-skill before writing code · **R2** Kora 2.0 APIs only — no Spring/Micronaut/Quarkus, no Kora 1.x APIs, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
+> **Kora sub-skill — obey the [kora-v2 meta rules](../../SKILL.md) on every task:** **R0** ground the workspace on Kora 2.0 refs before starting (framework source at tag `2.0.0.RC2` + `kora-examples` at `migration/2.0` + Kora 2.0 docs at koraframework.io/v2, which trail the source; 1.x `kora-docs` pages are never an authority) · **R1** read this sub-skill before writing code · **R2** Kora 2.0 APIs only — no Spring/Micronaut/Quarkus, no Kora 1.x APIs, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
 
 In-process JUnit 5 tests for **Java** Kora 2.0 services. `@KoraAppTest` loads the graph class
 the annotation processor generated for your `@KoraApp`, trims it down to what the test actually
@@ -44,7 +44,7 @@ services (MockK, `lateinit var` injection, KSP wiring) use
 | `Context` passed through test helpers | `Context` no longer exists anywhere in the framework |
 | `db { … }` inside `ofString` | `jdbc { … }` |
 | `publicApiHttpPort` / `privateApiHttpPort` | `httpServer.port` / `httpServer.system.port` |
-| JUnit 5.x, Mockito 5.18 | JUnit **6.1.3**, Mockito **5.23.0** (Byte Buddy must accept Java 25) |
+| JUnit 5.x, Mockito 5.18 | JUnit **6.1.3**, Mockito **5.24.0** (Byte Buddy must accept Java 25) |
 
 ---
 
@@ -55,7 +55,7 @@ services (MockK, `lateinit var` injection, KSP wiring) use
 `gradle.properties`:
 
 ```properties
-koraVersion=2.0.0.RC1
+koraVersion=2.0.0.RC2
 junitVersion=6.1.3
 ```
 
@@ -86,7 +86,7 @@ dependencies {
     testImplementation platform("org.junit:junit-bom:$junitVersion")
     testImplementation "org.junit.jupiter:junit-jupiter"
     testImplementation "io.koraframework:test-junit5"
-    testImplementation "org.mockito:mockito-core:5.23.0"
+    testImplementation "org.mockito:mockito-core:5.24.0"
 }
 
 test {
@@ -111,7 +111,7 @@ Four things that are easy to get wrong:
 3. **`mockito-core` must be new enough for Java 25.** Kora 2.0 artifacts are class-file 69; an old
    Byte Buddy fails with `IllegalArgumentException: Java 25 (69) is not supported by the current
    version of Byte Buddy`, and it hides inside `Application graph failed to initialize with N errors`
-   with no visible suppressed exception. Use `5.23.0` (Byte Buddy 1.18.x), which is what the
+   with no visible suppressed exception. Use `5.24.0` (Byte Buddy 1.18.x), which is what the
    framework's own version catalog pins.
 4. **JVM 25 minimum.** Kora 2.0 class files cannot be loaded on anything older.
 
@@ -586,7 +586,7 @@ interactions; Awaitility covers genuinely asynchronous side effects such as a Ka
 | `Expected @KoraApp as SubModule …` (warning) then a missing component at runtime | Add `-Akora.app.submodule.enabled=true` to the **production** module's `compileJava` |
 | `No matching component was found in the application graph` | The node was pruned — inject something that depends on it, mark it `@Root`, or list it in `components` / `modules` |
 | `Expected one matching graph component, but found N` | Add `@Tag(X.class)` at the injection point |
-| `Java 25 (69) is not supported by the current version of Byte Buddy`, or `Application graph failed to initialize with N errors` with no cause | Bump `mockito-core` to `5.23.0`; check with `dependencyInsight --dependency byte-buddy --configuration testRuntimeClasspath` |
+| `Java 25 (69) is not supported by the current version of Byte Buddy`, or `Application graph failed to initialize with N errors` with no cause | Bump `mockito-core` to `5.24.0`; check with `dependencyInsight --dependency byte-buddy --configuration testRuntimeClasspath` |
 | `Config expected value, but got null at path: 'ROOT.jdbc.username'` | The `ofString` block still says `db { … }` |
 | Metrics assertions see nothing | `telemetry.metrics.enabled` defaults to `false`; enable it per component in the test config |
 | `Application config source is ambiguous` | Only one of `ofString` / `ofResourceFile` per test class |
@@ -600,16 +600,15 @@ interactions; Awaitility covers genuinely asynchronous side effects such as a Ka
 
 ## Source of truth
 
-Version-aligned authorities for Kora 2.0. The published documentation site still describes Kora 1.x
-in `ru.tinkoff.kora` terms — including any page served under a `/v2/` path, which is a copy of the
-1.x content. Do not resolve a 2.0 testing question from it; use the sources below.
-`git diff 2.0.0.RC1 HEAD -- test` in the framework repository is empty, so `master` and the
-`2.0.0.RC1` tag are interchangeable for everything in this skill.
+Version-aligned authorities for Kora 2.0, highest first. The Kora 2.0 documentation
+([JUnit5](https://koraframework.io/v2/en/documentation/junit5/)) explains concepts but can trail the
+framework — confirm every annotation, attribute and message in the source below. The 1.x pages
+(`ru.tinkoff.kora`) are never an authority for 2.0.
 
-- Framework source, tag `2.0.0.RC1`:
-  [test/test-junit5](https://github.com/kora-projects/kora/tree/2.0.0.RC1/test/test-junit5) (main sources and the extension's own tests) ·
-  [telemetry-common](https://github.com/kora-projects/kora/tree/2.0.0.RC1/telemetry/telemetry-common) ·
-  [http-server-common](https://github.com/kora-projects/kora/tree/2.0.0.RC1/http/http-server-common)
+- Framework source, tag `2.0.0.RC2`:
+  [test/test-junit5](https://github.com/kora-projects/kora/tree/2.0.0.RC2/test/test-junit5) (main sources and the extension's own tests) ·
+  [telemetry-common](https://github.com/kora-projects/kora/tree/2.0.0.RC2/telemetry/telemetry-common) ·
+  [http-server-common](https://github.com/kora-projects/kora/tree/2.0.0.RC2/http/http-server-common)
 - Migrated guide apps, branch `migration/2.0`:
   [kora-java-guide-testing-junit-app](https://github.com/kora-projects/kora-examples/tree/migration/2.0/guides/java/kora-java-guide-testing-junit-app) ·
   [kora-java-guide-testing-integration-app](https://github.com/kora-projects/kora-examples/tree/migration/2.0/guides/java/kora-java-guide-testing-integration-app) ·

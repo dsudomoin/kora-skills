@@ -27,7 +27,7 @@ Use Caffeine when the cache is per-process: small hot data, single instance, or 
 shared L2. Do not use it alone when several pods must agree on the cached value, or when the cache
 must survive a restart — that is Redis' job.
 
-The library version is pinned by the BOM (Caffeine `3.2.4` in the 2.0 line); do not add
+The library version is pinned by the BOM (Caffeine `3.3.0` in the 2.0 line); do not add
 `com.github.ben-manes.caffeine:caffeine` yourself.
 
 ---
@@ -128,9 +128,11 @@ orders.cache.telemetry {
 ```
 
 Caffeine metrics come from Micrometer's Caffeine instrumentation, not from Kora's own timers:
-`CaffeineFactory` registers a `CaffeineStatsCounter` plus the `CaffeineCacheMetrics` binder under
-the cache's config path, with `telemetry.metrics.tags` added — and only when
-`telemetry.metrics.enabled = true` **and** a `MeterRegistry` is in the graph. Kora's
+`CaffeineFactory` builds the cache with `recordStats()` and binds it with Micrometer's
+`CaffeineCacheMetrics` under the cache's config path, with `telemetry.metrics.tags` added — and only
+when `telemetry.metrics.enabled = true` **and** a `MeterRegistry` is in the graph. The published
+meters are Micrometer's standard cache set: `cache.gets` (`result` = `hit`/`miss`), `cache.puts`,
+`cache.evictions`, `cache.eviction.weight` and `cache.size`, each tagged `cache` = that name. Kora's
 `cache.operation.duration` / `cache.ratio` series are deliberately not emitted for Caffeine (the
 Caffeine metrics reporter is an empty implementation); they exist for Redis. See
 `kora-telemetry-metrics` for the metrics module itself.

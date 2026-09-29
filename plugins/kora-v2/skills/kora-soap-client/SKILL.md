@@ -8,9 +8,9 @@ metadata:
 
 # Kora SOAP Client — compile-time clients from WSDL
 
-> **Kora sub-skill — obey the [kora-v2 meta rules](../../SKILL.md) on every task:** **R0** ground the workspace on Kora 2.0 refs before starting (framework source at tag `2.0.0.RC1` + `kora-examples` at `migration/2.0`; `kora-docs` is 1.x only) · **R1** read this sub-skill before writing code · **R2** Kora 2.0 APIs only — no Spring/Micronaut/Quarkus, no Kora 1.x APIs, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
+> **Kora sub-skill — obey the [kora-v2 meta rules](../../SKILL.md) on every task:** **R0** ground the workspace on Kora 2.0 refs before starting (framework source at tag `2.0.0.RC2` + `kora-examples` at `migration/2.0` + Kora 2.0 docs at koraframework.io/v2, which trail the source; 1.x `kora-docs` pages are never an authority) · **R1** read this sub-skill before writing code · **R2** Kora 2.0 APIs only — no Spring/Micronaut/Quarkus, no Kora 1.x APIs, no invented annotations or config keys · **R3** journal any incorrect Kora usage. Add comments/Javadoc only if asked.
 
-**Version:** Kora 2.0 (`io.koraframework`, `2.0.0.RC1` on Maven Central) | **Java:** 25 | **Kotlin:** 2.4 + KSP | **Gradle:** 9+ | **JAX-WS:** jakarta only
+**Version:** Kora 2.0 (`io.koraframework`, `2.0.0.RC2` on Maven Central) | **Java:** 25 | **Kotlin:** 2.4 + KSP | **Gradle:** 9+ | **JAX-WS:** jakarta only
 
 Kora consumes SOAP services through **compile-time generated clients**. There are two generators in
 the chain and they are easy to confuse:
@@ -80,11 +80,11 @@ the Kora 1.x documentation specified for `ru.tinkoff.kora:soap-client`.
 
 ### 1. `gradle.properties`
 
-`2.0.0.RC1` is the Kora 2.0 release on Maven Central. `2.0.0-SNAPSHOT` is the `master` development
+`2.0.0.RC2` is the Kora 2.0 release on Maven Central. `2.0.0-SNAPSHOT` is the `master` development
 line and needs the snapshot repository — do not put it in a new project.
 
 ```properties
-koraVersion=2.0.0.RC1
+koraVersion=2.0.0.RC2
 ```
 
 ### 2. Build file

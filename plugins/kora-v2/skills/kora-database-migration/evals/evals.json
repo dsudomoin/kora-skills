@@ -38,6 +38,7 @@
         "States that io.koraframework:database-flyway ships only org.flywaydb:flyway-core, and that since Flyway 10 database support lives in separate artifacts",
         "Adds org.flywaydb:flyway-database-postgresql to the application's own dependencies with an explicit version",
         "Notes that kora-bom does not constrain third-party artifacts, so the version must be written out and kept equal to the flyway-core version database-flyway resolves",
+        "Names 13.8.1 as the flyway-core version database-flyway brings for Kora 2.0.0.RC2",
         "Suggests verifying the resolved versions, e.g. ./gradlew dependencies --configuration runtimeClasspath | grep flyway",
         "Does not suggest downgrading PostgreSQL, changing the JDBC URL, or disabling validation"
       ],
@@ -202,6 +203,19 @@
         "Uses synchronous assertions; does not use Mono, CompletionStage or suspend repository contracts"
       ],
       "tags": ["testing", "flyway", "regression"]
+    },
+    {
+      "id": "kora-database-migration-scheduling-db-table",
+      "skills": ["kora-database-migration"],
+      "query": "I added io.koraframework:scheduling-db-scheduler to my Kora 2.0 service that already runs Flyway on startup with db/migration/V1__init.sql. Where does the scheduled_tasks table come from, and can I just add the module's Flyway folder to flyway.locations?",
+      "expected_behavior": [
+        "States that the artifact ships the table SQL as classpath resources: db/scheduling-db/flyway/<database>/ for Flyway and db/scheduling-db/liquibase/changelog.yaml for Liquibase",
+        "Points out that the shipped Flyway script is V1__create_scheduled_tasks.sql and collides with the application's own V1__ in a single Flyway history",
+        "Warns that the bundled SQL creates scheduled_tasks while scheduling.dbScheduler.tableName defaults to kora_scheduling_db_jobs, so the name must be reconciled (copy the SQL under the default name, or set tableName)",
+        "Routes the details of applying the table to the kora-aop-scheduling-db skill",
+        "Does not invent a flyway config key for per-location history tables or a Kora-specific migration hook"
+      ],
+      "tags": ["flyway", "scheduling", "integration"]
     }
   ]
 }

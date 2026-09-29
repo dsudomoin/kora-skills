@@ -43,7 +43,7 @@ No component found for dependency:
   io.koraframework.cache.redis.RedisCacheClient (no tags)
 ```
 
-The Kora 1.x artifact `cache-redis` **does not exist in 2.0** — it is not in the `2.0.0.RC1` BOM.
+The Kora 1.x artifact `cache-redis` **does not exist in 2.0** — it is not in the `2.0.0.RC2` BOM.
 A `cache-redis` directory still shows in the Maven Central listing; that is a 1.x leftover.
 
 ---
@@ -273,6 +273,10 @@ Consequences:
 - `@CachePut` and `@CacheInvalidate` can silently fail to write or evict, so a stale L1 or another
   pod's cache may keep serving old data. Do not rely on Redis eviction for correctness.
 - Alert on the cache error telemetry, not on application exceptions.
+
+Only failures of Redis itself are swallowed. An exception thrown by the loader passed to
+`computeIfAbsent` — which is the `@Cacheable` method body — is recorded in telemetry and
+**propagates** to the caller, and nothing is written to Redis for that key.
 
 This is the opposite of the Caffeine cache, which lets exceptions propagate.
 

@@ -1,7 +1,7 @@
 # KoraAppTest Extension Reference
 
 The full public surface of `io.koraframework:test-junit5` for Java, as it exists at Kora
-`2.0.0.RC1`. Nothing under `test/` changed between the tag and `master`.
+`2.0.0.RC2`.
 
 ## Contents
 

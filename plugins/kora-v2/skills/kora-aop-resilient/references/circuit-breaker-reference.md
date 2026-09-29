@@ -155,8 +155,28 @@ A *missing* section is a different failure and comes from the config layer first
 
 ## Failure Predicate
 
-By default every `Throwable` counts as a failure (`CircuitBreaker.isFailure` returns `true`).
-There are two ways to narrow that, and the second wins over the first.
+By default every exception counts as a failure **except** one that implements the marker interface
+`io.koraframework.resilient.circuitbreaker.NonCircuitableException` — `CircuitBreaker.isFailure` is
+`!(throwable instanceof NonCircuitableException)`:
+
+```java
+public final class OrderNotFoundException extends RuntimeException implements NonCircuitableException {
+    public OrderNotFoundException(String id) { super("Order not found: " + id); }
+}
+```
+
+```kotlin
+class OrderNotFoundException(id: String) : RuntimeException("Order not found: $id"), NonCircuitableException
+```
+
+An exception the breaker does not count still propagates to the caller unchanged. It is recorded as
+neither a failure nor a success (`CallResult.IGNORED_FAILURE` in telemetry): in `CLOSED` it does not
+enter the window, in `HALF_OPEN` it just frees the probe slot. `NonCircuitableException` is an
+**interface** — add it to `implements` of your own exception.
+
+The marker is honoured only by the default `isFailure`. There are two ways to replace that default,
+and the second wins over the first; either one takes over completely, so check the marker yourself
+if you still want it respected.
 
 ### 1. Override `isFailure` on the spec interface
 
@@ -235,6 +255,11 @@ public final class OrderReconciliation {
 `accept(callable, fallback)`, plus the manual `tryAcquire()` / `acquire()` /
 `releaseOnSuccess()` / `releaseOnError(t)` pair. `acquire()` + `release*` must be paired by hand.
 
+`toString()` of the injected spec reports the implementation and live state, e.g.
+`FixedWindowKoraCircuitBreaker{name='OrderCircuitBreaker', state=CLOSED, errors=3, total=41, windowSize=50}`
+(`HALF_OPEN` shows probe counters, `OPEN` shows how long it has been open). Log it while debugging;
+do not parse it.
+
 ---
 
 ## Telemetry
@@ -266,7 +291,8 @@ Enable globally under `resilient.telemetry.circuitBreaker`, or per breaker under
 | `property 'countBased' is not configured` at startup | Window block missing; `STRIPED_APPROX` needs it too. |
 | Breaker never opens | `minimumRequiredCalls` not reached, or the failure predicate excludes the exception. |
 | Two callers never trip each other | Duplicate spec interfaces on one config path — share a single spec. |
-| 404s open the breaker | Add a tagged `CircuitBreakerPredicate` or override `isFailure`. |
+| 404s open the breaker | Make the not-found exception implement `NonCircuitableException`, add a tagged `CircuitBreakerPredicate`, or override `isFailure`. |
+| `NonCircuitableException` still trips the breaker | A tagged predicate or an overridden `isFailure` replaced the default check. |
 | Predicate ignored | Missing `@Tag(<Spec>.class)`; `failurePredicateName` does nothing in 2.0. |
 | Overloaded on recovery | Lower `permittedCallsInHalfOpenState`. |
 

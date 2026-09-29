@@ -4,7 +4,7 @@
 #   - writes a QuartzJobs source file
 #   - writes / extends application.conf with the 2.0 `scheduling.quartz.*` keys
 #
-# Kora 2.0 facts baked in (verified against scheduling-quartz at tag 2.0.0.RC1):
+# Kora 2.0 facts baked in (verified against scheduling-quartz at 2.0.0.RC2 / master):
 #   module      io.koraframework.scheduling.quartz.QuartzModule
 #   annotations io.koraframework.scheduling.quartz.{ScheduleWithCron,ScheduleWithTrigger,
 #               DisallowConcurrentExecution,PersistJobDataAfterExecution}

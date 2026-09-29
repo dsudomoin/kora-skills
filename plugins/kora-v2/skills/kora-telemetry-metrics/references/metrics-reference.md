@@ -53,7 +53,7 @@ curl -s http://localhost:8085/metrics | grep '^# TYPE http_server_request_durati
 ```
 
 Steps 1 and 2 are Micrometer's behaviour, not Kora's, so the suffix follows the Micrometer version
-on your classpath (`1.17.0` via the BOM). The prefix `http_server_request_duration` and the
+on your classpath (`1.17.1` via the BOM). The prefix `http_server_request_duration` and the
 suffixed forms `jvm_memory_used_bytes` / `process_cpu_usage` / `logback_events_total` appear
 verbatim in the migrated observability guide's container smoke test, so the mechanism is confirmed
 against real 2.0 output.
@@ -63,14 +63,15 @@ against real 2.0 output.
 Kora passes OpenTelemetry semantic-convention constants — `HttpAttributes.HTTP_ROUTE`,
 `ErrorAttributes.ERROR_TYPE`, `DbAttributes.DB_OPERATION_NAME`, … — as tag keys. The literal label
 string is whatever that constant resolves to in the semconv artifacts the BOM pins
-(`io.opentelemetry.semconv:opentelemetry-semconv:1.43.0` and
-`opentelemetry-semconv-incubating:1.37.0-alpha`), which is why the tables below give the constant
+(`io.opentelemetry.semconv:opentelemetry-semconv:1.44.0` and
+`opentelemetry-semconv-incubating:1.44.0-alpha`), which is why the tables below give the constant
 alongside the label. Tags that Kora hard-codes as string literals (`server.name`, `system.config`,
 `system.name.simple`, `system.name.canonical`, `origin`, `operation`, `type`, `name`, `state`,
 `status`, `reason`) are exact.
 
 Every metric additionally carries whatever you put in that component's
-`telemetry.metrics.tags { … }`.
+`telemetry.metrics.tags { … }`, plus the global common tags from `metrics.tags` and any
+`MetricsTagsProvider` (see [metrics-config-reference.md](metrics-config-reference.md#common-tags)).
 
 ---
 
@@ -81,17 +82,20 @@ Registered by `DefaultHttpServerMetricsFactory`. Config root `httpServer` (publi
 
 | Meter | Type | Tags |
 |---|---|---|
-| `http.server.request.duration` | Timer (uses `metrics.slo()` as SLO buckets) | `server.name`, `ServerAttributes.SERVER_PORT` → `server.port`, `HttpAttributes.HTTP_REQUEST_METHOD` → `http.request.method`, `HttpAttributes.HTTP_ROUTE` → `http.route`, `UrlAttributes.URL_SCHEME` → `url.scheme`, `ServerAttributes.SERVER_ADDRESS` → `server.address`, `ErrorAttributes.ERROR_TYPE` → `error.type` |
+| `http.server.request.duration` | Timer (uses `metrics.slo()` as SLO buckets) | `server.name`, `ServerAttributes.SERVER_PORT` → `server.port`, `HttpAttributes.HTTP_REQUEST_METHOD` → `http.request.method`, `HttpAttributes.HTTP_RESPONSE_STATUS_CODE` → `http.response.status_code`, `HttpAttributes.HTTP_ROUTE` → `http.route`, `UrlAttributes.URL_SCHEME` → `url.scheme`, `ServerAttributes.SERVER_ADDRESS` → `server.address`, `ErrorAttributes.ERROR_TYPE` → `error.type` |
 | `http.server.active_requests` | Gauge | `server.name`, `server.port`, `http.request.method`, `http.route`, `url.scheme`, `server.address` |
 
-**There is no status-code tag on the server-side duration timer in 2.0.** The `HttpServerResponse`
-is passed into `createMetricServerDuration(...)` but contributes no tag. A 1.x dashboard filtering
-`http_response_status_code=~"5.."` matches nothing. Use `error.type`:
+`http.response.status_code` is the code of the response that was sent (`response.code()`, part of
+the `DurationKey` the timer is cached by), so every distinct status code of a route is its own series.
+The active-requests gauge has no status code — the request has not finished.
 
 ```promql
-# error ratio, 2.0
-  sum(rate(http_server_request_duration_seconds_count{error_type!=""}[5m]))
+# 5xx ratio
+  sum(rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[5m]))
 / sum(rate(http_server_request_duration_seconds_count[5m]))
+
+# requests that ended in an exception, whatever status was mapped
+  sum(rate(http_server_request_duration_seconds_count{error_type!=""}[5m]))
 ```
 
 `error.type` is `""` on success and the exception's canonical class name on failure;
@@ -113,7 +117,7 @@ the `@HttpClient("name")` value.
 |---|---|---|
 | `http.client.request.duration` | Timer (SLO buckets) | `http.request.method`, `HttpAttributes.HTTP_RESPONSE_STATUS_CODE` → `http.response.status_code`, `server.address` (when the URI has a host), `url.scheme` (when present), `http.route` (the URI template), `error.type`, plus `system.config`, `system.name.simple`, `system.name.canonical` |
 
-Unlike the server timer, the **client** timer does carry `http.response.status_code`.
+Like the server timer, the client timer carries `http.response.status_code`.
 
 The three `system.*` tags come from `DefaultHttpClientTelemetry`: the client's config path, its
 simple class name and its canonical class name. They let you separate two clients that call the
@@ -197,6 +201,12 @@ root is the `@Cache("path")` value.
 `operation` is the cache operation enum name (`GET`, `PUT`, …); `type` on `cache.ratio` is the
 hit/miss discriminator. Both are bounded.
 
+A **Caffeine** cache with `telemetry.metrics.enabled = true` is additionally built with
+`recordStats()` and bound once through Micrometer's `CaffeineCacheMetrics.monitor(...)`
+(`CaffeineFactory`), which publishes Micrometer's cache binder meters — `cache.gets`, `cache.puts`,
+`cache.evictions`, `cache.eviction.weight`, `cache.size` — with the `@Cache` config path as the cache
+name and the component's `telemetry.metrics.tags`. Their exact names and tags are Micrometer's.
+
 ---
 
 ## Scheduling { #scheduling }
@@ -279,7 +289,7 @@ Micrometer binders — nothing else:
 | `FileDescriptorMetrics` | open / max file descriptors |
 | `UptimeMetrics` | process uptime and start time |
 
-The exact series each binder emits is defined by Micrometer `1.17.0`, not by Kora — check
+The exact series each binder emits is defined by Micrometer `1.17.1`, not by Kora — check
 [the Micrometer JVM/system binder docs](https://docs.micrometer.io/micrometer/reference/reference/jvm.html)
 or read your own `/metrics`. The migrated observability guide's smoke test confirms
 `jvm_memory_used_bytes` and `process_cpu_usage` in real 2.0 output.
@@ -298,7 +308,7 @@ Do not port a 1.x metric list. What changed:
 
 | 1.x | 2.0 |
 |---|---|
-| `metrics { opentelemetrySpec = "V120" \| "V123" }` | **removed** — one fixed scheme, no global `metrics` config section exists |
+| `metrics { opentelemetrySpec = "V120" \| "V123" }` | **removed** — one fixed scheme; the global `metrics` section holds only `enabled` and `tags` |
 | `db.client.request.duration` (`V123`) | **`db.client.operation.duration`** |
 | tags `db.pool.name`, `db.statement`, `db.operation` | **`db.client.connection.pool.name`, `db.system.name`, `db.query.text`, `db.operation.name`** |
 | `cache.duration` | **`cache.operation.duration`** |
@@ -306,7 +316,6 @@ Do not port a 1.x metric list. What changed:
 | `messaging.publish.duration` | **`messaging.client.operation.duration`** + **`messaging.client.sent.messages`** |
 | `s3.client.duration`, `s3.kora.client.duration` | **`rpc.client.duration`** with `rpc.system` = `s3-aws` / `s3` |
 | `rpc.*.requests_per_rpc`, `rpc.*.responses_per_rpc` | **removed** |
-| `http.server.request.duration` tag `http.response.status_code` | **removed on the server side** (the client timer keeps it) |
 | `rpc.status` on gRPC | **`rpc.grpc.status_code`** (`RpcIncubatingAttributes.RPC_GRPC_STATUS_CODE`) |
 | — | **new:** `resilient.circuitbreaker.call.result`, `resilient.ratelimiter.acquire` |
 

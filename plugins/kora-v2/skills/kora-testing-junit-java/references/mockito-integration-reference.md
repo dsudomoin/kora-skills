@@ -22,7 +22,7 @@ instances, swaps them into the application graph, resets them and reports unused
 ## Dependency and the Java 25 floor
 
 ```groovy
-testImplementation "org.mockito:mockito-core:5.23.0"
+testImplementation "org.mockito:mockito-core:5.24.0"
 ```
 
 Mockito is `compileOnly` inside `io.koraframework:test-junit5`, and `io.koraframework:kora-bom`
@@ -44,7 +44,7 @@ Application graph failed to initialize with N errors
 
 with no visible suppressed exception, so it reads like a dependency-injection problem.
 
-- `mockito-core` `5.23.0` (Byte Buddy `1.18.11`) is what the framework's own version catalog pins —
+- `mockito-core` `5.24.0` (Byte Buddy `1.18.14`) is what the framework's own version catalog pins —
   use it as the floor. Several migrated examples still carry `5.18.0`; do not copy that number.
 - Diagnose with
   `./gradlew <module>:dependencyInsight --dependency byte-buddy --configuration testRuntimeClasspath`.
@@ -281,7 +281,7 @@ When one argument uses a matcher, every argument of that call must use one — w
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Java 25 (69) is not supported by the current version of Byte Buddy` | Old Mockito / Byte Buddy | `mockito-core:5.23.0` |
+| `Java 25 (69) is not supported by the current version of Byte Buddy` | Old Mockito / Byte Buddy | `mockito-core:5.24.0` |
 | `Application graph failed to initialize with N errors`, no cause shown | The same Byte Buddy failure, swallowed | Same fix; temporarily enable `junitXml.required` to see suppressed exceptions |
 | Mock field stays `null` | `@Mock` without `@TestComponent` | Add `@TestComponent` |
 | The real implementation runs instead of the mock | The mock never entered the graph | `@Mock` + `@TestComponent` on the same element, and no `MockitoExtension` |

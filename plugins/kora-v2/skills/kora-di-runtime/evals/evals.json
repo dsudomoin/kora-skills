@@ -248,6 +248,57 @@
         "Does not use an external-framework conditional annotation or a property placeholder"
       ],
       "tags": ["conditional", "advanced"]
+    },
+    {
+      "id": "kora-di-runtime-refresh-propagation",
+      "skills": ["kora-di-runtime"],
+      "query": "In Kora 2.0, when the config file changes and the graph refreshes, which components get recreated? I have an HTTP client component that depends only on a JsonMapper, and a PaymentService that depends on PaymentConfig.",
+      "expected_behavior": [
+        "Explains that RefreshableGraph.refresh(node) re-runs the factory of the start node and then recreates a later node only when one of its direct dependencies (or interceptors) now holds a different instance",
+        "States that the HTTP client, whose JsonMapper instance did not change, keeps its instance: init() is not called again and it is not released",
+        "States that PaymentService is recreated only if the refreshed PaymentConfig is not equals to the previous one, because an equal new value is discarded and the old instance kept",
+        "Mentions that consumers depending through ValueOf<T> are never rebuilt and read the new value via get()",
+        "Mentions that an equals() that throws does not fail the refresh: it is logged at WARN and the object is treated as changed"
+      ],
+      "anti_behavior": [
+        "Claims every node reachable from the refreshed node is always recreated",
+        "Claims a refresh recreates components that do not depend on the changed config",
+        "Invents a refresh() method on ValueOf or a @RefreshScope-style annotation"
+      ],
+      "tags": ["refresh", "advanced"]
+    },
+    {
+      "id": "kora-di-runtime-keepalive-run",
+      "skills": ["kora-di-runtime"],
+      "query": "My Kora 2.0 main() calls KoraApplication.run(ApplicationGraph::graph) and then wants to run a one-off import with a component from the graph, but the code after run() never executes. Why, and what are the options?",
+      "expected_behavior": [
+        "Explains that run(supplier) is run(supplier, true): it blocks the calling thread until the kora-shutdown hook has released the graph",
+        "Names the overload KoraApplication.run(Supplier<ApplicationGraphDraw>, boolean keepAlive) and says keepAlive = false returns right after the graph is initialised",
+        "Notes that with keepAlive = false the graph is still released by the kora-shutdown JVM shutdown hook on exit",
+        "Recommends a @Root Lifecycle component (or keeping the work inside the graph) as the idiomatic way to run startup work, since run() does not hand the graph back to main",
+        "If it quotes the startup log, gives 'Application initialized in <n>ms (JVM running for <s>s)' with the duration in real milliseconds"
+      ],
+      "anti_behavior": [
+        "Claims run() has only the single-argument signature",
+        "Suggests wrapping run() in a new Thread or calling System.exit to get past it",
+        "Invents a return value from KoraApplication.run"
+      ],
+      "tags": ["lifecycle", "bootstrap"]
+    },
+    {
+      "id": "kora-di-runtime-ksp-any-tag-interceptor",
+      "skills": ["kora-di-runtime"],
+      "query": "Kotlin, Kora 2.0: I declared `@Tag(Tag.Any::class) @Component class DataSourceAudit : GraphInterceptor<DataSource>` so it wraps every DataSource, including the ones tagged @Tag(Reporting::class). Is that right?",
+      "expected_behavior": [
+        "Confirms that an interceptor tagged @Tag(Tag.Any::class) intercepts components of every tag and untagged ones, and that KSP applies the same tag matching as the Java annotation processor",
+        "Reminds that matching is still by exact declared type, so it catches only components declared as DataSource, not subclasses registered under their own type",
+        "Keeps afterInit(value: DataSource): DataSource and beforeRelease with non-nullable types"
+      ],
+      "anti_behavior": [
+        "Claims KSP matches interceptor tags by strict equality so Tag.Any interceptors miss tagged components",
+        "Suggests declaring one interceptor per tag as a workaround"
+      ],
+      "tags": ["interceptor", "tag", "kotlin"]
     }
   ]
 }
