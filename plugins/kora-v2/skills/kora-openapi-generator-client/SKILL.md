@@ -452,6 +452,11 @@ declare an error response; an operation without one keeps its per-code `@Respons
   contract with `4XX` / `5XX` responses fails generation with
   `NumberFormatException: For input string: "4XX"`. Declare exact codes plus `default`, or keep
   `SEALED` for that spec.
+- **Not for an operation whose only responses are several 2xx sharing one body** (e.g. `200` + `206`,
+  no error response and no `default`). The return type is narrowed, but without an error response the
+  successful mapper is not generated and the per-code mappers still return the sealed type — the
+  generated client does not compile (`incompatible types: bad type in switch expression` in Java,
+  `type mismatch` in Kotlin). Declare an error response or `default` for that operation, or keep `SEALED`.
 
 Full service examples: [assets/PetService.successful.client.java.template](assets/PetService.successful.client.java.template)
 · [assets/PetService.successful.client.kt.template](assets/PetService.successful.client.kt.template).
@@ -513,6 +518,7 @@ annotation processor / KSP from the generated interface — they are not OpenAPI
 | Phantom `ru.tinkoff.kora` or old-package errors from `build/generated` | Stale generator output — `clean` + `--no-build-cache`, never edit generated files |
 | An HTTP **server** artifact appears in a client-only app | `ValidationModule` drags in `http-server-common`; use `ValidatorModule` from `validation-common` |
 | Unexpected `oneOf`/`anyOf` output | Plugin ≥ 7.0.0 enables `SIMPLIFY_ONEOF_ANYOF`; set `openapiNormalizer = [DISABLE_ALL: "true"]` |
+| Generated client does not compile: `bad type in switch expression` / `type mismatch` in a response mapper | `SUCCESSFUL` mode on an operation with several 2xx responses sharing a body and no error response or `default`. Add one, or use `SEALED` |
 | Generation fails: `NumberFormatException: For input string: "4XX"` | `clientResponseMode: "SUCCESSFUL"` on a contract with `4XX` / `5XX` ranges. Ranges work in the default `SEALED` mode; with `SUCCESSFUL` declare exact codes plus `default` |
 | `SUCCESSFUL` client: a 4xx/5xx response surfaces as plain `HttpClientResponseException`, not the typed one | The error body did not parse (the cause is attached as a suppressed exception), or the status is not declared and the operation has no `default` |
 | Server receives `Authorization: Bearer Bearer …` | The generated interceptor already prefixes `Bearer ` (bearer, oauth2, openIdConnect) and `Basic ` (basic). A `HttpClientTokenProvider` returns the bare token |

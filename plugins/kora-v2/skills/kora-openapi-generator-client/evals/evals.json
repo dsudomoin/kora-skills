@@ -245,6 +245,21 @@
         "Suggests converting in a custom JSON reader or editing generated models"
       ],
       "tags": ["openapi-client", "models", "type-mapping"]
+    },
+    {
+      "id": "kora-openapi-generator-client-successful-shared-success-no-errors",
+      "skills": ["kora-openapi-generator-client"],
+      "query": "I switched my generated Kora client to clientResponseMode SUCCESSFUL. One operation declares only 200 and 206 with the same Page schema, no error responses. Now the generated PetApiClientResponseMappers fails with 'incompatible types: bad type in switch expression'. What's wrong?",
+      "expected_behavior": [
+        "Identifies the SUCCESSFUL-mode case: several 2xx responses sharing a body with no error response and no default, so the return type is narrowed but no successful mapper is generated",
+        "Offers the workarounds: declare an error response or default for that operation, or keep SEALED mode for the spec",
+        "Does not suggest editing generated sources"
+      ],
+      "anti_behavior": [
+        "Blames the Kotlin/Java compiler version or the Kora version pin",
+        "Suggests hand-editing the generated *ApiClientResponseMappers"
+      ],
+      "tags": ["openapi-client", "successful-mode", "regression"]
     }
   ]
 }
