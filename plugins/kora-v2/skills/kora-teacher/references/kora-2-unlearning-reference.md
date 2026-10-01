@@ -229,7 +229,9 @@ Concise map. Each has a domain sub-skill with the full treatment; the point here
 | `@Cacheable(parameters = "id")` | `@Cacheable(args = "id")` | [`kora-aop-caching`](../../kora-aop-caching/SKILL.md) |
 | `@CacheInvalidate(invalidateAll = true)` | `@CacheInvalidateAll(X.class)` | " |
 | `toStringUnchecked`, `readUnchecked` | `toString`, `read` — and they no longer declare checked exceptions | [`kora-json`](../../kora-json/SKILL.md) |
-| `@ScheduleWithTrigger(@Tag(MyJob.class))` | `@ScheduleWithTrigger(MyJob.class)` | [`kora-aop-scheduling-quartz`](../../kora-aop-scheduling-quartz/SKILL.md) |
+| `@ScheduleAtFixedRate`, `@ScheduleWithFixedDelay`, `@ScheduleOnce` | `@ScheduleJdkAtFixedRate`, `@ScheduleJdkWithFixedDelay`, `@ScheduleJdkOnce` — same `jdk.annotation` package | [`kora-aop-scheduling-jdk`](../../kora-aop-scheduling-jdk/SKILL.md) |
+| Quartz `@ScheduleWithCron` | `@ScheduleQuartzWithCron`, package `scheduling.quartz.annotation` | [`kora-aop-scheduling-quartz`](../../kora-aop-scheduling-quartz/SKILL.md) |
+| `@ScheduleWithTrigger(@Tag(MyJob.class))` | `@ScheduleQuartzWithTrigger(MyJob.class)` | " |
 | `openapi.management.file` | `files` (a list) | [`kora-openapi-management`](../../kora-openapi-management/SKILL.md) |
 
 Two of these change **meaning** rather than spelling, so a mechanical rename is actively dangerous:

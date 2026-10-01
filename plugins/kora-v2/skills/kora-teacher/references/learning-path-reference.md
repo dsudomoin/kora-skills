@@ -342,7 +342,9 @@ Pick from these; none is a prerequisite for another.
 
 **Topics with no guide app — use the plain examples, and say so.** There is no
 `kora-java-guide-scheduling-app`; do not invent one. Use `examples/java/kora-java-scheduling-jdk`
-and `examples/java/kora-java-scheduling-quartz`; the database-backed scheduler, the PostgreSQL
+and `examples/java/kora-java-scheduling-quartz` — written against `2.0.0.RC1`, so they still use the
+annotation names that Kora PR #952 renamed (`@ScheduleAtFixedRate` → `@ScheduleJdkAtFixedRate`,
+Quartz `@ScheduleWithCron` → `@ScheduleQuartzWithCron`); teach the new names. The database-backed scheduler, the PostgreSQL
 module, distributed resilience and the JSON log encoder have no example app at all — teach them from
 the domain sub-skill and the framework tests. Likewise `examples/java/kora-java-soap-client`,
 `examples/java/kora-java-telemetry`, `examples/java/kora-java-cache-caffeine`,

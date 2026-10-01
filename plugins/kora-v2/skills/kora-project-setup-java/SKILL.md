@@ -396,6 +396,7 @@ the test graph is generated. Deeper testing → `kora-testing-junit-java`.
 | Custom ports ignored; app answers on 8080/8085 | Old port keys are unknown to 2.0 config and silently ignored | Use `httpServer.port` and `httpServer.system.port` |
 | `@KoraAppTest` finds no components | `testAnnotationProcessor` missing | Add `testAnnotationProcessor "io.koraframework:annotation-processors"` |
 | IDE shows red but `./gradlew classes` passes | IDE has not indexed `build/generated/` | Re-run `classes`, refresh/invalidate IDE caches |
+| Shadow fat jar: Flyway fails at startup with `NullPointerException` in `DryRunConfigurationExtensionStub.getOrResolveOutputStream` | `com.gradleup.shadow` 9.x keeps only the first `META-INF/services/*` copy unless duplicates are included, so `mergeServiceFiles()` merges nothing (observed empirically) | `shadowJar { mergeServiceFiles(); duplicatesStrategy = DuplicatesStrategy.INCLUDE }` — see [build reference](references/build-gradle-reference.md#fat-jar-with-shadow) |
 
 Full diagnosis table: [`references/troubleshooting-reference.md`](references/troubleshooting-reference.md).
 

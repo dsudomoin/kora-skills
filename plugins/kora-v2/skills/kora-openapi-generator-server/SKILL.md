@@ -406,6 +406,7 @@ generation, and it is why the annotation processor / KSP dependency is mandatory
 | `4XX` / `5XX` response record needs a status argument | A range response becomes `<Op>4XXApiResponse(int statusCode, …)` (like `default`); pass the concrete status you send. |
 | `Multiple components match` for the delegate | `delegateMethodBodyMode` generated a default delegate **and** you wrote a `@Component` one. Pick one. |
 | Validation annotations absent | `enableServerValidation: "true"` plus `io.koraframework:validation-module` and `ValidationModule` in `@KoraApp`. |
+| `Invalid OpenAPI numeric validation schema. Schema dataType: BigDecimal`; a `pattern` or item `@Valid` silently missing; `0` rejected by a `double` with only `maximum` | Generator defects up to 2.0.0.RC1, fixed on master by kora-projects/kora PR #965 — workarounds in the [Validation Reference](references/openapi-validation-reference.md#3-constraint-mapping). |
 | Two generator tasks overwrite each other | Give every task its own `outputDir`. |
 | Kotlin `unresolved reference` to generated types | KSP **and** `compileKotlin` must both `dependsOn` the generate task. |
 

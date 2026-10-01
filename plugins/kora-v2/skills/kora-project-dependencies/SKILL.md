@@ -311,9 +311,9 @@ Only four modes remain: `java-client`, `java-server`, `kotlin-client`, `kotlin-s
 | `cache-caffeine` | `CaffeineCacheModule` | `@Cacheable`, `@CachePut`, `@CacheInvalidate`, `@CacheInvalidateAll` (in-process) |
 | `cache-redis-lettuce` | `LettuceRedisCacheModule` | Same annotations over Lettuce/Redis |
 | `cache-redis-common` | `RedisCacheModule` | Transport-neutral — supplies **no** client; on its own the graph fails to build |
-| `scheduling-jdk` | `SchedulingJdkModule` | `@ScheduleAtFixedRate`, `@ScheduleWithFixedDelay`, `@ScheduleOnce` |
-| `scheduling-quartz` | `QuartzModule` | `@ScheduleWithCron`, `@ScheduleWithTrigger` |
-| `scheduling-db-scheduler` | `DbSchedulerModule` | Clustered jobs stored in the database (db-scheduler): `@ScheduleOnce`, `@ScheduleWithCron`, `@ScheduleWithFixedDelay` from `io.koraframework.scheduling.db.scheduler.annotation`; needs a `DataSource` in the graph |
+| `scheduling-jdk` | `SchedulingJdkModule` | `@ScheduleJdkAtFixedRate`, `@ScheduleJdkWithFixedDelay`, `@ScheduleJdkOnce`, `@ScheduleJdkWithCron` |
+| `scheduling-quartz` | `QuartzModule` | `@ScheduleQuartzWithCron`, `@ScheduleQuartzWithTrigger` (`io.koraframework.scheduling.quartz.annotation`) |
+| `scheduling-db-scheduler` | `DbSchedulerModule` | Clustered jobs stored in the database (db-scheduler): `@ScheduleDbOnce`, `@ScheduleDbWithCron`, `@ScheduleDbWithFixedDelay` from `io.koraframework.scheduling.db.scheduler.annotation`; needs a `DataSource` in the graph |
 | `validation-module` | `ValidationModule` | `@Valid`, `@Validate` (Kora's own constraints, not Jakarta) |
 
 `cache-redis` does not exist in 2.0. Resilience is Kora's own — no Resilience4j on the classpath.

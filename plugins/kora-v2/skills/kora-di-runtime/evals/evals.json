@@ -159,7 +159,7 @@
         "Writes a real fallback path for the null case rather than only a null check",
         "Mentions the Kotlin equivalent is the nullable type AnalyticsTracker?, with no annotation",
         "Does not suggest jakarta/javax/org.jetbrains @Nullable as the Kora 2.0 convention",
-        "Does not suggest Optional<T> injection or required=false autowiring"
+        "Does not suggest required=false autowiring; may mention java.util.Optional<AnalyticsTracker> as a supported Java alternative (the processor wraps a nullable claim) but keeps @Nullable as the convention"
       ],
       "tags": ["optional", "advanced"]
     },
@@ -299,6 +299,22 @@
         "Suggests declaring one interceptor per tag as a workaround"
       ],
       "tags": ["interceptor", "tag", "kotlin"]
+    },
+    {
+      "id": "kora-di-runtime-nullable-conditional-dependency",
+      "skills": ["kora-di-runtime"],
+      "query": "Kora 2.0: RedisCache is @Component @Conditional(tag = RedisEnabled.class). CacheFacade takes `@Nullable RedisCache redis` and falls back to Caffeine when it is null. With redis disabled the app does not start: IllegalStateException: Graph node value was not initialized because condition failed: cache.redis.enabled = false. Isn't @Nullable supposed to give me null?",
+      "expected_behavior": [
+        "Explains that both processors generate a nullable single dependency as g.get(node), and GraphImpl throws 'Graph node value was not initialized because condition failed: <reason>' for a condition-failed node, so @Nullable does not turn a failed condition into null",
+        "States it is fixed by kora-projects/kora PR #960 (on master once merged): the dependency is then generated as Graph.getNullable(node) and receives null",
+        "Gives a workaround for builds without the fix: inject All<RedisCache>, which skips condition-failed members, and take the first element if present; or make the consumer @Conditional on the same tag",
+        "Applies the same reasoning to Kotlin RedisCache? parameters"
+      ],
+      "anti_behavior": [
+        "Blames the condition or tells the user to make RedisEnabled always match",
+        "Recommends ValueOf<RedisCache> as the fix — its get() throws the same exception for a condition-failed node"
+      ],
+      "tags": ["conditional", "nullable", "regression"]
     }
   ]
 }

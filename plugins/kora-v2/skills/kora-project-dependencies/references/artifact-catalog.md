@@ -247,9 +247,9 @@ jdbc       { telemetry.metrics.enabled = true }
 | **`resilient-kora-distributed`** | — | Distributed rate limiter / retry budget shared across instances: `@RateLimiterDistributedSpec`, `DistributedRetryBudgetFactory`. Backend-neutral — add a backend module — see [`kora-aop-resilient`](../../kora-aop-resilient/SKILL.md) |
 | **`resilient-kora-distributed-redis-lettuce`** | `LettuceDistributedResilientModule` | Redis backend for the above over Lettuce; pulls `resilient-kora-distributed` + `redis-lettuce` |
 | `scheduling-common` | — | Shared scheduling runtime |
-| `scheduling-jdk` | `SchedulingJdkModule` | `@ScheduleAtFixedRate`, `@ScheduleWithFixedDelay`, `@ScheduleOnce` |
-| `scheduling-quartz` | `QuartzModule` | `@ScheduleWithCron`, `@ScheduleWithTrigger`; brings Quartz |
-| **`scheduling-db-scheduler`** | `DbSchedulerModule` | Clustered, DB-persisted jobs on `com.github.kagkarlsson:db-scheduler`: `@ScheduleOnce`, `@ScheduleWithCron`, `@ScheduleWithFixedDelay` (`io.koraframework.scheduling.db.scheduler.annotation`). Needs a `DataSource` in the graph — see [`kora-aop-scheduling-db`](../../kora-aop-scheduling-db/SKILL.md) |
+| `scheduling-jdk` | `SchedulingJdkModule` | `@ScheduleJdkAtFixedRate`, `@ScheduleJdkWithFixedDelay`, `@ScheduleJdkOnce`, `@ScheduleJdkWithCron` |
+| `scheduling-quartz` | `QuartzModule` | `@ScheduleQuartzWithCron`, `@ScheduleQuartzWithTrigger` (`io.koraframework.scheduling.quartz.annotation`); brings Quartz |
+| **`scheduling-db-scheduler`** | `DbSchedulerModule` | Clustered, DB-persisted jobs on `com.github.kagkarlsson:db-scheduler`: `@ScheduleDbOnce`, `@ScheduleDbWithCron`, `@ScheduleDbWithFixedDelay` (`io.koraframework.scheduling.db.scheduler.annotation`). Needs a `DataSource` in the graph — see [`kora-aop-scheduling-db`](../../kora-aop-scheduling-db/SKILL.md) |
 | `validation-common`, `validation-module` | `ValidationModule` | `@Valid`, `@Validate` and Kora's own constraints |
 
 Resilience in 2.0 carries **no Resilience4j dependency** — the implementations are Kora's own.

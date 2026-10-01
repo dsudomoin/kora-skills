@@ -274,16 +274,18 @@ Changeset directives, contexts/labels, includes and rollback patterns —
 Plug in **exactly one**. Both interceptors attach to the same `JdbcDataSource` node and would both
 manage the same schema.
 
-**Tables owned by other Kora modules.** `io.koraframework:scheduling-db-scheduler` ships the SQL for
-its `scheduled_tasks` table as classpath resources — Flyway scripts under
-`db/scheduling-db/flyway/<database>/` (`postgresql`, `mysql`, `mariadb`, `mssql`, `oracle`, `hsql`)
-and a Liquibase changelog at `db/scheduling-db/liquibase/changelog.yaml`. They go through the same
-Flyway/Liquibase setup as your own scripts. The Flyway script is named
-`V1__create_scheduled_tasks.sql`, so it cannot share one Flyway history with an application `V1__`.
-The bundled SQL names the table `scheduled_tasks`, but the scheduler reads
-`scheduling.dbScheduler.tableName`, default `kora_scheduling_db_jobs` — applied as-is, the scheduler
-finds no table and its jobs never run. Copy the SQL into your own next migration under the default
-name, or set `tableName = "scheduled_tasks"`. Details: [kora-aop-scheduling-db](../kora-aop-scheduling-db/SKILL.md).
+**Tables owned by other Kora modules.** `io.koraframework:scheduling-db-scheduler` ships the schema
+of its `kora_scheduling_db_scheduler_jobs` table (the default `scheduling.dbScheduler.tableName`) as
+classpath resources: plain scripts `db/kora/scheduling-db-scheduler/schema/<database>.sql`
+(`postgresql`, `mysql`, `mariadb`, `mssql`, `oracle`, `hsql`) and an idempotent Liquibase changelog
+`db/kora/scheduling-db-scheduler/liquibase/changelog.yaml`. There are **no versioned Flyway
+migrations** to point `flyway.locations` at — copy the script for your database into your own
+migrations under the next free version (`V42__create_kora_scheduling_db_scheduler_jobs.sql`). With
+Liquibase, `include` the changelog from your master changelog; its `dbms`-guarded changesets are
+marked as ran when the table already exists, and they always create the default table name.
+Earlier 2.0 snapshots shipped `db/scheduling-db/flyway/<database>/V1__create_scheduled_tasks.sql`
+(table `scheduled_tasks`, colliding with an application `V1__`) and defaulted `tableName` to
+`kora_scheduling_db_jobs`; neither exists any more. Details: [kora-aop-scheduling-db](../kora-aop-scheduling-db/SKILL.md).
 
 ---
 
@@ -396,7 +398,7 @@ The Liquibase equivalent is `liquibase/liquibase:5.0.4` with
 - [kora-testing-junit-java](../kora-testing-junit-java/SKILL.md) · [kora-testing-junit-kotlin](../kora-testing-junit-kotlin/SKILL.md) — `@KoraAppTest` + Testcontainers with migrations
 - [kora-project-dependencies](../kora-project-dependencies/SKILL.md) — BOM, module coordinates, externally-versioned dependencies
 - [kora-di-runtime](../kora-di-runtime/SKILL.md) — `GraphInterceptor` and graph lifecycle
-- [kora-aop-scheduling-db](../kora-aop-scheduling-db/SKILL.md) — DB-backed scheduler whose job table (default `kora_scheduling_db_jobs`) these tools create
+- [kora-aop-scheduling-db](../kora-aop-scheduling-db/SKILL.md) — DB-backed scheduler whose job table (default `kora_scheduling_db_scheduler_jobs`) these tools create
 
 ## Source of truth
 

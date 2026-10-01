@@ -378,6 +378,7 @@ regressions above (`--json` for machine output, `--help` for usage).
 | 404 on a valid URL | `{var}` has no matching `@Path` argument, or the `@HttpController` prefix is not what you think — in **Kotlin** the prefix is concatenated raw, so it must start with `/` and must not end with one |
 | `Cannot add path template …, matcher already contains an equivalent pattern` | Two routes on one method resolve to the same template (e.g. `/a/{x}` and `/a/{y}`) |
 | Metrics endpoint returns nothing useful | `telemetry.metrics.enabled` defaults to `false` — enable it explicitly |
+| Responses — including a large `/metrics` scrape — go out uncompressed, and no `compression`/`gzip` key works | Neither Undertow server (public or system) wires response compression, and `HttpServerConfig` / `SystemHttpServerConfig` / `UndertowConfig` have no key for it; an unknown key is ignored silently. Compress at the reverse proxy or ingress |
 | No `Server` header, or a custom `Server` value never reaches the client | `headerServerNameEnabled` defaults to `false`; when on, the value is fixed to `Kora`, and a `server` header from the handler is always dropped |
 | `telemetry.logging.mask = "..."` has no effect | The key does not exist. Replace the replacement text through a `@Tag(HttpServerTelemetry.class) MaskingStrategy` component |
 | Passwords/tokens appear in `TRACE` body logs | Body masking needs a `@Tag(HttpServerTelemetry.class)` `DataMasker` (e.g. `JsonDataMasker`) for that content type; without one the body is logged verbatim |

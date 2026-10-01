@@ -261,14 +261,14 @@ MODULES: Dict[str, dict] = {
         "artifact": "scheduling-jdk",
         "module_interface": ("io.koraframework.scheduling.jdk.SchedulingJdkModule", "SchedulingJdkModule"),
         "package_example": "scheduler",
-        "description": "In-process scheduling: @ScheduleAtFixedRate, @ScheduleWithFixedDelay, @ScheduleOnce",
+        "description": "In-process scheduling: @ScheduleJdkAtFixedRate, @ScheduleJdkWithFixedDelay, @ScheduleJdkOnce, @ScheduleJdkWithCron",
     },
     "scheduling-quartz": {
         "category": "AOP",
         "artifact": "scheduling-quartz",
         "module_interface": ("io.koraframework.scheduling.quartz.QuartzModule", "QuartzModule"),
         "package_example": None,
-        "description": "Quartz scheduling: @ScheduleWithCron, @ScheduleWithTrigger",
+        "description": "Quartz scheduling: @ScheduleQuartzWithCron, @ScheduleQuartzWithTrigger",
     },
     "scheduling-db": {
         "category": "AOP",
@@ -984,7 +984,7 @@ def generate_application_conf(name: str, modules: List[str]) -> str:
             "# db-scheduler keeps its jobs in the `jdbc` database; create its table on startup.",
             "scheduling {",
             "  dbScheduler {",
-            "    initializeTable = true",
+            "    tableInitialize = true",
             "  }",
             "}",
         ])

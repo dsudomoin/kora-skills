@@ -22,6 +22,7 @@ background only, never as a 2.0 API authority.
 - [settings.gradle](#settingsgradle)
 - [Gradle wrapper](#gradle-wrapper)
 - [Docker packaging](#docker-packaging)
+- [Fat jar with Shadow](#fat-jar-with-shadow)
 - [Multi-module and library projects](#multi-module-and-library-projects)
 
 ## Plugins
@@ -326,6 +327,25 @@ CMD [ "/opt/app/application/bin/application" ]
 `8080` is the public API (`httpServer.port`), `8085` the system API
 (`httpServer.system.port`, serving `/system/readiness`, `/system/liveness`,
 `/metrics`).
+
+## Fat jar with Shadow
+
+The reference apps ship the `distTar` layout above, not a fat jar. If you build one with the
+`com.gradleup.shadow` 9.x plugin, `mergeServiceFiles()` on its own is not enough:
+
+```groovy
+shadowJar {
+    mergeServiceFiles()
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE   // let every META-INF/services copy reach the merge
+}
+```
+
+Without `INCLUDE` the jar keeps only the first copy of each `META-INF/services/*` file — the
+default duplicates strategy drops the others before the service-file transformer sees them. Flyway
+registers its plugins through `ServiceLoader` files in both `flyway-core` and
+`flyway-database-postgresql`, so the fat jar then fails at startup with a `NullPointerException`
+in `DryRunConfigurationExtensionStub.getOrResolveOutputStream`. This was observed on a real
+service build, not derived from Kora source — Kora itself does not touch the packaging.
 
 ## Multi-module and library projects
 
