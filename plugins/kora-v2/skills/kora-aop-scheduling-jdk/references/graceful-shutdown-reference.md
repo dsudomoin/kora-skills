@@ -3,8 +3,12 @@
 How `io.koraframework:scheduling-jdk` stops jobs, and what a job must do to be a good citizen during
 shutdown.
 
-For Quartz jobs (`scheduling.quartz.waitForJobComplete`) see the sibling skill
-[kora-aop-scheduling-quartz](../../kora-aop-scheduling-quartz/SKILL.md).
+For Quartz jobs see the sibling skill
+[kora-aop-scheduling-quartz](../../kora-aop-scheduling-quartz/SKILL.md). Since Kora PR #952 Quartz has a
+`scheduling.quartz.shutdownWait` of its own (default 30 s, replacing `waitForJobComplete`): it puts the
+scheduler in standby, waits that long for running jobs, interrupts them through `InterruptableJob`, and
+waits up to `shutdownWait` once more — so a Quartz shutdown can take up to twice the budget, where the
+JDK executor below waits once and does not wait again after the interrupt.
 
 ## Contents
 
@@ -25,8 +29,8 @@ Kora releases the graph in reverse dependency order: a node is released only aft
 depends on it has been released. Each scheduled job depends on the `SchedulingJdkExecutor`, and the
 executor depends on nothing but its config, so the order is fixed:
 
-1. **The job releases first — and returns immediately.** `release()` marks the job stopped and cancels
-   its pending schedule with `cancel(false)`. It does not wait for an in-flight run and does not
+1. **The job releases first — and returns immediately.** `KoraJdkJob.release()` marks the job stopped
+   and cancels its pending schedule with `cancel(false)`. It does not wait for an in-flight run and does not
    interrupt it; a run that is already executing keeps going, and no later run of that job starts.
 2. **Then the executor releases** (`VirtualThreadSchedulingJdkExecutor.release()`):
    - stops accepting work and cancels every remaining periodic task;
@@ -62,7 +66,7 @@ The interrupt from `shutdownNow()` is the only signal a running job gets, and it
 `shutdownWait` has elapsed. Treat it as "stop now":
 
 ```java
-@ScheduleWithFixedDelay(config = "scheduling.jobs.import")
+@ScheduleJdkWithFixedDelay(config = "scheduling.jobs.import")
 void importRecords() {
     for (var page : source.pages()) {
         if (Thread.currentThread().isInterrupted()) {
@@ -116,7 +120,7 @@ public final class OutboxPublisher {
 
     private static final int BATCH = 500;
 
-    @ScheduleWithFixedDelay(config = "scheduling.jobs.outbox")
+    @ScheduleJdkWithFixedDelay(config = "scheduling.jobs.outbox")
     void publishPending() {
         var batch = outbox.takePending(BATCH);   // bounded by construction
         for (var message : batch) {
@@ -132,7 +136,7 @@ public final class OutboxPublisher {
 When the batch size is not under your control, stop on the clock.
 
 ```java
-@ScheduleWithFixedDelay(config = "scheduling.jobs.import")
+@ScheduleJdkWithFixedDelay(config = "scheduling.jobs.import")
 void importRecords() {
     var deadline = Instant.now().plus(Duration.ofSeconds(20));
 
@@ -191,7 +195,7 @@ Ordinary try-with-resources is enough: a run either finishes inside `shutdownWai
 and in both cases `finally` executes on the way out.
 
 ```java
-@ScheduleAtFixedRate(config = "scheduling.jobs.report")
+@ScheduleJdkAtFixedRate(config = "scheduling.jobs.report")
 void buildReport() {
     try (var connection = dataSource.getConnection();
          var writer = Files.newBufferedWriter(target)) {
@@ -202,7 +206,7 @@ void buildReport() {
 }
 ```
 
-Do **not** open a resource in one run and close it in the next — a one-shot `@ScheduleOnce` or a
+Do **not** open a resource in one run and close it in the next — a one-shot `@ScheduleJdkOnce` or a
 cancelled schedule may mean the next run never happens.
 
 ---
@@ -228,7 +232,7 @@ it, the container kill timeout — `terminationGracePeriodSeconds` (Kubernetes, 
 package com.example.app.jobs;
 
 import io.koraframework.common.annotation.Component;
-import io.koraframework.scheduling.jdk.annotation.ScheduleWithFixedDelay;
+import io.koraframework.scheduling.jdk.annotation.ScheduleJdkWithFixedDelay;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -250,7 +254,7 @@ public final class DataImportJob {
         this.sink = sink;
     }
 
-    @ScheduleWithFixedDelay(config = "scheduling.jobs.import")
+    @ScheduleJdkWithFixedDelay(config = "scheduling.jobs.import")
     void importExternalData() {
         var deadline = Instant.now().plus(RUN_BUDGET);
         var imported = 0;

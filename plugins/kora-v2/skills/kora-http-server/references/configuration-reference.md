@@ -138,6 +138,11 @@ httpServer.undertow {
 `ioThreads` and `threadKeepAliveTimeout` under `httpServer` directly are ignored — that is the
 1.x location.
 
+That is the whole transport surface: there is **no response-compression option** on either server
+(`HttpServerConfig`, `SystemHttpServerConfig` and `UndertowConfig` have no such key, and the Undertow
+handler chain has no encoding handler), so `/metrics` and every API response are sent uncompressed.
+Compress at the reverse proxy or ingress.
+
 ---
 
 ## Telemetry

@@ -66,7 +66,7 @@ works; outside them it throws.
 | gRPC call | `VirtualThreadExecutorTransportFilter` |
 | Kafka record / batch | `RecordHandler` / `RecordsHandler` (a per-record handler `fork()`s the batch MDC) |
 | Kafka publish | `DefaultKafkaPublisherRecordObservation` — forks the bound MDC, or creates an empty one if none |
-| Scheduled job | `AbstractJob` / `CronJob` (JDK), `KoraQuartzJob` (Quartz) |
+| Scheduled job | `KoraJdkJob` (JDK), `KoraQuartzJob` (Quartz), `KoraDbJob` (db-scheduler) |
 | JMS message | `JmsMessageListenerContainer` |
 
 Because the `MDC` instance is created per unit of work and discarded with it, removing your keys at

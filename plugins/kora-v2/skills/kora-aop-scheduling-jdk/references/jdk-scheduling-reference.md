@@ -7,7 +7,7 @@
 
 ## Contents
 
-- [Annotations](#annotations) — `@ScheduleAtFixedRate`, `@ScheduleWithFixedDelay`, `@ScheduleOnce`, `@ScheduleWithCron`
+- [Annotations](#annotations) — `@ScheduleJdkAtFixedRate`, `@ScheduleJdkWithFixedDelay`, `@ScheduleJdkOnce`, `@ScheduleJdkWithCron`
 - [What the processor generates](#what-the-processor-generates)
 - [Method requirements](#method-requirements)
 - [Cron syntax](#cron-syntax)
@@ -19,9 +19,11 @@
 
 ## Annotations
 
-All four target `METHOD`, have `RetentionPolicy.CLASS`, and expose `String config() default ""`.
+All four target `METHOD`, have `RetentionPolicy.CLASS`, and expose `String config() default ""`. Before
+Kora PR #952 (that is, in `2.0.0.RC1`) they were `@ScheduleAtFixedRate`, `@ScheduleWithFixedDelay`,
+`@ScheduleOnce` and `@ScheduleWithCron`; those names no longer exist.
 
-### `@ScheduleAtFixedRate`
+### `@ScheduleJdkAtFixedRate`
 
 | Attribute | Type | Default |
 |---|---|---|
@@ -41,12 +43,12 @@ Use for a cadence you want to keep: heartbeat, metric scrape, health poll, cache
 @Component
 public final class HeartbeatJob {
 
-    @ScheduleAtFixedRate(initialDelay = 30, period = 60, unit = ChronoUnit.SECONDS)
+    @ScheduleJdkAtFixedRate(initialDelay = 30, period = 60, unit = ChronoUnit.SECONDS)
     void heartbeat() { }
 }
 ```
 
-### `@ScheduleWithFixedDelay`
+### `@ScheduleJdkWithFixedDelay`
 
 | Attribute | Type | Default |
 |---|---|---|
@@ -60,11 +62,11 @@ The cadence therefore drifts with execution time, which is what you want when th
 duration varies.
 
 ```java
-@ScheduleWithFixedDelay(initialDelay = 30, delay = 120, unit = ChronoUnit.SECONDS)
+@ScheduleJdkWithFixedDelay(initialDelay = 30, delay = 120, unit = ChronoUnit.SECONDS)
 void syncData() { }
 ```
 
-### `@ScheduleOnce`
+### `@ScheduleJdkOnce`
 
 | Attribute | Type | Default |
 |---|---|---|
@@ -76,31 +78,43 @@ One execution, `delay` after the graph starts the job. Use for cache warm-up, la
 startup task that must not block graph initialisation.
 
 ```java
-@ScheduleOnce(delay = 5, unit = ChronoUnit.MINUTES)
+@ScheduleJdkOnce(delay = 5, unit = ChronoUnit.MINUTES)
 void warmup() { }
 ```
 
-### `@ScheduleWithCron`
+### `@ScheduleJdkWithCron`
 
 | Attribute | Type | Default |
 |---|---|---|
 | `value` | `String` | `""` |
 | `config` | `String` | `""` |
 
-An in-process cron evaluator (`io.koraframework.scheduling.jdk.CronExpression`) with no Quartz
-dependency. After each run the job computes the next fire time from the current time in the **JVM
-default time zone** (`Clock.systemDefaultZone()`); set `-Duser.timezone` / `TZ` if you need a fixed one.
-The delay to the next fire time is kept in nanoseconds, so sub-millisecond remainders are not lost.
+An in-process cron evaluator (`io.koraframework.scheduling.jdk.util.CronExpression`; RC1 had it in
+`io.koraframework.scheduling.jdk`) with no Quartz dependency. After each run the job computes the next
+fire time from the current time in the **scheduling time zone**: the `java.time.ZoneId` component tagged
+`@Tag(io.koraframework.scheduling.common.SchedulingModule.class)` if the graph has one, otherwise the JVM
+default zone (`Clock.systemDefaultZone()`). The generated factory receives it as a
+`@Tag(SchedulingModule.class) @Nullable ZoneId` parameter, so the component is optional. The delay to the
+next fire time is kept in nanoseconds, so sub-millisecond remainders are not lost.
 
 ```java
-@ScheduleWithCron("0 0 3 * * ?")
+@ScheduleJdkWithCron("0 0 3 * * ?")
 void nightlyCompaction() { }
 ```
 
-The expression is parsed while the graph is built, so an invalid one fails **startup** with
-`IllegalArgumentException` (`Cron expression must contain 5, 6 or 7 fields, got …`), not compilation.
-If the expression can never fire again before the year 2100, the job logs a warning at WARN and stops
-rescheduling instead of throwing.
+Validation happens twice:
+
+| Cron source | Checked | Failure |
+|---|---|---|
+| annotation `value` | at **compile time** by the processor (`CronValidator`, JDK dialect) | build error `Invalid CRON expression '<expr>' in @ScheduleJdkWithCron on '<fqcn>#<method>()': <reason>.`, then the field diagram, two examples and `See the Javadoc of @ScheduleJdkWithCron for details.` |
+| config (`cron` key or a bare string) | at graph init, when `CronJob` is constructed | startup error `IllegalArgumentException: Invalid CRON expression '<expr>' for JDK job '<fqcn>#<method>': <parser message>`, then the same field diagram |
+
+The compile-time check is deliberately incomplete: it reports only errors the JDK parser rejects as
+well (field count, ranges, reversed ranges, steps of `0`, `L`/`W`/`#`/`C` — `… modifier L in L is not
+supported by the JDK scheduler`) and leaves anything it does not model to the parser at startup.
+If the expression can never fire again before the year 2100, the job logs
+`JDK Job '<fqcn>#<method>' won't be scheduled because it has no next fire time` at WARN instead of
+throwing.
 
 ---
 
@@ -116,7 +130,7 @@ Either period() or config() annotation parameter must be provided
 The Kotlin processor prints the long form:
 
 ```
-Invalid `@ScheduleAtFixedRate` configuration on `com.example.Jobs.heartbeat`.
+Invalid `@ScheduleJdkAtFixedRate` configuration on `com.example.Jobs.heartbeat`.
 
 The annotation must define either `period` directly or `config` with a config path.
 A zero or blank `period` is treated as missing.
@@ -141,9 +155,10 @@ $<ClassName>_<methodName>_Job
 ```
 
 returning `FixedRateJob`, `FixedDelayJob`, `RunOnceJob` or `CronJob` from
-`io.koraframework.scheduling.jdk`. The factory takes `SchedulingTelemetryFactory`,
-`SchedulingJdkExecutor` and `ValueOf<YourClass>`, and the job body is a lambda
-`() -> target.get().yourMethod()`.
+`io.koraframework.scheduling.jdk.job` (all extend `KoraJdkJob`, RC1's `AbstractJob`). The factory takes
+`SchedulingTelemetryFactory`, `SchedulingJdkExecutor` and `ValueOf<YourClass>` — plus the optional
+`@Tag(SchedulingModule.class) ZoneId` for a cron job and the generated config for a `config` job — and
+the job body is a lambda `() -> target.get().yourMethod()`.
 
 Two things follow from that shape:
 
@@ -151,6 +166,13 @@ Two things follow from that shape:
    be non-`final` (Java) or `open` (Kotlin) for scheduling to work.
 2. The job component is annotated `@Root`, so it is never pruned out of the graph even though nothing
    depends on it.
+3. The factory carries **no** `@Conditional`. On a `@Conditional` component whose condition fails the
+   job is still created and scheduled, and every run fails in `ValueOf.get()` with
+   `IllegalStateException: Graph node value was not initialized because condition failed: <reason>` —
+   recorded as a job error, invisible with job logging off. Fixed by kora-projects/kora PR #962 (on
+   master once merged), which copies the class's `@Conditional` onto the job factory. Without it, keep the
+   scheduled method on an unconditional component and reach the conditional one through `All<T>`
+   (condition-failed members are skipped); a `@Nullable T` dependency hits the same exception (PR #960).
 
 When the annotation carries `config = "<path>"` the processor additionally writes a
 `@ConfigMapper` interface
@@ -161,11 +183,20 @@ $<ClassName>_<methodName>_Config extends SchedulingJobConfig
 
 and a factory method binding it to `<path>`. Annotation attributes become `default` methods on that
 interface (so config overrides them); an attribute left unset becomes an **abstract** method, which
-makes the corresponding config key mandatory.
+makes the corresponding config key mandatory. `SchedulingJobConfig` adds `enabled()` (default `true`)
+and `telemetry()`; the job is constructed with `config.enabled()`, and a disabled job's `init()` logs
+`JDK Job '<fqcn>#<method>' is disabled by configuration and won't be scheduled` at INFO and schedules
+nothing. Jobs without `config` are always enabled.
+
+For `@ScheduleJdkWithCron` the binding method accepts either form at the path: a string becomes
+`{ cron = "<string>" }`, an object is mapped as is, anything else fails with `ConfigValueException`.
+When the annotation also has a `value` and the path is absent, the annotation expression is used.
 
 `@KoraAppTest` needs the job type in `components` to pull the job into the test graph:
 
 ```java
+import io.koraframework.scheduling.jdk.job.FixedRateJob;
+
 @KoraAppTest(value = Application.class, components = FixedRateJob.class)
 ```
 
@@ -221,7 +252,7 @@ Five, six or seven space-separated fields:
 ```
 
 Five-field expressions are evaluated with `0` seconds. A missing year field means 1970–2099.
-Day-of-week also accepts `0` for Sunday.
+Day-of-week also accepts `0` for Sunday (`0` and `1` are both Sunday).
 
 | Character | Meaning |
 |---|---|
@@ -234,8 +265,8 @@ Day-of-week also accepts `0` for Sunday.
 Month (`JAN`–`DEC`) and day-of-week (`SUN`–`SAT`) aliases work everywhere a number does: single values,
 lists (`JUL,DEC`), ranges (`JUL-OCT`, `WED-FRI`) and steps (`JUL/2`).
 
-**Not supported:** the Quartz modifiers `L`, `W`, `#`, `C`. Those still require
-[kora-aop-scheduling-quartz](../../kora-aop-scheduling-quartz/SKILL.md).
+**Not supported:** the Quartz modifiers `L`, `W`, `#`, `C` — a literal using them fails the build. Those
+still require [kora-aop-scheduling-quartz](../../kora-aop-scheduling-quartz/SKILL.md).
 
 | Expression | Fires |
 |---|---|
@@ -250,7 +281,8 @@ lists (`JUL,DEC`), ranges (`JUL-OCT`, `WED-FRI`) and steps (`JUL/2`).
 
 ### Daylight-saving transitions
 
-Fire times are searched per constant-offset interval of the zone, so transitions behave predictably:
+Fire times are searched per constant-offset interval of the scheduling zone (the tagged `ZoneId`, else
+the JVM default), so transitions behave predictably:
 
 | Transition | Effect on `0 30 2 * * ?` (`Europe/Berlin`) |
 |---|---|
@@ -259,12 +291,13 @@ Fire times are searched per constant-offset interval of the zone, so transitions
 | Every-second / every-minute expressions across the jump | no fire time exactly at the transition is lost |
 
 Offsets that are not whole hours (e.g. `Australia/Lord_Howe`, 30 minutes) follow the same rule. If a
-job must run exactly once per day, schedule it outside 01:00–03:00 local time or run the JVM in UTC.
+job must run exactly once per day, schedule it outside 01:00–03:00 local time or declare a UTC
+`@Tag(SchedulingModule.class) ZoneId` component.
 
 Cron can also come from config:
 
 ```java
-@ScheduleWithCron(config = "scheduling.jobs.compaction")
+@ScheduleJdkWithCron(config = "scheduling.jobs.compaction")
 void nightlyCompaction() { }
 ```
 
@@ -274,6 +307,7 @@ scheduling.jobs.compaction = "0 0 3 * * ?"
 
 scheduling.jobs.compaction {
   cron = "0 0 3 * * ?"
+  enabled = true                 # default; only the object form can switch the job off
   telemetry.logging.enabled = true
 }
 ```
@@ -287,10 +321,10 @@ With no `value` on the annotation, the `cron` key is mandatory.
 | Need | Module |
 |---|---|
 | fixed rate / fixed delay / one-shot, in-process | **JDK** |
-| plain cron, in-process, every replica runs it | **JDK** — `@ScheduleWithCron` |
+| plain cron, in-process, every replica runs it | **JDK** — `@ScheduleJdkWithCron` |
 | exactly one execution per firing across replicas, surviving restarts | **DB** — [kora-aop-scheduling-db](../../kora-aop-scheduling-db/SKILL.md) |
 | cron with `L` / `W` / `#` / `C` | Quartz |
-| misfire policy, custom `Trigger` via `@ScheduleWithTrigger` | Quartz |
+| misfire policy, custom `Trigger` via `@ScheduleQuartzWithTrigger` | Quartz |
 | `@DisallowConcurrentExecution` / `@PersistJobDataAfterExecution` | Quartz |
 
 The JDK scheduler holds no state anywhere: every replica of your service runs every job. The full
@@ -304,7 +338,7 @@ A throwable escaping the method is caught by the job wrapper, which records it o
 (`StatusCode.ERROR` + `recordException`), tags the duration metric with `error.type`, and logs at WARN:
 
 ```
-Scheduled Job execution failed with error   jobClass=… jobMethod=… duration=… exceptionType=… exceptionMessage=…
+Scheduled Job execution failed with error   schedulerType=jdk jobClass=… jobMethod=… duration=… exceptionType=… exceptionMessage=…
 ```
 
 The schedule is **not** cancelled — the next run happens as planned, for all four annotations. (This is
@@ -313,7 +347,7 @@ the wrapper's doing; a raw `ScheduledExecutorService` would have cancelled a per
 Kora does not retry. Options:
 
 ```java
-@ScheduleWithFixedDelay(config = "scheduling.jobs.import")
+@ScheduleJdkWithFixedDelay(config = "scheduling.jobs.import")
 void importData() {
     try {
         doWork();
@@ -334,7 +368,22 @@ Toggles live under `scheduling.telemetry` and can be overridden per job under th
 path. Full key list in [scheduling-config-reference.md](scheduling-config-reference.md).
 
 If tracing, metrics and logging are all disabled for a job, Kora installs a no-op telemetry and the job
-costs nothing.
+costs nothing. Tracing counts as disabled when no `Tracer` component exists, so with the 2.0 defaults
+(logging and metrics off) a service without a tracer always gets the no-op.
+
+That no-op is a single shared `NoopSchedulingTelemetry.INSTANCE` whose `jobClass()` is `Void` and
+`jobMethod()` is `noop`, and `KoraJdkJob` takes its logger and its lifecycle messages from the
+telemetry. Every job therefore logs `JDK Job 'java.lang.Void#noop' started in …`, `… stopped in …` and
+`… is disabled by configuration …` under the logger `java.lang.Void`, and an invalid config cron is
+reported for `JDK job 'java.lang.Void#noop'`. Fixed by kora-projects/kora PR #961 (on master once
+merged), which makes the no-op carry the job's class and method. Without it, enable
+`scheduling.telemetry.logging.enabled` (or `<config-path>.telemetry.logging.enabled` for one job); the
+side effect is an INFO `Scheduled Job execution completed` line per run.
+
+`SchedulingTelemetryFactory.get` takes the scheduler type first —
+`get(String schedulerType, @Nullable String jobConfigPath, @Nullable JobTelemetryConfig jobTelemetryConfig, Class<?> jobClass, String jobMethod)`
+— where RC1 had no `schedulerType`. A custom factory must implement the new signature; the generated
+JDK jobs pass `"jdk"`.
 
 ### Metrics (Micrometer)
 
@@ -342,9 +391,10 @@ costs nothing.
   is exposed as `scheduling_job_duration_seconds_*`; other registries name it their own way.
 - **Enabled:** `scheduling.telemetry.metrics.enabled`, default **`false`**. A `MeterRegistry` component
   must also exist.
-- **Tags:** `code.function.name`, `system.name.simple` (`Class#method`),
-  `system.name.canonical` (`fqcn#method`), `error.type` (empty string on success), anything in
-  `metrics.tags`, and conditionally `system.config` — see [below](#the-systemconfig-tag).
+- **Tags:** `scheduling.system` (`jdk`; `quartz` / `dbscheduler` for the other schedulers),
+  `code.function.name`, `system.name.simple` (`Class#method`), `system.name.canonical` (`fqcn#method`),
+  `error.type` (empty string on success), anything in `metrics.tags`, and `system.config` only for jobs
+  declared with `config` — see [below](#the-systemconfig-tag).
 - **SLO:** `metrics.slo`, a list of durations; the default is the framework-wide 14-bucket ladder
   (1 ms → 90 s).
 
@@ -354,34 +404,28 @@ costs nothing.
   `Tracer` component is in the graph.
 - **Span:** name `scheduling <fqcn>#<method>`, kind `INTERNAL`, started from a **root** context (a
   scheduled run never continues an inbound trace).
-- **Attributes:** `code.function.name`, `system.name.simple`, `system.name.canonical`, anything in
-  `tracing.attributes`, and conditionally `system.config` — see [below](#the-systemconfig-tag).
+- **Attributes:** `scheduling.system` (`jdk`), `code.function.name`, `system.name.simple`,
+  `system.name.canonical`, anything in `tracing.attributes`, and `system.config` only for jobs declared
+  with `config` — see [below](#the-systemconfig-tag).
 
 ### Logging
 
 - **Enabled:** `scheduling.telemetry.logging.enabled`, default **`false`**.
 - Start: DEBUG `Scheduled Job execution started`. End: INFO `Scheduled Job execution completed`, or
   WARN `Scheduled Job execution failed with error`.
-- Structured key-values: `jobClass`, `jobMethod`, `duration` (ms), optional `jobConfigPath`, and
-  `exceptionType` / `exceptionMessage` on failure.
+- Structured key-values: `schedulerType` (`jdk`), `jobClass`, `jobMethod`, `duration` (ms), optional
+  `jobConfigPath`, and `exceptionType` / `exceptionMessage` on failure.
 - **Logger name is `<fqcn>#<method>`**, not the class name. Logback splits logger names on `.`, so
   `com.example` covers it but `com.example.Jobs` does **not**. Set the level on a package prefix.
 
 ### The `system.config` tag
 
-This one is not uniform, and it matters if you group dashboards by it. The value is whatever the
-generated code passes as the telemetry's *job config path*:
-
-| Declaration | Java | Kotlin |
-|---|---|---|
-| any annotation with `config = "<path>"` | `<path>` | `<path>` |
-| `@ScheduleAtFixedRate` / `@ScheduleWithFixedDelay` / `@ScheduleOnce` without `config` | `<fqcn>#<method>` | *absent* |
-| `@ScheduleWithCron` without `config` | *absent* | *absent* |
-
-So in a Java service a config-less timer job still carries `system.config`, holding the same string as
-`system.name.canonical` rather than a real config path; in Kotlin the tag is simply not there. Group by
-`system.name.canonical` if you want one query that works for both languages, and give jobs a `config`
-path when you want `system.config` to mean something.
+The value is the job's config path: a job declared with `config = "<path>"` carries
+`system.config = <path>`, a job without `config` carries no `system.config` at all — the same in Java
+and Kotlin, for all four annotations. (Before Kora PR #952 the Java processor passed `<fqcn>#<method>`
+as a fake config path for config-less timer jobs, so older dashboards may still group by that.) Group by
+`system.name.canonical` to address every job, and give jobs a `config` path when you want
+`system.config` to mean something.
 
 ---
 

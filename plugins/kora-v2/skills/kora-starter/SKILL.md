@@ -240,7 +240,7 @@ Read the matching sub-skill's `SKILL.md` **before** writing any code for that do
 | JDBC repositories, `@EntityJdbc`, `@Query`, SQL macros, transactions via `executor().inTx()`, Hikari | [`kora-database-jdbc`](../kora-database-jdbc/SKILL.md) |
 | PostgreSQL types (`database-jdbc-postgres`) — `@Pg` arrays and `interval`, `PgRange`, `@PgJson` / `@PgJsonb`, `= ANY(?)` | [`kora-database-jdbc`](../kora-database-jdbc/references/postgres-mappers-reference.md) |
 | Cassandra / ScyllaDB, `@EntityCassandra`, `@UDT`, CQL, driver profiles | [`kora-database-cassandra`](../kora-database-cassandra/SKILL.md) |
-| Flyway / Liquibase migrations, SQL versioning, the `scheduled_tasks` table for `scheduling-db-scheduler` | [`kora-database-migration`](../kora-database-migration/SKILL.md) |
+| Flyway / Liquibase migrations, SQL versioning, the `kora_scheduling_db_scheduler_jobs` table for `scheduling-db-scheduler` | [`kora-database-migration`](../kora-database-migration/SKILL.md) |
 
 R2DBC and Vert.x SQL were **removed** in Kora 2.0. There is no reactive database integration —
 JDBC on virtual threads is the only path.
@@ -285,9 +285,9 @@ live in the metrics and tracing sub-skills.
 | Redis-backed distributed rate limiter and retry budget — `@RateLimiterDistributedSpec`, `LettuceDistributedResilientModule`, `DistributedRetryBudgetFactory` | [`kora-aop-resilient`](../kora-aop-resilient/references/distributed-reference.md) |
 | `@Log`, `@Mdc`, method logging aspects | [`kora-aop-logging`](../kora-aop-logging/SKILL.md) |
 | `@Cacheable`, `@CachePut`, `@CacheInvalidate`, `@CacheInvalidateAll`, Caffeine / Redis-Lettuce | [`kora-aop-caching`](../kora-aop-caching/SKILL.md) |
-| `@ScheduleAtFixedRate`, `@ScheduleWithFixedDelay`, `@ScheduleWithCron`, `@ScheduleOnce` in-process (JDK executor, virtual threads) | [`kora-aop-scheduling-jdk`](../kora-aop-scheduling-jdk/SKILL.md) |
-| Quartz scheduling, cron, `@ScheduleWithTrigger`, clustered jobs, job stores | [`kora-aop-scheduling-quartz`](../kora-aop-scheduling-quartz/SKILL.md) |
-| Database-backed clustered jobs on db-scheduler (`scheduling-db-scheduler`): `@ScheduleWithCron` / `@ScheduleWithFixedDelay` / `@ScheduleOnce` from `io.koraframework.scheduling.db.scheduler.annotation`, one execution per cluster | [`kora-aop-scheduling-db`](../kora-aop-scheduling-db/SKILL.md) |
+| `@ScheduleJdkAtFixedRate`, `@ScheduleJdkWithFixedDelay`, `@ScheduleJdkWithCron`, `@ScheduleJdkOnce` in-process (JDK executor, virtual threads) | [`kora-aop-scheduling-jdk`](../kora-aop-scheduling-jdk/SKILL.md) |
+| Quartz scheduling, `@ScheduleQuartzWithCron`, `@ScheduleQuartzWithTrigger`, clustered jobs, job stores | [`kora-aop-scheduling-quartz`](../kora-aop-scheduling-quartz/SKILL.md) |
+| Database-backed clustered jobs on db-scheduler (`scheduling-db-scheduler`): `@ScheduleDbWithCron` / `@ScheduleDbWithFixedDelay` / `@ScheduleDbOnce`, one execution per cluster | [`kora-aop-scheduling-db`](../kora-aop-scheduling-db/SKILL.md) |
 | `@Valid`, `@Validate`, constraint annotations, custom validators | [`kora-aop-validation`](../kora-aop-validation/SKILL.md) |
 
 ### Testing
@@ -377,7 +377,10 @@ test case, never as something a successful build has proved.
 | Console stays empty although `logback.xml` looks right | The encoder class is still `io.koraframework.logging.logback.ConsoleTextRecordEncoder`; it moved to `io.koraframework.logging.logback.text.ConsoleTextRecordEncoder`, and the failure is hidden behind `NopStatusListener` |
 | Log lines go missing under load | `KoraAsyncAppender` defaults to `neverBlock = true` with `queueSize = 512`: a full queue **drops** events |
 | Secrets appear in TRACE Kafka / HTTP body logs | Header masking is on by default (`maskHeaders`), but bodies are masked only by a `DataMasker` you register under the transport's telemetry tag — none is registered by default |
-| DB-scheduled jobs (`scheduling-db-scheduler`) never run, no error | Nothing roots `DbSchedulerWrapper`, so the graph drops it. Add a `@Root @Component` that takes `DbSchedulerWrapper` in its constructor — see [`kora-aop-scheduling-db`](../kora-aop-scheduling-db/SKILL.md). Also check the job table name matches `scheduling.dbScheduler.tableName` |
+| DB-scheduled jobs (`scheduling-db-scheduler`) never run, the app starts green | The job table is missing. `scheduling.dbScheduler.initializeTable` — the name the module README and the `DbSchedulerConfig` Javadoc gave until kora-projects/kora PR #966 — is not read; the key is `tableInitialize`, and the default table is now `kora_scheduling_db_scheduler_jobs`. `KoraDbScheduler` is `@Root` itself, so no starter component is needed — see [`kora-aop-scheduling-db`](../kora-aop-scheduling-db/SKILL.md) |
+| A JDBC `afterCommit` fires for a transaction that rolled back (or `afterRollback` for one that committed); an `afterCommit` that opens `inTx` ends in `StackOverflowError` | `ConnectionContext` keeps its actions after the transaction ends, so a later `inTx` in the same `withConnection` scope runs them again, and the first failing action skips the rest. Fixed by kora-projects/kora PR #967 (on master once merged); a post-commit failure still propagates out of `inTx` for committed work — see [`kora-database-jdbc`](../kora-database-jdbc/references/transactions-reference.md#post-commit-and-post-rollback-actions) |
+| A scheduled job never does its work; with job logging off nothing says so | The scheduled method sits on a `@Conditional` component whose condition failed. The generated job factory does not carry the condition, so a JDK or DB job is still scheduled and every run fails in `ValueOf.get()` with `Graph node value was not initialized because condition failed` (a Quartz job fails graph init instead). Fixed by kora-projects/kora PR #962 (on master once merged); until then keep schedules on an unconditional component — see [`kora-aop-scheduling-jdk`](../kora-aop-scheduling-jdk/SKILL.md) |
+| Scheduler concurrency or shutdown settings have no effect after moving off RC1 / an earlier 2.0 snapshot | Renamed keys are unknown keys: `scheduling.jdk.maxConcurrentExecutions` is now `executionParallelism`, `scheduling.quartz.waitForJobComplete` is now the duration `shutdownWait` — after which Quartz jobs are interrupted — and the annotations are `@ScheduleJdk*` / `@ScheduleQuartz*` / `@ScheduleDb*` |
 | `telemetry.logging.mask = "…"` has no effect | The `mask` key is gone; the replacement text comes from a tagged `MaskingStrategy` component. Unknown keys are ignored silently |
 | Tracing is on, spans are created, and the collector receives nothing | The exporter's `endpoint` is unset. `spanExporter`/`spanProcessor` return `SpanExporter.composite()` / `SpanProcessor.composite()` — a no-op — with no warning, while `tracing.enabled` defaults to **true**, so the service looks fully instrumented |
 | `No component found for dependency: …Mapper` | A mapper *with* constructor dependencies needs `@Component` — the generated module injects it rather than building it |
@@ -399,6 +402,8 @@ test case, never as something a successful build has proved.
 | `incompatible types: String cannot be converted to Class<? extends Timeouter>` | 1.x string-named resilient annotation; 2.0 takes a spec **type** |
 | KSP crashes with `ClassCastException: String → KSType` | Same cause, seen from Kotlin: a leftover string-named resilient annotation |
 | `error: SQL query placeholder has no matching method parameter: :id … - :arg0` | Incremental build read the repository from a class file. `--rerun-tasks` or `clean` on the module |
+| `Graph node value was not initialized because condition failed` although the dependency is `@Nullable` / `T?` | A nullable dependency on a `@Conditional` component is generated as `g.get(node)`. Fixed by kora-projects/kora PR #960 (on master once merged); until then inject `All<T>` — see [`kora-di-runtime`](../kora-di-runtime/SKILL.md) |
+| `@KoraAppTest` fails to start with `Graph node belongs to another application graph` | The tested graph contains a `@Conditional` component; `ApplicationGraphDraw.copy()`/`subgraph()` keep its condition bound to the original graph. Fixed by kora-projects/kora PR #963 (on master once merged) — see [`kora-testing-junit-java`](../kora-testing-junit-java/SKILL.md) |
 | Generated classes stale or broken after a refactor | Delete `build/generated/`, rebuild with `--no-build-cache` |
 | Build hangs, or `clean` fails to delete a directory | `./gradlew --stop`, then retry |
 | IDE shows errors but Gradle compiles fine | IDE caching — invalidate caches and restart |

@@ -221,6 +221,31 @@
         "Does not suggest disabling the extension or caching the graph manually"
       ],
       "tags": ["lifecycle", "advanced"]
+    },
+    {
+      "id": "kora-testing-junit-java-conditional-component-graph",
+      "skills": ["kora-testing-junit-java"],
+      "query": "Our Kora 2.0 app has a @Component @Conditional(tag = FeatureEnabled.class) bean. Since we added it, every @KoraAppTest fails during graph init with IllegalArgumentException: Graph node belongs to another application graph, from GraphImpl$GraphConditionKey.hashCode. The app itself starts fine. When we switched one class to @TestInstance(PER_CLASS) on a locally patched Kora, the tests then failed in beforeEach with 'Graph node value was not initialized because condition failed'. What is going on?",
+      "expected_behavior": [
+        "Explains that the extension always runs the application draw through ApplicationGraphDraw.copy() (and subgraph() for declared roots or mocks), and both keep the original node condition, which then looks up the original condition node on the derived graph",
+        "States the first failure is fixed by kora-projects/kora PR #963 (on master once merged) and has no practical workaround besides keeping @Conditional out of the tested graph",
+        "Explains the second failure: under PER_CLASS with Mockito on the classpath, beforeEach calls KoraJUnit5Extension.resetMocks, which reads every graph node, and a condition-failed node throws on read; KoraAppGraph.getAll fails the same way",
+        "States the second is fixed by kora-projects/kora PR #964 (on master once merged) and the workaround is the default PER_METHOD lifecycle",
+        "Does not blame the test configuration, the condition implementation, or Mockito strictness"
+      ],
+      "tags": ["conditional", "lifecycle", "regression"]
+    },
+    {
+      "id": "kora-testing-junit-java-jsonreader-not-in-graph",
+      "skills": ["kora-testing-junit-java"],
+      "query": "In a Kora 2.0 integration test I inject `@TestComponent JsonReader<OrderResponse> reader;` to parse what my controller returns, and the extension fails: Cannot inject Kora component ... No matching component was found in the application graph. OrderResponse is @Json. Why?",
+      "expected_behavior": [
+        "Explains that @TestComponent can only select nodes that already exist in the application graph",
+        "Explains that the JSON extension creates a JsonReader<T> node only where some component reads T; a controller that only returns OrderResponse needs JsonWriter<OrderResponse>, so no reader exists",
+        "Recommends parsing the response body in the test itself (or asserting on the raw string) instead of injecting a reader",
+        "Does not suggest adding @Root or components = {...} for JsonReader, since it is not a declared component"
+      ],
+      "tags": ["injection", "json", "integration"]
     }
   ]
 }

@@ -446,6 +446,26 @@
         "request-mapping",
         "cookie"
       ]
+    },
+    {
+      "id": "kora-http-server-no-response-compression",
+      "skills": [
+        "kora-http-server"
+      ],
+      "query": "Our Kora 2.0 /metrics scrape is several megabytes of text and Prometheus sends Accept-Encoding: gzip, but the response is never compressed. How do I turn on gzip for the system server, and for the public API?",
+      "expected_behavior": [
+        "States that neither Undertow server (public or system) wires response compression and that HttpServerConfig, SystemHttpServerConfig and UndertowConfig have no key for it",
+        "Notes that an invented key such as httpServer.system.compression would be ignored silently as an unknown HOCON key",
+        "Recommends compressing at the reverse proxy or ingress"
+      ],
+      "anti_behavior": [
+        "Invents a compression/gzip config key or an Undertow EncodingHandler hook in Kora",
+        "Claims Kora compresses responses by default"
+      ],
+      "tags": [
+        "config",
+        "system-server"
+      ]
     }
   ]
 }

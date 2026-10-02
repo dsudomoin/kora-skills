@@ -476,6 +476,61 @@
         "entity",
         "naming"
       ]
+    },
+    {
+      "id": "kora-database-jdbc-byte-array-return-npe",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "Kora 2.0 Java: I added `@Query(\"SELECT payload FROM blobs WHERE batch_id = :batchId\") List<byte[]> findPayloads(long batchId);` to my JdbcRepository and now javac fails with NullPointerException: Cannot invoke \"javax.lang.model.element.Element.getAnnotationMirrors()\" because \"element\" is null, with JdbcTypesExtension.getDependencyGenerator in the trace. Did I break something in my code?",
+      "expected_behavior": [
+        "Identifies the byte[] / List<byte[]> return type as the trigger: the Java JDBC extension resolves JdbcResultSetMapper<byte[]> and looks for @EntityJdbc on the element of an array type, which is null",
+        "States it is a processor defect fixed by kora-projects/kora PR #959 (on master once merged), not a mistake in the repository code, and that KSP is not affected",
+        "Gives the workaround for builds without the fix: a single-column @EntityJdbc record such as record Payload(byte[] data) and a List<Payload> return type",
+        "Does not suggest a hand-written JdbcResultColumnMapper<byte[]> as the fix, because JdbcMapperModule already ships JdbcRowMapper<byte[]> and the crash happens inside the extension before it is used"
+      ],
+      "tags": [
+        "repository",
+        "regression",
+        "processor"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-hikari-keepalive-configurer",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "Kora 2.0: our PostgreSQL connections get cut by a firewall after idle periods, so I added `jdbc.dsProperties { keepaliveTime = \"120000\" }` to application.conf. Nothing changed. How do I set Hikari's keepaliveTime in Kora?",
+      "expected_behavior": [
+        "Explains that jdbc.dsProperties is passed to HikariConfig.setDataSourceProperties, i.e. JDBC driver properties, so a Hikari pool setting there reaches the driver and does nothing for the pool",
+        "Notes JdbcDatabaseConfig has no keepaliveTime key and sets it through a Configurer<HikariConfig> component (io.koraframework.common.Configurer) that calls hikari.setKeepaliveTime(...) and returns the config",
+        "Explains the wiring: JdbcDatabaseFactoryModule.jdbcDataSource takes @Tag(Tag.Factory.class) @Nullable Configurer<HikariConfig>, the default jdbc factory module is untagged, so an untagged module method or @Component configures the primary pool",
+        "Warns not to change autoCommit in the configurer",
+        "Does not keep keepaliveTime in dsProperties, invent a jdbc.keepaliveTime / jdbc.hikari.* config key, or build a HikariDataSource by hand"
+      ],
+      "tags": [
+        "config",
+        "hikari",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-post-commit-action-failure",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "Kora 2.0: in a money transfer I register ctx.afterCommit(c -> { cache.put(...); metrics.record(...); }) inside executor().inTx(ctx -> ...). Sometimes metrics.record throws, and then the HTTP client gets a 500 although the transfer is in the database. In tests I also saw afterCommit run for a transaction that rolled back when I ran two inTx inside one withConnection. What is going on and how do I write this safely?",
+      "expected_behavior": [
+        "Explains that post-commit actions run after commit() and a failure there does not undo the commit but propagates out of inTx, so the caller sees an error for committed work",
+        "Fixes it by catching inside the afterCommit action (try/catch with logging) rather than around inTx",
+        "Explains that before kora-projects/kora PR #967 the actions are never cleared from the ConnectionContext, so a later inTx in the same withConnection scope re-runs them, and the first throwing post-commit action skips the remaining ones",
+        "Recommends one inTx per withConnection scope when it registers actions, and running follow-up transactional work after inTx returns instead of from an action (an afterCommit that opens inTx recurses until StackOverflowError before the fix)",
+        "Does not invent a Spring-style TransactionSynchronization, @TransactionalEventListener or a Kora config key to change this behaviour"
+      ],
+      "tags": [
+        "transactions",
+        "regression"
+      ]
     }
   ]
 }

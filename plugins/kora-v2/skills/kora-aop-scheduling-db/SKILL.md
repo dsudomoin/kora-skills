@@ -1,6 +1,6 @@
 ---
 name: kora-aop-scheduling-db
-description: "Database-backed, cluster-wide scheduled jobs in Kora 2.x on db-scheduler — @ScheduleWithCron, @ScheduleWithFixedDelay, @ScheduleOnce from io.koraframework.scheduling.db.scheduler.annotation via DbSchedulerModule (artifact io.koraframework:scheduling-db-scheduler). Each firing runs on one replica and survives restarts in one table (default kora_scheduling_db_jobs). Covers the mandatory @Root starter for DbSchedulerWrapper, scheduling.dbScheduler keys (executionParallelism, polling FETCH/LOCK_AND_FETCH, prefetchMode, tableName, initializeTable, shutdownWait), the bundled Flyway/Liquibase SQL and stable task names. Use for clustered jobs that must not run on every instance; for in-process timers use kora-aop-scheduling-jdk, for Quartz triggers use kora-aop-scheduling-quartz."
+description: "Database-backed, cluster-wide scheduled jobs in Kora 2.x on db-scheduler — @ScheduleDbWithCron, @ScheduleDbWithFixedDelay, @ScheduleDbOnce from io.koraframework.scheduling.db.scheduler.annotation via DbSchedulerModule (artifact io.koraframework:scheduling-db-scheduler), run by the @Root KoraDbScheduler. Each firing runs on one replica and survives restarts in one table (default kora_scheduling_db_scheduler_jobs). Covers stable job names (CanonicalClassName#method, annotation-only, 350 chars), scheduling.dbScheduler keys (executionParallelism, polling FETCH/LOCK_AND_FETCH, prefetchMode, tableName, tableInitialize, shutdownWait), the bundled schema scripts and Liquibase changelog under db/kora/scheduling-db-scheduler, compile-time cron validation, the per-job enabled switch, the @Tag(SchedulingModule.class) ZoneId cron time zone and the renames since earlier 2.0 snapshots. Use for clustered jobs that must not run on every instance; for in-process timers use kora-aop-scheduling-jdk, for Quartz triggers use kora-aop-scheduling-quartz."
 license: Apache-2.0
 metadata:
   kora-version: "2.x"
@@ -14,7 +14,8 @@ metadata:
 |---|---|
 | **Artifact** | `io.koraframework:scheduling-db-scheduler` (version from `io.koraframework:kora-bom`) — brings `com.github.kagkarlsson:db-scheduler:16.12.0` as `api` |
 | **Module** | `io.koraframework.scheduling.db.scheduler.DbSchedulerModule` (extends `io.koraframework.scheduling.common.SchedulingModule`) |
-| **Annotations** | `io.koraframework.scheduling.db.scheduler.annotation.{ScheduleWithCron, ScheduleWithFixedDelay, ScheduleOnce}` |
+| **Annotations** | `io.koraframework.scheduling.db.scheduler.annotation.{ScheduleDbWithCron, ScheduleDbWithFixedDelay, ScheduleDbOnce}` |
+| **Runtime** | `io.koraframework.scheduling.db.scheduler.KoraDbScheduler` — `@Root`, `Lifecycle`, `Wrapped<Scheduler>` |
 | **Processor** | Java `annotationProcessor "io.koraframework:annotation-processors"` · Kotlin `ksp("io.koraframework:symbol-processors")` |
 | **Needs** | a `javax.sql.DataSource` in the graph — normally `JdbcDatabaseModule` ([kora-database-jdbc](../kora-database-jdbc/SKILL.md)) |
 | **Config roots** | `scheduling.dbScheduler` · `scheduling.telemetry` · one arbitrary path per job via `config = "…"` |
@@ -22,6 +23,30 @@ metadata:
 Jobs are rows in a database table. Every replica polls the table; a due execution is picked by exactly
 one replica, executed, and its next execution time is written back. A restart, a deploy or a crashed
 node does not lose the schedule.
+
+---
+
+## Coming from earlier 2.0 snapshots
+
+This module is **not in `2.0.0.RC1`** — it first appeared on the 2.0 snapshot line. Code written
+against an earlier snapshot needs these changes (kora-projects/kora PRs #922 and #952):
+
+| Earlier 2.0 snapshot | Now | Consequence if you skip it |
+|---|---|---|
+| `@ScheduleWithCron` / `@ScheduleWithFixedDelay` / `@ScheduleOnce` from `…db.scheduler.annotation` | `@ScheduleDbWithCron` / `@ScheduleDbWithFixedDelay` / `@ScheduleDbOnce`, same package | Compile error — loud |
+| `DbSchedulerWrapper`, `@Tag(DbSchedulerWrapper.class) DataSource` | `KoraDbScheduler`, `@Tag(KoraDbScheduler.class) DataSource` | Compile error — the old class is gone |
+| `job.AbstractJob` | `job.KoraDbJob` | Compile error in custom jobs |
+| A `@Root` "starter" component injecting the wrapper | Not needed — `KoraDbScheduler` is `@Root` itself | A leftover starter is harmless; delete it |
+| Default job name `SimpleClassName#method` | **`CanonicalClassName#method`** (`com.example.jobs.ReportJobs#hourly`) | Every job without an explicit `name` gets a **new row**: its state starts over and the old row is orphaned. Pin `name = "ReportJobs#hourly"` (the old value) to keep it |
+| Config key `<path>.name` overrides the name | **Removed** — the name comes from the annotation only | An unknown HOCON key is ignored silently: the job runs under its default name |
+| Any length | Name ≤ 350 characters, checked at compile time | Compile error naming the job |
+| `scheduling.dbScheduler.initializeTable` | **`scheduling.dbScheduler.tableInitialize`** | Ignored silently — the table is not created |
+| Table `kora_scheduling_db_jobs` | **`kora_scheduling_db_scheduler_jobs`** | Scheduler looks for a table that does not exist. Set `tableName = "kora_scheduling_db_jobs"` or migrate |
+| `db/scheduling-db/flyway/<db>/V1__create_scheduled_tasks.sql`, `db/scheduling-db/liquibase/changelog.yaml` (table `scheduled_tasks`) | `db/kora/scheduling-db-scheduler/schema/<db>.sql` (plain scripts) and `db/kora/scheduling-db-scheduler/liquibase/changelog.yaml` | A Flyway location pointing at the old path finds nothing; a Liquibase `include` of it no longer resolves |
+| Duplicate names fail inside db-scheduler (`Duplicate key …`) | Kora fails first, naming both jobs | — |
+| Invalid cron fails at graph init | A cron **literal** fails at compile time | — |
+| — | Per-job `enabled` key, optional `@Tag(SchedulingModule.class) ZoneId` for cron | — |
+| `SchedulingTelemetryFactory.get(configPath, …)` | `get(schedulerType, configPath, …)`, `schedulerType = "dbscheduler"` | Compile error in a custom telemetry factory |
 
 ---
 
@@ -73,47 +98,23 @@ public interface Application extends
 }
 ```
 
-### 3. Pull the scheduler into the graph — mandatory
+`DbSchedulerModule` declares `KoraDbScheduler` as `@Root @DefaultComponent`, so the scheduler starts
+with the graph — no extra component is needed. It logs `KoraDbScheduler started in …` at INFO.
 
-The generated jobs are `@Root`, but the component that actually runs them, `DbSchedulerWrapper`, is a
-plain `@DefaultComponent` that nothing depends on. Kora builds the graph from `@Root` components
-outward, so **without a root that depends on `DbSchedulerWrapper` the scheduler is pruned and no job
-ever runs** — no error, no log line. Add one small root component:
+### 3. Create the table
 
-```java
-@Root
-@Component
-public final class DbSchedulerStarter {
+db-scheduler needs its table before the scheduler starts. Copy the bundled script for your database
+into your own migration (default table name **`kora_scheduling_db_scheduler_jobs`**) or include the
+bundled Liquibase changelog — see [Table](#table). For a local run,
+`scheduling.dbScheduler.tableInitialize = true` creates it for you.
 
-    public DbSchedulerStarter(DbSchedulerWrapper scheduler) {
-    }
-}
-```
-
-```kotlin
-@Root
-@Component
-class DbSchedulerStarter(@Suppress("unused") scheduler: DbSchedulerWrapper)
-```
-
-(`@Root` and `@Component` from `io.koraframework.common.annotation`, `DbSchedulerWrapper` from
-`io.koraframework.scheduling.db.scheduler`.) Verified against the KSP graph builder at master: without
-the starter the generated graph contains the `DbSchedulerJob` nodes but no `DbSchedulerWrapper`.
-
-### 4. Create the table
-
-db-scheduler needs its table before the scheduler starts. Put the SQL in your own Flyway/Liquibase
-migration, named after `scheduling.dbScheduler.tableName` (default **`kora_scheduling_db_jobs`**) —
-see [Table](#table). For a local run, `scheduling.dbScheduler.initializeTable = true` creates it for
-you.
-
-### 5. Declare jobs
+### 4. Declare jobs
 
 ```java
 @Component
 public final class ReportJobs {
 
-    @ScheduleWithCron(value = "0 0 * * * *", name = "hourly-report")
+    @ScheduleDbWithCron(value = "0 0 * * * *", name = "hourly-report")
     void hourlyReport() {
         // runs on one replica per hour
     }
@@ -121,7 +122,7 @@ public final class ReportJobs {
 ```
 
 The processor emits a `$ReportJobs_SchedulingModule` with one `@Root` factory per method returning a
-`DbSchedulerJob`. `DbSchedulerWrapper` collects them all at init and registers their tasks with
+`DbSchedulerJob`. `KoraDbScheduler` collects them all at init and registers their tasks with
 db-scheduler.
 
 ---
@@ -133,9 +134,9 @@ All three live in `io.koraframework.scheduling.db.scheduler.annotation`, target 
 
 | Annotation | Attributes | db-scheduler task | Semantics |
 |---|---|---|---|
-| `@ScheduleWithCron` | `value` (cron, `""`), `name`, `config` | `RecurringTask`, `CronSchedule` | next run = next cron time after completion |
-| `@ScheduleWithFixedDelay` | `initialDelay` (long, `0`), `delay` (long, `0`), `unit` (`ChronoUnit`, `MILLIS`), `name`, `config` | `RecurringTask`, `FixedDelay` | next run = completion + `delay`; `initialDelay` only for the very first execution |
-| `@ScheduleOnce` | `delay` (long, `0`), `unit` (`ChronoUnit`, `MILLIS`), `name`, `config` | custom task, scheduled on startup | one execution `delay` after a startup; removed after it runs, **no retry on failure** |
+| `@ScheduleDbWithCron` | `value` (cron, `""`), `name`, `config` | `RecurringTask`, `CronSchedule` | next run = next cron time after completion |
+| `@ScheduleDbWithFixedDelay` | `initialDelay` (long, `0`), `delay` (long, `0`), `unit` (`ChronoUnit`, `MILLIS`), `name`, `config` | `RecurringTask`, `FixedDelay` | next run = completion + `delay`; `initialDelay` only for the very first execution |
+| `@ScheduleDbOnce` | `delay` (long, `0`), `unit` (`ChronoUnit`, `MILLIS`), `name`, `config` | custom task, scheduled on startup | one execution `delay` after a startup; removed after it runs, **no retry on failure** |
 
 There is **no fixed-rate** annotation in this module.
 
@@ -147,26 +148,54 @@ The method rules are the ones of every Kora scheduler: a no-argument member meth
 component, not `private`, not `suspend`. No AOP proxy is generated, so the class may be `final` /
 non-`open`.
 
-### Task name — the persistent identity
+### Job name — the persistent identity
 
-`name` is the db-scheduler **task name**, the key of the job's row. Default: `SimpleClassName#method`
-(simple name, no package). A configured `name` wins over the annotation, a blank one falls back to it.
+`name` is the db-scheduler **task name**, the key of the job's row. It comes from the annotation
+**only** — there is no config override. Blank means the default **`CanonicalClassName#methodName`**,
+e.g. `com.example.jobs.ReportJobs#hourlyReport` (a nested class gives `com.example.Outer.Inner#m`).
 
-- Renaming the class or method, or changing `name`, creates a **new** job: the old row is orphaned and
-  the new one starts from scratch (including `initialDelay`). Set an explicit `name` for anything you
-  may refactor.
-- Two jobs with the same name — two classes called `CleanupJob` in different packages with a `run()`
-  method is enough — fail startup with `IllegalStateException: Duplicate key …` from db-scheduler.
+- Renaming the class or method, **moving the class to another package**, or changing `name` creates a
+  **new** job: the old row is orphaned and the new one starts from scratch (including `initialDelay`).
+  Set an explicit `name` for anything you may refactor.
+- At most **350 characters** (the `task_name` size in the bundled schema). A longer name fails the
+  build: `Database scheduled job name '<name>' is <n> characters long, maximum is 350. Set a shorter
+  name() in the annotation.`
+- Two jobs with the same name fail startup in `KoraDbScheduler.init()`:
+  `IllegalStateException: Database scheduled jobs '<a>' and '<b>' have the same name '<name>'; job
+  names must be unique, set a unique name in @ScheduleDbWithCron(name = ...), …`.
 
 ### Cron
 
-`@ScheduleWithCron` hands the expression to db-scheduler's `CronSchedule`: **Spring-style, six fields
-with seconds first** (`second minute hour day-of-month month day-of-week`), evaluated in the JVM default
-time zone. This is not Kora's JDK `CronExpression` (5/6/7 fields) and not Quartz cron. An invalid
-expression fails graph init. The special value `"-"` disables the job: on startup its pending execution
-is removed and nothing is scheduled.
+`@ScheduleDbWithCron` hands the expression to db-scheduler's `CronSchedule`: **Spring-style, exactly six
+fields with seconds first** (`second minute hour day-of-month month day-of-week`), or a macro
+(`@yearly`, `@monthly`, `@weekly`, `@daily`, `@hourly`), or `-`. `* ? , - / L W #` are supported.
+Numeric days of the week start on **Monday** (`1` = MON, `0` and `7` = SUN) — unlike the JDK and Quartz
+schedulers; prefer `MON-FRI`. This is not Kora's JDK `CronExpression` and not Quartz cron.
 
-Details: [references/db-scheduler-reference.md](references/db-scheduler-reference.md).
+- A cron **literal** in the annotation is validated at **compile time**:
+  `Invalid CRON expression '<expr>' in @ScheduleDbWithCron on '<fqcn>#<method>()': <reason>.` followed
+  by the field diagram and examples. Five-field and seven-field expressions are rejected.
+- A cron from **config** is validated when the graph builds:
+  `IllegalArgumentException: Invalid CRON expression '<expr>' for database scheduled job
+  '<fqcn>#<method>': …` with the same diagram.
+- The special value `"-"` disables the job: on startup its pending execution is removed and nothing is
+  scheduled.
+- Time zone: the `ZoneId` component tagged `@Tag(SchedulingModule.class)`
+  (`io.koraframework.scheduling.common.SchedulingModule`) if the graph has one, else the JVM default:
+
+```java
+@KoraApp
+public interface Application extends JdbcDatabaseModule, DbSchedulerModule /* … */ {
+
+    @Tag(SchedulingModule.class)
+    default ZoneId schedulingZone() {
+        return ZoneId.of("Europe/Moscow");
+    }
+}
+```
+
+The same component sets the zone of JDK and Quartz cron jobs. Details:
+[references/db-scheduler-reference.md](references/db-scheduler-reference.md).
 
 ---
 
@@ -177,12 +206,18 @@ defaults, config wins, and an attribute you leave off becomes a required key.
 
 | Annotation | Keys under the config path |
 |---|---|
-| `@ScheduleWithCron` | `cron`, `name` — or set the path itself to the cron string |
-| `@ScheduleWithFixedDelay` | `initialDelay`, `delay`, `name` |
-| `@ScheduleOnce` | `delay`, `name` |
+| `@ScheduleDbWithCron` | `cron`, `enabled` — or set the path itself to the cron string |
+| `@ScheduleDbWithFixedDelay` | `initialDelay`, `delay`, `enabled` |
+| `@ScheduleDbOnce` | `delay`, `enabled` |
 
-Each path also accepts a `telemetry { … }` block overriding `scheduling.telemetry` for that job. Use a
-path outside `scheduling.dbScheduler` and `scheduling.telemetry`, e.g. `scheduling.jobs.<name>`.
+`enabled` (default `true`) switches a job off without a code change: a disabled cron or fixed-delay job
+has its pending execution removed on startup; a disabled `@ScheduleDbOnce` is not scheduled, and an
+execution scheduled earlier is discarded without running the method. The plain-string cron form cannot
+carry `enabled` — use the object form (`{ cron = "…", enabled = false }`) or the string `"-"`.
+
+Each path also accepts a `telemetry { … }` block overriding `scheduling.telemetry` for that job. There
+is **no `name` key**. Use a path outside `scheduling.dbScheduler` and `scheduling.telemetry`, e.g.
+`scheduling.jobs.<name>`.
 
 ---
 
@@ -191,8 +226,8 @@ path outside `scheduling.dbScheduler` and `scheduling.telemetry`, e.g. `scheduli
 ```hocon
 scheduling {
   dbScheduler {
-    tableName = "kora_scheduling_db_jobs"   # default
-    initializeTable = false                 # default; true = create the table at startup if missing
+    tableName = "kora_scheduling_db_scheduler_jobs"   # default
+    tableInitialize = false                 # default; true = create the table at startup if missing
     executionParallelism = 10               # default; max job bodies running at once on this replica
     shutdownWait = 30s                      # default
     polling {
@@ -204,6 +239,10 @@ scheduling {
 }
 ```
 
+The key is `tableInitialize` (`DbSchedulerConfig.tableInitialize()`). Up to 2.0.0.RC1 the module's own `README.md`
+and the `DbSchedulerConfig` Javadoc example say `initializeTable` (corrected on master by
+kora-projects/kora PR #966) — that key is unknown and ignored without a warning.
+
 Every key has a default, so an absent `scheduling.dbScheduler` section is fine. Full reference, the
 prefetch ratios and when to pick `LOCK_AND_FETCH`:
 [references/db-scheduler-config-reference.md](references/db-scheduler-config-reference.md).
@@ -212,21 +251,25 @@ prefetch ratios and when to pick `LOCK_AND_FETCH`:
 
 ## Table
 
-The module ships schema SQL for PostgreSQL, MySQL, MariaDB, MS SQL, Oracle and HSQL under
-`db/scheduling-db/flyway/<db>/V1__create_scheduled_tasks.sql`, plus a Liquibase changelog
-`db/scheduling-db/liquibase/changelog.yaml` (one `dbms`-guarded changeset per database).
+The module ships plain schema scripts — **not** versioned Flyway migrations — and an idempotent
+Liquibase changelog, all creating the default table `kora_scheduling_db_scheduler_jobs` with object
+names prefixed by it (`…_pk`, `…_execution_time_idx`, `…_last_heartbeat_idx`,
+`…_priority_execution_time_idx`):
 
-**Those files create a table named `scheduled_tasks`, while Kora's default `tableName` is
-`kora_scheduling_db_jobs`.** Pick one:
+| Resource | Contents |
+|---|---|
+| `db/kora/scheduling-db-scheduler/schema/{postgresql,mysql,mariadb,mssql,oracle,hsql}.sql` | one script per database; `task_name`/`task_instance` are `varchar(350)` (PostgreSQL: `text`) |
+| `db/kora/scheduling-db-scheduler/liquibase/changelog.yaml` | one `dbms`-guarded changeset per database, `logicalFilePath: kora/scheduling-db-scheduler/changelog.yaml`, ids `kora-scheduling-db-scheduler-jobs-create-table-<db>`, `MARK_RAN` when the table already exists |
 
 | Approach | What to do |
 |---|---|
-| Own migration (recommended) | Copy the SQL for your database into your migration with your own version number, table renamed to `kora_scheduling_db_jobs` ([asset](assets/V2__create_kora_scheduling_db_jobs.sql.template)) |
-| Bundled files | Include them in Flyway/Liquibase **and** set `scheduling.dbScheduler.tableName = "scheduled_tasks"`. With Flyway, an extra location holding its own `V1__` clashes with your `V1__` in the same schema history — prefer the copy |
-| `initializeTable = true` | At startup Kora probes `select 1 from <tableName> where 1 = 0` and, if that fails, runs the bundled SQL for the detected database with the table name substituted. Fine for dev and tests; production usually owns its schema |
+| Flyway (recommended) | Copy the script for your database into **your** migration folder under the next free version, e.g. `V42__create_kora_scheduling_db_scheduler_jobs.sql` ([asset](assets/V2__create_kora_scheduling_db_scheduler_jobs.sql.template)). Adding `classpath:db/kora/...` as a Flyway location finds nothing — the files are not `V<n>__` migrations |
+| Liquibase | `- include: { file: db/kora/scheduling-db-scheduler/liquibase/changelog.yaml }` in your master changelog. It creates the **default** table name only |
+| `tableInitialize = true` | At startup `KoraDbScheduler` probes `select 1 from <tableName> where 1 = 0` and, if that fails, runs the script for the detected database with the table name substituted and the object names prefixed with it. Fine for dev and tests; production usually owns its schema |
 
-With `FlywayJdbcDatabaseModule`/`LiquibaseJdbcDatabaseModule` the migration runs when the
-`JdbcDataSource` initialises, which is before the scheduler starts.
+A non-default `tableName` needs the copied script edited (table and object names), or
+`tableInitialize`. With `FlywayJdbcDatabaseModule`/`LiquibaseJdbcDatabaseModule` the migration runs
+when the `JdbcDataSource` initialises, which is before the scheduler starts.
 
 ---
 
@@ -245,11 +288,11 @@ With `FlywayJdbcDatabaseModule`/`LiquibaseJdbcDatabaseModule` the migration runs
 
 ## Failures and dead executions
 
-The wrapper records the exception on the span/metric/log and **rethrows** it to db-scheduler:
+The job records the exception on the span/metric/log and **rethrows** it to db-scheduler:
 
 - cron / fixed-delay jobs are rescheduled for their next regular time (db-scheduler
   `OnFailureReschedule`) — no immediate retry;
-- `@ScheduleOnce` is removed on failure — it does not retry;
+- `@ScheduleDbOnce` is removed on failure — it does not retry;
 - if a replica dies mid-run, the execution stays picked until db-scheduler declares it dead (heartbeat
   every 5 min, dead after 6 missed by default) and another replica revives it.
 
@@ -259,11 +302,11 @@ Make job bodies idempotent: a revived execution runs the work again.
 
 ## Graceful shutdown
 
-`DbSchedulerWrapper.release()` calls db-scheduler's `Scheduler.stop()`: polling stops, then running
+`KoraDbScheduler.release()` calls db-scheduler's `Scheduler.stop()`: polling stops, then running
 executions get `scheduling.dbScheduler.shutdownWait` (default 30 s) to finish; after that their virtual
 threads are **interrupted** and db-scheduler waits up to another `shutdownWait`. So worst case is about
-2× `shutdownWait`. The wrapper depends on the jobs and the `DataSource`, so it is released before them
-— a running job still has its resources while it drains. Bound long jobs (batch cap, deadline) and
+2× `shutdownWait`. The scheduler depends on the jobs and the `DataSource`, so it is released before
+them — a running job still has its resources while it drains. Bound long jobs (batch cap, deadline) and
 honour `Thread.currentThread().isInterrupted()`.
 
 ---
@@ -273,8 +316,10 @@ honour `Thread.currentThread().isInterrupted()`.
 Shared with the other schedulers through `scheduling-common`: the same `scheduling.telemetry` block
 (`logging.enabled` default `false`, `metrics.enabled` default `false`, `tracing.enabled` default
 `true`), the `scheduling.job.duration` timer, span `scheduling <fqcn>#<method>` from a root context, and
-per-job overrides under `<config-path>.telemetry`. The job `name` is **not** a tag; jobs are identified
-by class and method. See [kora-aop-scheduling-jdk telemetry](../kora-aop-scheduling-jdk/references/jdk-scheduling-reference.md#telemetry).
+per-job overrides under `<config-path>.telemetry`. The metric tag and span attribute
+`scheduling.system` is `dbscheduler` (`jdk` / `quartz` for the other schedulers), and log lines carry a
+`schedulerType` key. The job `name` is **not** a tag; jobs are identified by class and method. See
+[kora-aop-scheduling-jdk telemetry](../kora-aop-scheduling-jdk/references/jdk-scheduling-reference.md#telemetry).
 
 ---
 
@@ -282,16 +327,21 @@ by class and method. See [kora-aop-scheduling-jdk telemetry](../kora-aop-schedul
 
 | Symptom | Cause / fix |
 |---|---|
-| Jobs never run, no error, no `SchedulingDbScheduler started` log | No `@Root` depends on `DbSchedulerWrapper`, so it was pruned — add the [starter](#3-pull-the-scheduler-into-the-graph--mandatory) |
-| `No component found` for `DataSource` | No JDBC module in the graph; add `JdbcDatabaseModule` (or a `@Tag(DbSchedulerWrapper.class) DataSource`) |
-| App starts, logs `Unexpected error while executing OnStartup tasks. Continuing.` and SQL errors about `kora_scheduling_db_jobs`; jobs never run | Table missing, or created as `scheduled_tasks` by the bundled SQL — db-scheduler logs and carries on. Fix the table, then restart so the startup tasks are registered |
-| `IllegalStateException: Duplicate key <name>` | Two jobs resolve to the same task name, or a `Configurer<SchedulerBuilder>` registers a Kora task again via `startTasks(...)` — Kora already registers every startup task itself |
+| App starts, logs `Unexpected error while executing OnStartup tasks. Continuing.` and SQL errors about the job table; jobs never run | Table missing or named differently from `scheduling.dbScheduler.tableName` (default `kora_scheduling_db_scheduler_jobs`) — db-scheduler logs and carries on. Fix the table, then restart so the startup tasks are registered |
+| `initializeTable = true` has no effect, the table is never created | The key is `tableInitialize`; `initializeTable` (the name in the module README and Javadoc up to 2.0.0.RC1) is unknown and ignored |
+| Jobs restarted from scratch after upgrading from an earlier 2.0 snapshot, old rows linger | The default name changed from `SimpleClassName#method` to `CanonicalClassName#method`. Pin `name` to the old value |
+| `<path>.name = "…"` in config has no effect | The name is annotation-only now; the key is unknown and ignored |
+| `No component found` for `DataSource` | No JDBC module in the graph; add `JdbcDatabaseModule` (or a `@Tag(KoraDbScheduler.class) DataSource`) |
+| `IllegalStateException: Database scheduled jobs '…' and '…' have the same name '…'` | Two jobs resolve to the same task name — set distinct `name`s |
+| `IllegalStateException: Duplicate key <name>` | A `Configurer<SchedulerBuilder>` registers a Kora task again via `startTasks(...)` — Kora already registers every startup task itself |
+| Both job names in an error are `'java.lang.Void#noop'` | Job logging and metrics are off (the 2.0 defaults) and tracing does not apply (no `Tracer` component, or `tracing.enabled = false`), so `DefaultSchedulingTelemetryFactory` returns the shared `NoopSchedulingTelemetry.INSTANCE`, whose class is `Void` and method `noop`, and `KoraDbJob.toString()` reads it — the duplicate-name and invalid-config-cron errors lose the job identity. Fixed by kora-projects/kora PR #961 (on master once merged). Without it, set `scheduling.telemetry.logging.enabled = true` (or `<config-path>.telemetry.logging.enabled`), or locate the job by the name in the message |
+| Every run of a job fails with `Graph node value was not initialized because condition failed: …`, silently with job logging off | The scheduled method sits on a `@Conditional` component whose condition failed. The generated `@Root` job factory does not carry the condition, so the task is still registered and every run fails in `ValueOf.get()` (and is rescheduled). Fixed by kora-projects/kora PR #962 (on master once merged). Without it, keep the scheduled method on an unconditional component; if it must reach the conditional one, inject `All<T>` and return when it is empty (a `@Nullable T` dependency hits PR #960) |
 | Changed `initialDelay` has no effect | It applies only when the job's row is first created |
 | Longer `delay` in config has no effect until the next run | db-scheduler only moves an existing execution **earlier** on startup; cron changes are applied immediately |
-| Job ran again after a deploy / new name appeared in the table | Task name changed (class/method rename) — set a stable `name` |
-| `@ScheduleOnce` ran again after a restart | It is scheduled on every startup when no execution is pending; guard the work if it must happen once ever |
-| Cron `0 0 3 * * ? 2027` rejected / wrong fields | db-scheduler cron is Spring-style six fields; no year field |
-| Job runs on every replica | Wrong import — `@ScheduleWithCron` from `...scheduling.jdk.annotation` or `...scheduling.quartz` |
+| `@ScheduleDbOnce` ran again after a restart | It is scheduled on every startup when no execution is pending; guard the work if it must happen once ever |
+| `Invalid CRON expression '0 0 3 * * ? 2027' in @ScheduleDbWithCron …` | db-scheduler cron is Spring-style six fields; no year field, no five-field form |
+| Weekday job fires on the wrong day | Numeric day-of-week counts from Monday here (`1` = MON); a JDK/Quartz expression with `2-6` is shifted by one. Use `MON-FRI` |
+| Job runs on every replica | Wrong annotation — `@ScheduleJdkWithCron` or `@ScheduleQuartzWithCron` instead of `@ScheduleDbWithCron` |
 
 ---
 
@@ -304,13 +354,16 @@ Same table in all three scheduling sub-skills:
 | Extra infrastructure | none | none; a JDBC JobStore + Quartz tables for persistence/clustering | a JDBC `DataSource` + one table |
 | Who runs a firing | every replica | every replica (`RAMJobStore`); one node when clustered on a JDBC JobStore | one replica, cluster-wide |
 | Survives restart | no | only with a JDBC JobStore | yes — the next execution time lives in the table |
-| Fixed rate | `@ScheduleAtFixedRate` | via a custom `Trigger` | no |
-| Fixed delay | `@ScheduleWithFixedDelay` | via a custom `Trigger` | `@ScheduleWithFixedDelay` |
-| One-shot | `@ScheduleOnce`, every process start | via a custom `Trigger` | `@ScheduleOnce`, one pending execution cluster-wide |
-| Cron | Kora `CronExpression`, 5/6/7 fields, no `L W # C` | Quartz cron, 6/7 fields, `L W # C` | db-scheduler `CronSchedule`, Spring-style 6 fields |
+| Fixed rate | `@ScheduleJdkAtFixedRate` | via a custom `Trigger` | no |
+| Fixed delay | `@ScheduleJdkWithFixedDelay` | via a custom `Trigger` | `@ScheduleDbWithFixedDelay` |
+| One-shot | `@ScheduleJdkOnce`, every process start | via a custom `Trigger` | `@ScheduleDbOnce`, one pending execution cluster-wide |
+| Cron | `@ScheduleJdkWithCron` — Kora `CronExpression`, 5/6/7 fields, no `L W # C` | `@ScheduleQuartzWithCron` — Quartz cron, 6/7 fields, `L W # C` | `@ScheduleDbWithCron` — db-scheduler `CronSchedule`, Spring-style 6 fields |
+| Cron literal checked at compile time | yes | yes | yes |
+| Cron time zone | `@Tag(SchedulingModule.class) ZoneId` component, else the JVM default | same | same |
+| Switch a job off | `enabled = false` under its `config` path | same; the job loses its triggers | same; its pending execution is removed |
 | Custom trigger, misfire policy, `JobDataMap` | no | yes | no |
-| Runs on | virtual threads, cap `maxConcurrentExecutions` (unlimited) | Quartz `SimpleThreadPool` platform threads (10) | virtual threads, cap `executionParallelism` (10) |
-| Shutdown | waits `shutdownWait`, then interrupts | `waitForJobComplete`, never interrupts | waits `shutdownWait`, then interrupts |
+| Runs on | virtual threads, cap `executionParallelism` (unlimited) | Quartz `SimpleThreadPool` platform threads (10) | virtual threads, cap `executionParallelism` (10) |
+| Shutdown | waits `shutdownWait`, then interrupts | waits `shutdownWait`, interrupts via `InterruptableJob`, waits `shutdownWait` again | waits `shutdownWait`, then interrupts |
 
 ---
 
@@ -319,11 +372,11 @@ Same table in all three scheduling sub-skills:
 | File | Purpose |
 |---|---|
 | [references/db-scheduler-reference.md](references/db-scheduler-reference.md) | Annotations, generated code, cron, task lifecycle on restart, failures, custom `DbSchedulerJob` |
-| [references/db-scheduler-config-reference.md](references/db-scheduler-config-reference.md) | Every `scheduling.dbScheduler` key, polling/prefetch, per-job config, HOCON + YAML |
-| [assets/DbScheduledJobs.java.template](assets/DbScheduledJobs.java.template) | Java jobs + `@Root` starter |
-| [assets/DbScheduledJobs.kt.template](assets/DbScheduledJobs.kt.template) | Kotlin jobs + `@Root` starter |
+| [references/db-scheduler-config-reference.md](references/db-scheduler-config-reference.md) | Every `scheduling.dbScheduler` key, polling/prefetch, schema resources, per-job config, HOCON + YAML |
+| [assets/DbScheduledJobs.java.template](assets/DbScheduledJobs.java.template) | Java jobs |
+| [assets/DbScheduledJobs.kt.template](assets/DbScheduledJobs.kt.template) | Kotlin jobs |
 | [assets/application.conf.template](assets/application.conf.template) | `scheduling.dbScheduler`, telemetry and per-job config |
-| [assets/V2__create_kora_scheduling_db_jobs.sql.template](assets/V2__create_kora_scheduling_db_jobs.sql.template) | PostgreSQL Flyway migration for the default table name |
+| [assets/V2__create_kora_scheduling_db_scheduler_jobs.sql.template](assets/V2__create_kora_scheduling_db_scheduler_jobs.sql.template) | PostgreSQL Flyway migration for the default table name, copied from the bundled script |
 
 ---
 
@@ -333,5 +386,5 @@ Same table in all three scheduling sub-skills:
 - [kora-aop-scheduling-quartz](../kora-aop-scheduling-quartz/SKILL.md) — Quartz triggers, misfire policies, JDBC JobStore
 - [kora-database-jdbc](../kora-database-jdbc/SKILL.md) — the `JdbcDatabaseModule` / `DataSource` the scheduler uses
 - [kora-database-migration](../kora-database-migration/SKILL.md) — Flyway / Liquibase for the scheduler table
-- [kora-di-runtime](../kora-di-runtime/SKILL.md) — `@Root` pruning, `Wrapped<T>`, release order
+- [kora-di-runtime](../kora-di-runtime/SKILL.md) — `@Root`, `@Conditional`, `All<T>`, release order
 - [kora-telemetry-metrics](../kora-telemetry-metrics/SKILL.md) — the `MeterRegistry` job metrics need
