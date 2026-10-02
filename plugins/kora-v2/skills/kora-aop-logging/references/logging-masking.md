@@ -294,9 +294,8 @@ Verified against the framework source at `2.0.0.RC2`:
 - `logging-annotation-processor` registers `LoggingAnnotationProcessor` in
   `META-INF/services/javax.annotation.processing.Processor` (#921, RC2), and it runs
   `MaskingRulesProcessor`; since #970 it is also declared an **isolating** Gradle incremental
-processor, so incremental compilation stays on. `io.koraframework:annotation-processors` depends on
-it, so the usual
-  `annotationProcessor "io.koraframework:annotation-processors"` line is enough.
+  processor, so incremental compilation stays on. `io.koraframework:annotation-processors` depends on
+  it, so the usual `annotationProcessor "io.koraframework:annotation-processors"` line is enough.
 
 So **both languages generate `$<Type>_MaskingRulesModule`**; no hand-written `MaskingRules<T>` is
 needed. In 2.0.0.RC1 the Java service entry was missing, the module was never generated and the graph
