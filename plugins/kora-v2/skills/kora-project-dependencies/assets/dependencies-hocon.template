@@ -1,0 +1,33 @@
+// HOCON Configuration dependencies (Kora 2.0)
+// HOCON (Human-Optimized Config Format) is the recommended config format for Kora
+
+dependencies {
+    // HOCON configuration module
+    implementation "io.koraframework:config-hocon"
+
+    // Logging (required for config change notifications)
+    implementation "io.koraframework:logging-logback"
+}
+
+// Usage in the @KoraApp interface:
+//   @KoraApp
+//   public interface Application extends HoconConfigModule { ... }
+//
+// Configuration file: src/main/resources/application.conf
+//
+// HOCON supports:
+// - Required substitution:  port = ${DATABASE_PORT}          (startup fails when unset)
+// - Optional substitution:  password = ${?DATABASE_PASSWORD} (key stays absent when unset)
+// - Default + override:     port = 8080
+//                           port = ${?PORT}                  (overrides the default when set)
+// - Comments: # this is a comment
+// - Nested objects and arrays
+//
+// Kora 2.0 section names that changed from 1.x:
+//   httpServer.publicApiHttpPort  -> httpServer.port
+//   httpServer.privateApiHttpPort -> httpServer.system.port
+//   db { ... }                    -> jdbc { ... }
+//   openapi.management.file       -> openapi.management.files (a list)
+//
+// Telemetry defaults to OFF in 2.0 - enable it per component:
+//   httpServer { telemetry.logging.enabled = true, telemetry.metrics.enabled = true }

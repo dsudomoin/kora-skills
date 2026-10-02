@@ -1,0 +1,57 @@
+package ${packagePath};
+
+import io.koraframework.application.graph.Lifecycle;
+import io.koraframework.common.annotation.Component;
+
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * A component that owns a resource with a start and a stop.
+ *
+ * <p>The {@code Lifecycle} contract is synchronous:
+ * <pre>{@code
+ * void init()    throws Exception;
+ * void release() throws Exception;
+ * }</pre>
+ * There are no reactive, {@code CompletionStage} or {@code suspend} container contracts in Kora 2.0.
+ *
+ * <p>Ordering: {@code init()} runs right after construction and before any dependent is created;
+ * {@code release()} runs in reverse order, only once everything depending on this component has been
+ * released. A component that also implements {@code AutoCloseable} gets {@code close()} after
+ * {@code release()}.
+ *
+ * <p>This class has dependents, so it needs no {@code @Root}. Add {@code @Root} only if nothing
+ * injects it — see RootComponent.java.template.
+ */
+@Component
+public final class ${ComponentName} implements Lifecycle {
+
+    private final ${DependencyType} ${dependencyName};
+    private final ScheduledExecutorService scheduler;
+
+    public ${ComponentName}(${DependencyType} ${dependencyName}) {
+        // Construct here. Do not start anything: interceptors may still replace this instance,
+        // and dependents do not exist yet.
+        this.${dependencyName} = ${dependencyName};
+        this.scheduler = Executors.newSingleThreadScheduledExecutor();
+    }
+
+    @Override
+    public void init() throws Exception {
+        scheduler.scheduleWithFixedDelay(this::tick, 1, 5, TimeUnit.MINUTES);
+    }
+
+    @Override
+    public void release() throws Exception {
+        scheduler.shutdown();
+        if (!scheduler.awaitTermination(30, TimeUnit.SECONDS)) {
+            scheduler.shutdownNow();
+        }
+    }
+
+    private void tick() {
+        ${dependencyName}.doPeriodicWork();
+    }
+}

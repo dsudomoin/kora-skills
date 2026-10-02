@@ -1,0 +1,43 @@
+package ${packagePath}
+
+import io.koraframework.application.graph.ValueOf
+import io.koraframework.common.annotation.Component
+
+/**
+ * Depending on a component without being rebuilt when it refreshes.
+ *
+ * The whole interface is `get()`, `map(...)` and `optional()`. There is **no `refresh()`** on
+ * `ValueOf` — refreshing the graph is `RefreshableGraph.refresh(Node)`.
+ *
+ * Two guarantees: `get()` always returns the current instance of that node, and this component is
+ * **not** recreated when the wrapped component is refreshed. A direct dependency would be.
+ *
+ * Use it when rebuilding this component is expensive or disruptive — an open socket, a warm cache, a
+ * connection pool — or when the latest value is needed per call rather than a snapshot taken at
+ * construction. Do not use it as a general laziness knob: a direct dependency is cheaper to read and
+ * gives the container a real ordering edge.
+ */
+@Component
+class ${ComponentName}(
+    private val ${dependencyName}: ValueOf<${DependencyType}>
+) {
+
+    fun ${methodName}() {
+        val current = ${dependencyName}.get()
+        // use `current` — never cache it in a property, that would defeat the point
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Variants
+// ---------------------------------------------------------------------------
+//
+// Optional AND refresh-isolated — here the component itself may be absent, so the property is null,
+// not the result of get(). In Kotlin nullability is the type; never carry JSpecify annotations over.
+//
+//     class MetricsReporter(private val registry: ValueOf<MeterRegistry>?)
+//
+// PromiseOf<T> is the weaker handle: get() returns Optional<T>, so the component may be unresolved.
+// It is what the processor generates (PromisedProxy) to break a dependency cycle. For an ordinary
+// cycle between two of your own components, extracting the shared piece into a third component
+// reads better than either wrapper.

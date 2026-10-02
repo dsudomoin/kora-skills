@@ -1,0 +1,78 @@
+package com.example.api;
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Tag;
+import io.koraframework.http.common.body.HttpBody;
+import io.koraframework.http.server.common.HttpServer;
+import io.koraframework.http.server.common.interceptor.HttpServerInterceptor;
+import io.koraframework.http.server.common.request.HttpServerRequest;
+import io.koraframework.http.server.common.response.HttpServerResponse;
+import org.jspecify.annotations.Nullable;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.List;
+
+/**
+ * Gates the OpenAPI documentation routes ({@code /openapi}, {@code /swagger-ui}, {@code /scalar})
+ * with a bearer token, letting every other request through untouched.
+ *
+ * <p>The routes are contributed by {@code OpenApiManagementModule}, not by your code, so there is
+ * no method to annotate with {@code @InterceptWith}. A global interceptor is the only hook, and it
+ * is collected by exactly one tag: {@code @Tag(HttpServer.class)}. The Kora 1.x
+ * {@code @Tag(HttpServerModule.class)} still compiles — {@code HttpServerModule} is a real type in
+ * 2.0 — but nothing claims that tag, so the component is never collected and the docs stay open.
+ * Assert the 401 in a test rather than trusting the annotation.
+ *
+ * <p>The token comes from the {@code DOCS_API_TOKEN} environment variable. Behaviour is fail
+ * closed: with the variable unset the documentation routes return 401. Do not add the interceptor
+ * to a deployment whose docs are meant to be public.
+ */
+@Tag(HttpServer.class)
+@Component
+public final class SwaggerUiSecurityInterceptor implements HttpServerInterceptor {
+
+    private static final List<String> DOCS_PREFIXES = List.of("/openapi", "/swagger-ui", "/scalar");
+    private static final String BEARER_PREFIX = "Bearer ";
+
+    private final byte @Nullable [] requiredToken;
+
+    public SwaggerUiSecurityInterceptor() {
+        var token = System.getenv("DOCS_API_TOKEN");
+        this.requiredToken = (token == null || token.isBlank())
+            ? null
+            : token.getBytes(StandardCharsets.UTF_8);
+    }
+
+    @Override
+    public HttpServerResponse intercept(HttpServerRequest request, InterceptChain chain) throws Exception {
+        if (!isDocsRequest(request.path()) || isAuthorized(request)) {
+            return chain.process(request);
+        }
+
+        return HttpServerResponse.of(401, HttpBody.plaintext("Unauthorized"));
+    }
+
+    private static boolean isDocsRequest(String path) {
+        for (var prefix : DOCS_PREFIXES) {
+            if (path.equals(prefix) || path.startsWith(prefix + "/")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isAuthorized(HttpServerRequest request) {
+        if (this.requiredToken == null) {
+            return false;
+        }
+
+        var header = request.headers().getFirst("Authorization");
+        if (header == null || !header.startsWith(BEARER_PREFIX)) {
+            return false;
+        }
+
+        var presented = header.substring(BEARER_PREFIX.length()).getBytes(StandardCharsets.UTF_8);
+        return MessageDigest.isEqual(this.requiredToken, presented);
+    }
+}

@@ -1,0 +1,342 @@
+{
+  "evals": [
+    {
+      "id": "kora-soap-client-wsdl-setup-java",
+      "skills": [
+        "kora-soap-client"
+      ],
+      "query": "Set up a Kora SOAP client in Java from a WSDL in src/main/resources/wsdl for an external CustomerService. Give me the Gradle build file and the application graph.",
+      "expected_behavior": [
+        "Applies the com.github.bjornvester.wsdl2java Gradle plugin and sets wsdlDir, packageName, generatedSourceDir and useJakarta = true",
+        "Uses platform(\"io.koraframework:kora-bom:$koraVersion\") with koraVersion=2.0.0.RC2 from plain mavenCentral(), and never pins an individual io.koraframework artifact version",
+        "Declares annotationProcessor \"io.koraframework:annotation-processors\" and implementation \"io.koraframework:soap-client\"",
+        "Adds an HTTP transport module (http-client-ok / http-client-apache / http-client-jdk) and a config module, and notes the generated client needs an HttpClient component",
+        "Extends the @KoraApp interface with io.koraframework.soap.client.common.SoapClientModule plus the transport and config modules",
+        "Explains the two-stage chain: wsdl2java -> jakarta.jws @WebService interface -> Kora processor -> $CustomerService_SoapClientImpl and @Module $CustomerService_SoapClientModule",
+        "States that the generated $CustomerService_SoapClientModule is picked up automatically and must not be extended from @KoraApp",
+        "Sets a Java 25 toolchain"
+      ],
+      "anti_behavior": [
+        "Writes ru.tinkoff.kora:kora-parent, ru.tinkoff.kora:soap-client or any ru.tinkoff.kora coordinate",
+        "Adds annotationProcessor \"io.koraframework:soap-client-annotation-processor\" separately as if annotation-processors did not already contain it",
+        "Adds exclude group: \"jakarta.xml\" / \"org.glassfish.jaxb\" / \"com.sun.activation\" blocks to the soap-client dependency",
+        "Sets useJakarta = false or omits it",
+        "Adds Apache CXF as a runtime dependency, or a Spring-WS / JAX-WS RI runtime",
+        "Adds the generated $CustomerService_SoapClientModule to the @KoraApp extends list"
+      ],
+      "tags": [
+        "soap",
+        "wsdl",
+        "setup",
+        "java",
+        "basic",
+        "regression-coordinates"
+      ]
+    },
+    {
+      "id": "kora-soap-client-wsdl-setup-kotlin",
+      "skills": [
+        "kora-soap-client"
+      ],
+      "query": "Same thing but in Kotlin with KSP: wsdl2java generates the interface but Kora generates no client for it. What is my build.gradle.kts missing?",
+      "expected_behavior": [
+        "Identifies that wsdl2java emits Java sources and KSP only sees them when the generated directory is on the Java source set",
+        "Adds sourceSets.main { java.srcDir(layout.buildDirectory.dir(\"generated/sources/wsdl2java/java\")) }",
+        "Uses ksp(\"io.koraframework:symbol-processors:...\") with the kora-bom platform, Kotlin 2.4.20 and KSP 2.3.12",
+        "Keeps useJakarta.set(true)",
+        "Suggests ./gradlew kspKotlin --console=plain to see the processor diagnostics",
+        "Keeps the Java @WebService interface as the contract instead of re-declaring it in Kotlin"
+      ],
+      "anti_behavior": [
+        "Suggests kapt, or adds the annotation processor via annotationProcessor in a KSP project",
+        "Adds kotlinx-coroutines to make the client work",
+        "Rewrites the CXF-generated interface by hand in Kotlin",
+        "Pins Kotlin 1.9.x or the 1.9-based KSP plugin"
+      ],
+      "tags": [
+        "soap",
+        "kotlin",
+        "ksp",
+        "setup",
+        "troubleshooting"
+      ]
+    },
+    {
+      "id": "kora-soap-client-inject-call",
+      "skills": [
+        "kora-soap-client"
+      ],
+      "query": "How do I call the generated Kora SOAP client SimpleService from my own @Component, and where does its configuration live?",
+      "expected_behavior": [
+        "Injects the @WebService interface SimpleService by constructor into a @Component",
+        "Calls the operation method directly and uses the returned WSDL payload type, e.g. TestResponse response = service.test(request)",
+        "Configures soapClient.SimpleService.url (required) and optionally timeout (default 60s)",
+        "States that the config section name comes from @WebService.name, which is the WSDL portType name, falling back to serviceName, portName, then the interface simple name",
+        "Mentions that SoapServiceConfig is registered tagged with @Tag(SimpleService.class)",
+        "Notes that Kotlin sees the Java contract as platform types, so payload fields should be treated as nullable"
+      ],
+      "anti_behavior": [
+        "Injects $SimpleService_SoapClientImpl or casts the injected interface to it for normal calls",
+        "Claims the method returns a SoapResult, a wrapper or a future",
+        "Uses the wsdl:service name (e.g. SimpleServiceService) as the config section",
+        "Constructs the client manually with new when the generated component already exists",
+        "Uses field injection"
+      ],
+      "tags": [
+        "soap",
+        "di",
+        "config",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-soap-client-no-async-contract",
+      "skills": [
+        "kora-soap-client"
+      ],
+      "query": "I need a non-blocking SOAP call in Kora. Give me a suspend fun in Kotlin, or a Mono/CompletionStage in Java, for my SimpleService client.",
+      "expected_behavior": [
+        "States that Kora 2.0 contracts are synchronous and run on virtual threads, and that the generated SOAP client only overrides the WSDL interface's own synchronous methods",
+        "States that the 1.x <method>Async returning CompletionStage on $Iface_SoapClientImpl was removed in 2.0",
+        "Confirms there is no *Reactive, Mono, Flux, CompletionStage or suspend SOAP variant generated by either the annotation processor or KSP",
+        "Warns against enabling wsdl2java async method generation, because the generated mapping casts the SOAP body straight to the declared return type",
+        "Offers concurrency at the caller instead (virtual threads / structured concurrency), not a fake async client API"
+      ],
+      "anti_behavior": [
+        "Shows testReactive(request) returning Mono<T>",
+        "Shows casting to $SimpleService_SoapClientImpl to reach a testAsync method",
+        "Declares suspend fun test(...) on the SOAP interface or a Kotlin wrapper implementing it",
+        "Adds reactor-core, kotlinx-coroutines or http-client-async to make the call non-blocking",
+        "Invents a Kora annotation to make the method asynchronous"
+      ],
+      "tags": [
+        "soap",
+        "regression-async",
+        "execution-model",
+        "java",
+        "kotlin"
+      ]
+    },
+    {
+      "id": "kora-soap-client-javax-imports",
+      "skills": [
+        "kora-soap-client"
+      ],
+      "query": "My WSDL-generated interface uses javax.jws.WebService and javax.xml.ws.Holder. The build succeeds but Kora never generates a client. Why?",
+      "expected_behavior": [
+        "Identifies that the Kora 2.0 processors only handle jakarta.jws.WebService and register no javax variant, so a javax interface is silently skipped",
+        "Fixes it at the source: set useJakarta = true in the wsdl2java block and regenerate",
+        "Requires a clean rebuild so the previously generated javax sources do not linger in the source set",
+        "Confirms the correct imports are jakarta.jws.WebService, jakarta.jws.WebMethod, jakarta.xml.ws.Holder, jakarta.xml.bind.*",
+        "Explains the absence of any error message: the processor matches on the annotation, so a non-matching interface produces neither output nor a diagnostic"
+      ],
+      "anti_behavior": [
+        "Adds a javax-to-jakarta shim, a bytecode transformer or javax.jws dependencies",
+        "Claims Kora 2.0 supports both javax.jws and jakarta.jws as 1.x did",
+        "Hand-edits the generated interface's imports instead of fixing the generator setting",
+        "Suggests writing the @WebService interface manually to work around it"
+      ],
+      "tags": [
+        "soap",
+        "jakarta",
+        "regression-javax",
+        "troubleshooting"
+      ]
+    },
+    {
+      "id": "kora-soap-client-stale-coordinates",
+      "skills": [
+        "kora-soap-client"
+      ],
+      "query": "Migrate this Kora 1.x SOAP build file to 2.0: koraBom platform(\"ru.tinkoff.kora:kora-parent:1.2.16\"); annotationProcessor \"ru.tinkoff.kora:annotation-processors\"; annotationProcessor \"ru.tinkoff.kora:soap-client-annotation-processor\"; implementation \"ru.tinkoff.kora:json-module\"; implementation(\"ru.tinkoff.kora:soap-client\") { exclude group: \"jakarta.xml\"; exclude group: \"org.glassfish.jaxb\"; exclude group: \"com.sun.activation\" }",
+      "expected_behavior": [
+        "Replaces the BOM with platform(\"io.koraframework:kora-bom:$koraVersion\") at koraVersion=2.0.0.RC2",
+        "Keeps only annotationProcessor \"io.koraframework:annotation-processors\" and drops the separate soap-client-annotation-processor, which that artifact already aggregates",
+        "Replaces implementation \"io.koraframework:soap-client\" without any exclude block, explaining that 2.0 soap-client declares jakarta.xml.ws-api, jakarta.xml.bind-api and org.glassfish.jaxb:jaxb-runtime as api dependencies on purpose",
+        "Maps ru.tinkoff.kora:json-module to io.koraframework:json-common, and notes SOAP itself does not need it",
+        "Raises the toolchain to Java 25",
+        "Notes that a package rename requires ./gradlew clean --continue then classes testClasses --no-build-cache"
+      ],
+      "anti_behavior": [
+        "Keeps the jakarta / glassfish / com.sun.activation exclude blocks",
+        "Emits io.koraframework:kora-parent or io.koraframework:json-module, neither of which exists",
+        "Pins a version on an individual io.koraframework artifact instead of relying on the BOM",
+        "Pins 2.0.0-SNAPSHOT or 2.0.0.alpha6 for a normal project",
+        "Adds a snapshot repository when mavenCentral() suffices for 2.0.0.RC2"
+      ],
+      "tags": [
+        "soap",
+        "migration",
+        "gradle",
+        "regression-coordinates"
+      ]
+    },
+    {
+      "id": "kora-soap-client-config-keys",
+      "skills": [
+        "kora-soap-client"
+      ],
+      "query": "This 1.x SOAP config stopped working after upgrading to Kora 2.0 — SOAP metrics disappeared and my payload logging is gone: soapClient { SimpleServiceService { url = ... , timeout = 30s } } and logging.level { \"com.example.generated.soap.SimpleService\" = \"DEBUG\" }",
+      "expected_behavior": [
+        "Points out that the section name must be the @WebService name (the WSDL portType, SimpleService), not the wsdl:service name SimpleServiceService, and that the wrong section leaves url unset so the graph fails on a null config value",
+        "Points out that telemetry.metrics.enabled defaults to false in Kora 2.0 (it was true in 1.x) and must be set explicitly per client",
+        "Renames logging.level to logging.levels",
+        "States that envelope bodies are only logged at TRACE, on the loggers <interface FQN>.request and <interface FQN>.response",
+        "Notes telemetry.logging.enabled must also be true for those loggers to exist at all",
+        "Lists the only valid keys: url, timeout, telemetry.logging.enabled, telemetry.metrics.enabled/slo/tags, telemetry.tracing.enabled/attributes"
+      ],
+      "anti_behavior": [
+        "Invents soapClient.<Service> keys such as headers, retries, connectTimeout, keepAlive or maxConnections",
+        "Claims an unknown HOCON key produces a warning or an error",
+        "Says metrics are enabled by default in 2.0",
+        "Keeps logging.level",
+        "Tells the user to raise io.koraframework.soap to TRACE to get the payloads"
+      ],
+      "tags": [
+        "soap",
+        "config",
+        "telemetry",
+        "regression-config-keys"
+      ]
+    },
+    {
+      "id": "kora-soap-client-phantom-generated-package",
+      "skills": [
+        "kora-soap-client"
+      ],
+      "query": "After renaming my packages to io.koraframework the build fails with hundreds of 'package ru.tinkoff.kora.example.generated.soap does not exist' errors, all in files under build/generated/sources/wsdl2java. Can I just fix the imports in those files?",
+      "expected_behavior": [
+        "Says no — generated sources must never be edited, the edits are wiped on the next generation and hide the real cause",
+        "Explains the cause: wsdl2java does not delete its previous output and the build-cache key does not account for a changed packageName, so the old and new packages coexist in one source set",
+        "Gives the fix: ./gradlew clean --continue then ./gradlew classes testClasses --continue --no-build-cache",
+        "Confirms that after the clean rebuild no ru.tinkoff.kora reference should remain in compiler output, and that any remaining one is a real reference in sources or generator settings",
+        "Notes the same rule applies to other generators (OpenAPI, protobuf)"
+      ],
+      "anti_behavior": [
+        "Edits, sed-replaces or patches anything under build/generated",
+        "Adds a ru.tinkoff.kora dependency so the missing package resolves",
+        "Adds the old package to the source set or an exclude filter",
+        "Blames the Kora annotation processor for the errors"
+      ],
+      "tags": [
+        "soap",
+        "build",
+        "regression-generated-sources",
+        "troubleshooting"
+      ]
+    },
+    {
+      "id": "kora-soap-client-error-handling",
+      "skills": [
+        "kora-soap-client"
+      ],
+      "query": "How do I handle SOAP faults and transport failures from a Kora 2.0 SOAP client call, in Java and in Kotlin?",
+      "expected_behavior": [
+        "Catches the generated @WebFault exception first for faults declared in the WSDL, reading its typed getFaultInfo()",
+        "Catches SoapFaultException for a fault whose detail matches no declared type, and reads e.getFault() returning SoapFault",
+        "Uses the real SoapFault accessors getFaultcode() (a QName), getFaultstring(), getFaultactor(), getDetail()",
+        "Uses SoapInvalidHttpResponseException for a status code other than 200 or 500",
+        "Uses SoapRequestMarshallingException / SoapResponseUnmarshallingException, noting that in 2.0 both extend SoapException",
+        "Explains that transport failures arrive as a SoapException wrapping HttpClientConnectionException or HttpClientTimeoutException",
+        "Imports everything from io.koraframework.soap.client.common.exception"
+      ],
+      "anti_behavior": [
+        "Uses InvalidHttpResponseSoapException (the 1.x name) instead of SoapInvalidHttpResponseException",
+        "Calls e.getSoapFault(), fault.getFaultCode() or fault.getFaultString() — none of which exist",
+        "Calls getStatusCode() or getResponseBody() on SoapInvalidHttpResponseException",
+        "Catches a bare java.net.ConnectException from the SOAP call",
+        "Invents SoapServiceException or a per-fault exception class not generated from the WSDL"
+      ],
+      "tags": [
+        "soap",
+        "error-handling",
+        "regression-api-names",
+        "java",
+        "kotlin"
+      ]
+    },
+    {
+      "id": "kora-soap-client-wssecurity",
+      "skills": [
+        "kora-soap-client"
+      ],
+      "query": "The SOAP service needs a WS-Security UsernameToken header on every request. How do I add it to my Kora SOAP client?",
+      "expected_behavior": [
+        "Declares a component of type Function<SoapEnvelope, SoapEnvelope> annotated @Tag(SimpleService.class) in a @Module interface",
+        "Uses io.koraframework.soap.client.common.util.SoapEnvelopeProcessorsUtils.wssAuth(username, password)",
+        "Explains that the generated module injects this processor as an optional tagged dependency, so nothing else needs replacing",
+        "Notes that the password is sent as plaintext PasswordText, so the endpoint must be HTTPS, and sources the credentials from config rather than literals",
+        "Mentions that custom headers can be appended to envelope.getHeader().getAny()",
+        "Notes @Module interfaces are auto-discovered and must not also be extended from @KoraApp"
+      ],
+      "anti_behavior": [
+        "Uses SoapEnvelopeProcessors (the 1.x class name) instead of SoapEnvelopeProcessorsUtils",
+        "Uses @InterceptWith, which is the declarative HTTP client mechanism and does not apply to SOAP clients",
+        "Adds Apache CXF WSS4J interceptors or a runtime JAX-WS Handler chain",
+        "Sets an Authorization HTTP header instead of a SOAP header when the contract asks for WS-Security",
+        "Replaces the generated client component when the tagged processor would suffice"
+      ],
+      "tags": [
+        "soap",
+        "security",
+        "envelope-processor",
+        "intermediate"
+      ]
+    },
+    {
+      "id": "kora-soap-client-not-generated",
+      "skills": [
+        "kora-soap-client"
+      ],
+      "query": "My Kora build fails with 'No component found for dependency io.koraframework.soap.client.common.telemetry.SoapClientTelemetryFactory' and the SOAP client is missing from the graph. What is wrong?",
+      "expected_behavior": [
+        "Adds io.koraframework.soap.client.common.SoapClientModule to the @KoraApp interface for the SoapClientTelemetryFactory error",
+        "Checks that an HTTP transport module is present, since the generated module requires an HttpClient component",
+        "Verifies the annotation processor is on the build: annotationProcessor \"io.koraframework:annotation-processors\" or ksp \"io.koraframework:symbol-processors\"",
+        "Verifies wsdl2java ran with useJakarta = true and that the interface really carries jakarta.jws.WebService",
+        "Runs ./gradlew clean classes so both generators run in order",
+        "Reminds that the injected type is the @WebService interface, not $Iface_SoapClientImpl"
+      ],
+      "anti_behavior": [
+        "Adds the generated $Iface_SoapClientModule to the @KoraApp extends list",
+        "Writes a @Component that implements the @WebService interface by hand",
+        "Disables annotation processing or adds a runtime reflection-based fallback",
+        "Adds ru.tinkoff.kora artifacts to satisfy the missing component"
+      ],
+      "tags": [
+        "soap",
+        "di",
+        "troubleshooting",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-soap-client-telemetry-dashboards",
+      "skills": [
+        "kora-soap-client"
+      ],
+      "query": "Our Grafana dashboard for the SOAP client went blank after the Kora 2.0 upgrade. It queried kora_soap_client_requests_total with soap_service and status labels. What should it query now, and why is there no data?",
+      "expected_behavior": [
+        "States that the SOAP client now reports a single Micrometer Timer named rpc.client.duration",
+        "Gives the real tags: rpc.system=soap, rpc.service, rpc.method, server.address, server.port, http.response.status_code, error.type, fault.code, system.config, system.name.simple, system.name.canonical",
+        "Explains the blank dashboard has two causes: the metric was renamed, and telemetry.metrics.enabled now defaults to false",
+        "Notes that a MeterRegistry must be on the graph (MetricsModule from io.koraframework:micrometer-module) or metrics stay off regardless of the flag",
+        "Suggests alerting on error_type != \"\" or fault_code != \"\" rather than a status label",
+        "Mentions the span name is SOAP <service> <method> with SpanKind.CLIENT"
+      ],
+      "anti_behavior": [
+        "Keeps kora.soap.client.requests / kora.soap.client.duration / kora.soap.client.faults",
+        "Uses soap_service, soap_method, status or fault_code as a 1.x-style tag set",
+        "Describes the duration metric as a DistributionSummary",
+        "Claims metrics are on by default",
+        "Invents a separate fault counter metric"
+      ],
+      "tags": [
+        "soap",
+        "telemetry",
+        "metrics",
+        "regression-metric-names"
+      ]
+    }
+  ]
+}

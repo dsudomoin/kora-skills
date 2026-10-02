@@ -1,0 +1,44 @@
+package ${packagePath}.publisher
+
+import org.apache.kafka.clients.producer.RecordMetadata
+import io.koraframework.json.common.annotation.Json
+import io.koraframework.kafka.common.annotation.KafkaPublisher
+import io.koraframework.kafka.common.annotation.KafkaPublisher.Topic
+import io.koraframework.kafka.common.producer.TransactionalPublisher
+
+// Kotlin-only publisher shapes: a suspend send, plus the transactional wrapper over it.
+//
+// suspend (and Deferred) publisher methods generate kotlinx.coroutines.future.await,
+// which is NOT a transitive dependency of io.koraframework:kafka. Add:
+//     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-jdk8:1.10.2")
+// Without it KSP succeeds and compileKotlin fails on the generated
+// $KotlinTxPublisher_Impl.kt with "Unresolved reference 'kotlinx'".
+@KafkaPublisher("kafka.producer.kotlinTx")
+interface KotlinTxPublisher {
+
+    @Json
+    data class KotlinEvent(val id: String, val type: String, val data: String)
+
+    @Topic(".topic")
+    suspend fun publish(@Json event: KotlinEvent): RecordMetadata
+}
+
+@KafkaPublisher("kafka.producer.kotlinTxEvents")
+interface KotlinTxEventsPublisher : TransactionalPublisher<KotlinTxPublisher>
+
+// Usage:
+//
+// @Component
+// class KotlinTxService(private val publisher: KotlinTxEventsPublisher) {
+//
+//     // begin().use { } is an inline lambda, so a suspend send inside it is fine from a
+//     // suspend function. inTx/withTx take a non-inline SAM instead, so a suspend send
+//     // cannot be called from there — use begin().use { } for suspending transactions.
+//     suspend fun publishBoth(first: KotlinTxPublisher.KotlinEvent,
+//                             second: KotlinTxPublisher.KotlinEvent) {
+//         publisher.begin().use { tx ->
+//             tx.publisher().publish(first)
+//             tx.publisher().publish(second)
+//         }
+//     }
+// }

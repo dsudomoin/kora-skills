@@ -1,0 +1,66 @@
+package ${packagePath}.publisher;
+
+import io.koraframework.kafka.common.annotation.KafkaPublisher;
+import io.koraframework.kafka.common.annotation.KafkaPublisher.Topic;
+import io.koraframework.kafka.common.producer.TransactionalPublisher;
+
+/**
+ * Transactional Kafka publisher.
+ *
+ * A transactional publisher WRAPS an ordinary one: the outer interface carries the transaction
+ * config (idPrefix / maxPoolSize / maxWaitTime), the nested one carries driverProperties and the
+ * @Topic methods. Both are @KafkaPublisher interfaces.
+ *
+ * Java allows one public top-level type per file, so the wrapped publisher is nested — this also
+ * matches the migrated Kora 2.0 examples.
+ */
+@KafkaPublisher("kafka.producer.${publisherName}Transactional")
+public interface ${publisherName}Transactional
+        extends TransactionalPublisher<${publisherName}Transactional.TopicPublisher> {
+
+    @KafkaPublisher("kafka.producer.${publisherName}")
+    interface TopicPublisher {
+
+        @Topic("kafka.producer.${publisherName}.${topicName}")
+        void send(String value);
+
+        @Topic("kafka.producer.${publisherName}.${topicName}")
+        void send(String key, String value);
+    }
+}
+
+/*
+ * Sending atomically — inTx hands you the publisher, withTx hands you the Transaction.
+ * Both abort on any Throwable and commit on the normal path.
+ *
+ *   publisher.inTx(topicPublisher -> {
+ *       topicPublisher.send("value-1");
+ *       topicPublisher.send("value-2");
+ *   });
+ *
+ * Manual control — close() is the commit, so try-with-resources is mandatory:
+ *
+ *   try (var transaction = publisher.begin()) {
+ *       transaction.publisher().send("value");
+ *       if (somethingWrong) {
+ *           transaction.abort();
+ *       }
+ *   }
+ *
+ * Read-process-write — the Consumer parameter is required, both for groupMetadata() and to stop
+ * Kora committing the offset outside the transaction:
+ *
+ *   @KafkaListener("kafka.consumer.${listenerNameLower}")
+ *   public void process(ConsumerRecord<String, String> record, Consumer<String, String> consumer) {
+ *       publisher.withTx(transaction -> {
+ *           transaction.publisher().send("processed:" + record.value());
+ *           transaction.sendOffsetsToTransaction(
+ *               Map.of(new TopicPartition(record.topic(), record.partition()),
+ *                      new OffsetAndMetadata(record.offset() + 1)),
+ *               consumer.groupMetadata());
+ *       });
+ *   }
+ *
+ * The consuming side must set "isolation.level" = "read_committed" to hide aborted records.
+ * See references/kafka-transactions-reference.md.
+ */

@@ -1,0 +1,61 @@
+# Kora 2.0 tracing (HOCON). Section `tracing` -> OpentelemetryTracingConfig,
+# section `tracing.exporter` -> Opentelemetry{Grpc,Http}ExporterConfig.
+# Both exporters expose an identical key set, so switching them never touches this file.
+
+tracing {
+
+  # enabled = false        # default is TRUE -- unlike <component>.telemetry.{logging,metrics}.enabled.
+                           # Only ever set false: TracerProvider.noop(), exporter and processor become no-ops.
+
+  exporter {
+    # No default, and nullable. Leave it unset and spans are still created and sampled but
+    # NEVER exported -- no warning, no startup failure. This is the usual "tracing is on and
+    # I see nothing" cause.
+    #   grpc exporter -> http://collector:4317           (no path)
+    #   http exporter -> http://collector:4318/v1/traces (signal path required)
+    endpoint = ${OTLP_ENDPOINT}
+
+    exportTimeout = "3s"           # per export call
+    batchExportTimeout = "30s"     # per accumulated batch
+    # connectTimeout = "10s"       # unset leaves the SDK default
+    scheduleDelay = "2s"           # flush interval
+    maxExportBatchSize = 512
+    maxQueueSize = 2048
+    compression = "gzip"           # gzip | none
+    exportUnsampledSpans = false
+
+    # The key is `retryPolicy`. `retry` is silently ignored.
+    retryPolicy {
+      maxAttempts = 5
+      initialBackoff = "1s"
+      maxBackoff = "5s"
+      backoffMultiplier = 1.5
+    }
+  }
+
+  # OTLP resource attributes. The resource is built from every
+  # OpentelemetryTracingAttributesProvider component and then THIS MAP, which wins on a key
+  # conflict. Kora supplies nothing itself -- without service.name every trace UI shows the
+  # service as unknown.
+  attributes {
+    "service.name" = ${SERVICE_NAME}
+    "service.namespace" = "kora"
+    "service.version" = ${?SERVICE_VERSION}
+    "deployment.environment.name" = ${?ENV}
+  }
+}
+
+# Per-component tracing: <section>.telemetry.tracing.enabled, true by default everywhere
+# except httpServer.system, which overrides it to false. Uncomment only to change a default.
+httpServer {
+  # telemetry.tracing.enabled = false        # stop tracing public requests
+  # telemetry.tracing.tracePathFull = false  # drop the url.path attribute (default true)
+  # system.telemetry.tracing.enabled = true  # trace probes and /metrics (off by default)
+}
+
+# jdbc.telemetry.tracing.enabled = false
+# httpClient.<clientName>.telemetry.tracing.enabled = false
+# grpcServer.telemetry.tracing.enabled = false
+
+# There is no tracing.sampler key -- sampling is a component. Override
+# opentelemetryTracingSampler() on the @KoraApp interface (with @Override / override).

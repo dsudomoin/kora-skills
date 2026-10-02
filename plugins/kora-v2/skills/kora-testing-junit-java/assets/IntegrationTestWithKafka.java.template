@@ -1,0 +1,131 @@
+package ${package};
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.time.Duration;
+import java.util.concurrent.Executors;
+
+import org.awaitility.Awaitility;
+import org.junit.jupiter.api.Test;
+
+import io.goodforgod.testcontainers.extensions.ContainerMode;
+import io.goodforgod.testcontainers.extensions.kafka.ConnectionKafka;
+import io.goodforgod.testcontainers.extensions.kafka.Event;
+import io.goodforgod.testcontainers.extensions.kafka.KafkaConnection;
+import io.goodforgod.testcontainers.extensions.kafka.TestcontainersKafka;
+import io.goodforgod.testcontainers.extensions.kafka.Topics;
+
+import io.koraframework.test.extension.junit5.KoraAppTest;
+import io.koraframework.test.extension.junit5.KoraAppTestConfigModifier;
+import io.koraframework.test.extension.junit5.KoraConfigModification;
+import io.koraframework.test.extension.junit5.TestComponent;
+
+/**
+ * Kora 2.0 integration test for a @KafkaListener consumer and a @KafkaPublisher against a real
+ * broker, using the io.goodforgod Testcontainers Kafka extension (what the migrated examples use).
+ *
+ * Template placeholders are ${...} tokens such as ${consumerName}. ${KAFKA_BOOTSTRAP} inside the
+ * HOCON is a Kora config placeholder — leave it as is.
+ *
+ * Requirements:
+ *     annotationProcessor     "io.koraframework:annotation-processors"
+ *     testAnnotationProcessor "io.koraframework:annotation-processors"
+ *     implementation          "io.koraframework:kafka"
+ *     testImplementation      "io.koraframework:test-junit5"
+ *     testImplementation      "io.goodforgod:testcontainers-extensions-kafka:0.15.0"
+ *     testImplementation      "org.awaitility:awaitility:4.3.0"
+ *
+ * Two things this template exists to get right:
+ *
+ * 1. A Kafka consumer is not a dependency of anything the test injects, so the trimmed graph would
+ *    drop it and nothing would ever be consumed. @KafkaListener on a method of ${consumerName}
+ *    generates the interface ${consumerName}Module in the SAME PACKAGE AS THE CONSUMER (import it
+ *    when the test lives elsewhere); listing it in @KoraAppTest(modules = ...) turns its factory
+ *    methods into graph roots. The alternative is to inject the generated Lifecycle by its tag:
+ *        @Tag(${consumerName}Module.${consumerName}${consumerMethodName}Tag.class)
+ *        @TestComponent
+ *        private Lifecycle consumerLifecycle;
+ *
+ * 2. There is no flat kafka.bootstrapServers key. The broker address belongs in the per-consumer /
+ *    per-producer driverProperties, under the native Kafka client property names, at exactly the
+ *    config path named in @KafkaListener / @KafkaPublisher.
+ */
+@TestcontainersKafka(mode = ContainerMode.PER_RUN, topics = @Topics({ "${topicName}" }))
+@KoraAppTest(value = Application.class, modules = ${consumerName}Module.class)
+class ${consumerName}Test implements KoraAppTestConfigModifier {
+
+    @ConnectionKafka
+    private KafkaConnection connection;
+
+    @TestComponent
+    private ${publisherName} ${publisherVarName};
+
+    @TestComponent
+    private ${serviceName} ${serviceVarName};
+
+    /**
+     * When the production application.conf already reads ${?KAFKA_BOOTSTRAP}, this one line is all
+     * the test needs, and the rest of the Kafka config stays exactly as production has it:
+     *
+     *   return KoraConfigModification.ofSystemProperty("KAFKA_BOOTSTRAP",
+     *           connection.params().bootstrapServers());
+     *
+     * The inline block below is the fallback for a config without that placeholder. Remember that
+     * ofString REPLACES application.conf, so it must carry every key the graph needs.
+     */
+    @Override
+    public KoraConfigModification config() {
+        return KoraConfigModification.ofString("""
+                kafka {
+                  consumer.${consumerConfigName} {
+                    topics = "${topicName}"
+                    pollTimeout = 250ms
+                    driverProperties {
+                      "bootstrap.servers" = ${KAFKA_BOOTSTRAP}
+                      "group.id" = "${consumerConfigName}-test"
+                      "auto.offset.reset" = "earliest"
+                      "enable.auto.commit" = true
+                    }
+                    telemetry.logging.enabled = true
+                  }
+                  producer.${producerConfigName} {
+                    driverProperties {
+                      "bootstrap.servers" = ${KAFKA_BOOTSTRAP}
+                    }
+                  }
+                  producer.${producerConfigName}-topic {
+                    topic = "${topicName}"
+                  }
+                }
+                """)
+                .withSystemProperty("KAFKA_BOOTSTRAP", connection.params().bootstrapServers());
+    }
+
+    @Test
+    void publisherSendsMessageToTopic() {
+        // given
+        var subscription = connection.subscribe("${topicName}");
+
+        // when
+        ${publisherVarName}.send(new ${messageName}("test-id", "test-payload"));
+
+        // then
+        var received = subscription.assertReceivedAtLeast(1).get(0);
+        assertEquals("test-id", received.value().asJson().getString("id"));
+    }
+
+    @Test
+    void listenerProcessesMessageFromTopic() {
+        // given / when
+        connection.send("${topicName}", Event.ofValueAndRandomKey(
+                "{\"id\":\"test-id\",\"payload\":\"test-payload\"}"));
+
+        // then — consumption is asynchronous, so poll for the observable side effect
+        Awaitility.await()
+                .atMost(Duration.ofSeconds(15))
+                .pollExecutorService(Executors.newSingleThreadExecutor())
+                .until(() -> ${serviceVarName}.find("test-id").isPresent());
+
+        assertEquals("test-payload", ${serviceVarName}.find("test-id").orElseThrow().payload());
+    }
+}

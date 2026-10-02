@@ -1,0 +1,206 @@
+{
+  "evals": [
+    {
+      "id": "kora-database-cassandra-basic-repository",
+      "skills": ["kora-database-cassandra"],
+      "query": "Set up a Kora 2.0 Java Cassandra repository for a User entity (String id, name, email, createdAt) with findById, findAll, insert and deleteById.",
+      "expected_behavior": [
+        "Adds implementation \"io.koraframework:database-cassandra\" versioned through the io.koraframework:kora-bom platform, plus annotationProcessor \"io.koraframework:annotation-processors\"",
+        "Uses koraVersion 2.0.0.RC2 from plain mavenCentral(), not 2.0.0-SNAPSHOT and not the kora-parent BOM",
+        "Adds CassandraDatabaseModule (io.koraframework.database.cassandra) to the @KoraApp interface",
+        "Declares an interface annotated @Repository (io.koraframework.database.common.annotation.Repository) that extends CassandraRepository",
+        "Annotates the DAO record with @EntityCassandra imported from io.koraframework.database.cassandra.annotation, not from io.koraframework.database.cassandra",
+        "Writes CQL in @Query with :id style named parameters and marks the single-row lookup @Nullable using org.jspecify.annotations.Nullable",
+        "Does not import ru.tinkoff.kora.* anywhere, and does not declare com.datastax.oss:java-driver-core as a dependency",
+        "Does not invent an @Id requirement — @Id and @Table matter only to SQL macros in Cassandra"
+      ],
+      "tags": ["repository", "basic", "java"]
+    },
+    {
+      "id": "kora-database-cassandra-driver-coordinate-regression",
+      "skills": ["kora-database-cassandra"],
+      "query": "My Kora Cassandra module fails to resolve com.datastax.oss:java-driver-core:4.17.0 after upgrading to Kora 2.0. My mappers import com.datastax.oss.driver.api.core.cql.Row — do I have to rewrite those imports too?",
+      "expected_behavior": [
+        "Explains that the driver moved Maven coordinates to org.apache.cassandra:java-driver-core (4.19.3 in Kora 2.0), so the com.datastax.oss groupId no longer resolves",
+        "States clearly that the Java package names did NOT change — com.datastax.oss.driver.api.* imports stay exactly as they are",
+        "Recommends removing the explicit driver dependency entirely and letting io.koraframework:database-cassandra bring it transitively",
+        "Does not tell the user to rewrite imports to an org.apache.cassandra.* package, which does not exist",
+        "Does not suggest pinning the driver version by hand when the kora-bom platform is in use"
+      ],
+      "tags": ["migration", "dependencies", "regression"]
+    },
+    {
+      "id": "kora-database-cassandra-kotlin-suspend-regression",
+      "skills": ["kora-database-cassandra"],
+      "query": "Port this Kora 1.x Kotlin Cassandra repository to 2.0: `@Repository interface UserRepository : CassandraRepository { @Query(\"SELECT * FROM users WHERE id = :id\") suspend fun findById(id: String): User?; @Query(\"SELECT * FROM users\") fun findAllFlow(): Flow<User> }`",
+      "expected_behavior": [
+        "Removes suspend and returns User? from a plain fun",
+        "Replaces Flow<User> with List<User>, noting result size should be bounded with CQL LIMIT or basic.request.pageSize",
+        "Explains that KSP rejects suspend repository methods outright with 'Suspend methods are not supported by the repository generator.'",
+        "States that Kotlin Cassandra repositories are synchronous only and run on virtual threads — no suspend, no Flow, no Mono/Flux",
+        "Points at java.util.concurrent.StructuredTaskScope (or virtual-thread executors) for parallel fan-out instead of coroutines",
+        "Does not add kotlinx-coroutines-core or io.projectreactor:reactor-core for the repository",
+        "Does not claim a CompletableFuture return type is the Kotlin workaround — the async path exists only in the Java generator"
+      ],
+      "tags": ["kotlin", "migration", "regression"]
+    },
+    {
+      "id": "kora-database-cassandra-async-java",
+      "skills": ["kora-database-cassandra"],
+      "query": "I want non-blocking Cassandra access from my Kora 2.0 Java service. Show me what is actually supported.",
+      "expected_behavior": [
+        "Provides methods returning CompletableFuture<T> and CompletionStage<T>, including CompletionStage<Void> for writes and CompletionStage<List<T>> for lists",
+        "Keeps the @Query CQL identical to the synchronous version, changing only the return type",
+        "Explains that Cassandra is the exception to Kora 2.0's synchronous-only contracts because the generator uses the driver's prepareAsync/executeAsync",
+        "States that Mono/Flux and CassandraReactiveResultSetMapper were removed and that reactor-core must not be added",
+        "Notes that the equivalent does not exist in Kotlin",
+        "Mentions CassandraAsyncResultSetMapper only as the async result contract, wired automatically for entity results",
+        "Does not block a future with .get()/.join() inside the repository or inside a stage callback"
+      ],
+      "tags": ["async", "java", "intermediate"]
+    },
+    {
+      "id": "kora-database-cassandra-executor-accessor-regression",
+      "skills": ["kora-database-cassandra"],
+      "query": "My Kora 1.x code calls repository.getCassandraConnectionFactory().currentSession() to run a dynamic CQL query. It does not compile on Kora 2.0. Also, how do I wrap two writes in a transaction there?",
+      "expected_behavior": [
+        "Replaces getCassandraConnectionFactory() with executor(), returning io.koraframework.database.cassandra.CassandraExecutor",
+        "Shows CassandraExecutor members actually available: currentSession(), telemetry(), query(...), queryOne(...), queryOptional(...), queryList(...)",
+        "Introduces CassandraQuery.named()/template() with bind/bindIf/cqlIf/bindIn for the dynamic query, rather than string-concatenating user values into CQL",
+        "States plainly that Cassandra has no transactions and CassandraExecutor has no inTx — unlike JdbcExecutor",
+        "Offers lightweight transactions (IF / IF NOT EXISTS, single partition, boolean [applied]) as the nearest real mechanism, and does not present them as multi-statement transactions",
+        "Does not invent a CassandraConnectionFactory type or a transaction API"
+      ],
+      "tags": ["executor", "migration", "regression"]
+    },
+    {
+      "id": "kora-database-cassandra-kotlin-mapper-nullability-regression",
+      "skills": ["kora-database-cassandra"],
+      "query": "I converted this Java Cassandra mapper to Kotlin and now KSP says \"'apply' overrides nothing\": `class StatusParameterMapper : CassandraParameterColumnMapper<Status> { override fun apply(stmt: SettableByName<*>, index: Int, value: Status) { stmt.setInt(index, value.code) } }`",
+      "expected_behavior": [
+        "Identifies the cause as nullability: the contract declares void apply(SettableByName<?> stmt, int index, @Nullable T value), so the Kotlin override must take value: Status?",
+        "Provides the fixed signature with value: Status? and a null branch calling stmt.setToNull(index)",
+        "Explains that the contracts are @NullMarked so Kotlin overrides must match declared nullability exactly, and that the compiler error never mentions nullability",
+        "Notes the asymmetry — the Java version compiles either way, so mechanically ported mappers fail only on the Kotlin side",
+        "Notes that return types may still be narrowed to non-null, e.g. CassandraRowMapper.apply(row: Row): T",
+        "Does not suggest @field:Nullable or any JSpecify annotation in Kotlin"
+      ],
+      "tags": ["kotlin", "mapping", "regression"]
+    },
+    {
+      "id": "kora-database-cassandra-mapper-component-wiring",
+      "skills": ["kora-database-cassandra"],
+      "query": "My Kora 2.0 build fails with \"No component found for dependency: io.koraframework.database.cassandra.mapper.result.CassandraRowMapper<Event>\". The mapper class takes an ObjectMapper in its constructor and is referenced with @Mapping on the repository method.",
+      "expected_behavior": [
+        "Explains that the generated repository constructs a mapper itself only when it is final (Java) or non-open (Kotlin) with a no-arg constructor and an untagged @Mapping",
+        "Concludes that a mapper with constructor dependencies becomes a constructor parameter of the generated repository and must therefore be annotated @Component (io.koraframework.common.annotation.Component)",
+        "Warns that declaring two components for the same mapper type produces 'Multiple components match dependency:' instead",
+        "Mentions that @EntityCassandra on the row type is the alternative when a plain entity mapper is all that is needed",
+        "Notes that Kora's own scalar mappers in CassandraMapperModule are @DefaultComponent, so a user @Component for the same type replaces them without conflict",
+        "Does not advise adding @Component blindly to every mapper regardless of its constructor"
+      ],
+      "tags": ["mapping", "di", "regression"]
+    },
+    {
+      "id": "kora-database-cassandra-config-section",
+      "skills": ["kora-database-cassandra"],
+      "query": "Configure the Cassandra connection for my Kora 2.0 service in HOCON: contact points, datacenter, keyspace, credentials from environment variables, a 5 second request timeout, and I want to see the query logs and db metrics.",
+      "expected_behavior": [
+        "Uses the cassandra top-level section — not db, not jdbc, and not a renamed 2.0 section",
+        "Places contactPoints, dc and sessionKeyspace under cassandra.basic, and timeout under cassandra.basic.request",
+        "Places credentials under cassandra.auth.login and cassandra.auth.password with ${CASSANDRA_USER} style substitutions",
+        "Explicitly sets cassandra.telemetry.logging.enabled = true and cassandra.telemetry.metrics.enabled = true, stating that both default to false in Kora 2.0",
+        "Does not invent keys such as healthCheck, retryPolicy, basic.consistency, requestTimeout, cassandra.keyspace or root-level username/password",
+        "Does not claim the section was renamed the way JDBC's db became jdbc"
+      ],
+      "tags": ["config", "basic", "regression"]
+    },
+    {
+      "id": "kora-database-cassandra-annotation-packages",
+      "skills": ["kora-database-cassandra"],
+      "query": "Give me the exact import list for a Kora 2.0 Cassandra repository that uses @Repository, @Query, @Batch, @EntityCassandra, @UDT, @CassandraProfile, @Table, @Column and @Id.",
+      "expected_behavior": [
+        "Puts @Repository, @Query, @Batch, @Table, @Column, @Id (and @Embedded) in io.koraframework.database.common.annotation",
+        "Puts @EntityCassandra, @UDT and @CassandraProfile in io.koraframework.database.cassandra.annotation",
+        "Puts CassandraRepository and CassandraExecutor in io.koraframework.database.cassandra",
+        "Does not place @EntityCassandra or @UDT directly in io.koraframework.database.cassandra without the .annotation sub-package",
+        "Does not use ru.tinkoff.kora.* for any of them",
+        "Notes that @CassandraProfile is @Target(METHOD) and cannot be placed on the repository interface"
+      ],
+      "tags": ["packages", "basic", "regression"]
+    },
+    {
+      "id": "kora-database-cassandra-udt-mapping",
+      "skills": ["kora-database-cassandra"],
+      "query": "Model a Kora 2.0 Cassandra entity with a nested Address user-defined type (street, city, zipCode), plus a list of addresses and a set of tags of the same UDT.",
+      "expected_behavior": [
+        "Annotates the Address type with @UDT from io.koraframework.database.cassandra.annotation and the owning DAO with @EntityCassandra",
+        "Maps the collection as List<Address> and notes that CQL needs LIST<FROZEN<address>>",
+        "States that only the scalar and List forms of a UDT get generated mappers, so Set<Address> (and Map<K, Address>) fail with 'No component found for dependency: CassandraRowColumnMapper<Set<Address>>'",
+        "Offers the two real options for the set: model the column as LIST<FROZEN<...>>, or hand-write a CassandraRowColumnMapper/CassandraParameterColumnMapper pair",
+        "Notes that @UDT takes no arguments and that the CQL type is resolved from the statement metadata by field name, not from the Java class name",
+        "Does not use JPA @Embeddable/@Embedded for the UDT"
+      ],
+      "tags": ["udt", "intermediate", "regression"]
+    },
+    {
+      "id": "kora-database-cassandra-batch-and-in-clause",
+      "skills": ["kora-database-cassandra"],
+      "query": "Add a method that inserts many users in one batch, and another that loads users by a list of ids with an IN clause.",
+      "expected_behavior": [
+        "Marks the list parameter with @Batch from io.koraframework.database.common.annotation and keeps a single-row INSERT bound to entity fields (:entity.id)",
+        "Returns void (or Unit, or CompletionStage<Void> in Java async) from the batch method, noting a batch produces no mapped result",
+        "Mentions that the generator builds a BatchStatement with DefaultBatchType.UNLOGGED and that batching across partitions is a Cassandra anti-pattern",
+        "For the IN clause, states that there is no built-in CassandraParameterColumnMapper<List<T>>, so a declarative :ids binding fails the graph",
+        "Uses executor() with CassandraQuery.named().bindIn(\"ids\", ids) — which expands to one placeholder per element — or a hand-written list parameter mapper via @Mapping",
+        "Does not hand-build a BatchStatement in user code and does not use an external ORM"
+      ],
+      "tags": ["batch", "intermediate", "regression"]
+    },
+    {
+      "id": "kora-database-cassandra-profile-consistency",
+      "skills": ["kora-database-cassandra"],
+      "query": "I need an analytics query to run with ONE consistency and a 30s timeout while the rest of the repository stays on LOCAL_QUORUM.",
+      "expected_behavior": [
+        "Defines cassandra.profiles.analytics overriding basic.request.consistency and basic.request.timeout with the full nested path",
+        "Sets the default cassandra.basic.request.consistency for everything else",
+        "Annotates the specific @Query method with @CassandraProfile(\"analytics\") from io.koraframework.database.cassandra.annotation",
+        "Notes that @CassandraProfile is @Target(METHOD) and cannot be placed on the repository interface",
+        "Mentions that contactPoints cannot be overridden per profile and that unset profile keys fall back to the root section",
+        "Optionally offers CassandraQuery.opts(...) via executor() for one-off per-query tuning",
+        "Does not invent readConsistency/writeConsistency/retryPolicy keys or a JDBC-style @Transactional"
+      ],
+      "tags": ["consistency", "advanced"]
+    },
+    {
+      "id": "kora-database-cassandra-lwt",
+      "skills": ["kora-database-cassandra"],
+      "query": "Add a conditional insert that only writes when the row does not already exist, and make the whole two-step write atomic.",
+      "expected_behavior": [
+        "Writes CQL with IF NOT EXISTS in the @Query and returns boolean to read the [applied] flag, which is the first column of an LWT result",
+        "States that Cassandra has no transactions, that CassandraExecutor has no inTx, and that LWT is a single-partition compare-and-set rather than a multi-statement transaction",
+        "Declines to make the two-step write atomic across partitions and suggests reshaping the data model or accepting compensation instead",
+        "Mentions that LWT uses serial consistency configured at cassandra.basic.request.serialConsistency (SERIAL or LOCAL_SERIAL)",
+        "Notes the round-trip cost of LWT and warns against using it as the default write path",
+        "Does not present an UNLOGGED batch as a transaction"
+      ],
+      "tags": ["lwt", "advanced", "regression"]
+    },
+    {
+      "id": "kora-database-cassandra-kotlin-repository",
+      "skills": ["kora-database-cassandra"],
+      "query": "Write a Kotlin Cassandra repository for Kora 2.0 with an entity, a custom enum column mapper for both directions, and CRUD methods.",
+      "expected_behavior": [
+        "Applies the com.google.devtools.ksp plugin and uses ksp(\"io.koraframework:symbol-processors\") — never annotationProcessor or kapt for the Kora processor",
+        "Pins Kotlin 2.4.20 with the KSP plugin 2.3.12 — the versions Kora 2.0.0.RC2 is built with",
+        "Declares @Repository interface extending CassandraRepository with plain fun methods returning T?, List<T> and Unit",
+        "Uses @field:Column / @field:Id on data class properties and plain Kotlin nullable types instead of any JSpecify annotation",
+        "Implements CassandraRowColumnMapper for reads and CassandraParameterColumnMapper for writes, declaring the write mapper's value parameter as T?",
+        "Applies both with repeated @Mapping annotations on the entity property",
+        "Leaves dependency-free non-open mappers without @Component, or explains why one is needed",
+        "Does not use suspend, Flow, Mono, Flux, Optional, or ru.tinkoff.kora imports"
+      ],
+      "tags": ["kotlin", "mapping", "advanced"]
+    }
+  ]
+}

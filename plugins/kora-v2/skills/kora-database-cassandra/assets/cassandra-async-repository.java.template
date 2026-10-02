@@ -1,0 +1,54 @@
+package ${package};
+
+import io.koraframework.database.cassandra.CassandraRepository;
+import io.koraframework.database.common.annotation.Batch;
+import io.koraframework.database.common.annotation.Query;
+import io.koraframework.database.common.annotation.Repository;
+
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+
+/*
+ * TEMPLATE NOTES — delete this block after copying.
+ *
+ * JAVA ONLY. Cassandra is the one Kora 2.0 backend that still exposes the driver's async path:
+ * the generator uses session.prepareAsync(...) / executeAsync(...) for a CompletionStage or
+ * CompletableFuture return type. There is NO Kotlin equivalent — suspend is rejected by the
+ * KSP repository builder and Flow<T> is not supported; Kotlin repositories are synchronous.
+ *
+ * Reactor is gone framework-wide: no Mono, no Flux, no CassandraReactiveResultSetMapper. Do not
+ * add io.projectreactor:reactor-core for this.
+ *
+ * - The CQL is identical to the synchronous form; only the return type changes.
+ * - CompletionStage<Void> is the write/void shape, and the only shape a @Batch method may return.
+ * - A single-row lookup completes with null when nothing matched — treat the result as nullable.
+ * - CompletionStage<List<T>> pages the whole result set through
+ *   CassandraAsyncResultSetMapper.list(...); bound it with LIMIT or basic.request.pageSize.
+ * - Never join()/get() inside a repository or inside another stage's callback — that parks a
+ *   driver I/O thread. Prefer synchronous signatures unless the pipeline is async end to end.
+ */
+@Repository
+public interface ${repository_name} extends CassandraRepository {
+
+    @Query("SELECT * FROM ${table_name} WHERE id = :id")
+    CompletableFuture<${entity_name}> findById(${id_type} id);
+
+    @Query("SELECT * FROM ${table_name}")
+    CompletionStage<List<${entity_name}>> findAll();
+
+    @Query("INSERT INTO ${table_name}(id, field1, field2) VALUES (:entity.id, :entity.field1, :entity.field2)")
+    CompletionStage<Void> insert(${entity_name} entity);
+
+    @Query("INSERT INTO ${table_name}(id, field1, field2) VALUES (:entity.id, :entity.field1, :entity.field2)")
+    CompletionStage<Void> insertBatch(@Batch List<${entity_name}> entity);
+
+    @Query("UPDATE ${table_name} SET field1 = :entity.field1, field2 = :entity.field2 WHERE id = :entity.id")
+    CompletionStage<Void> update(${entity_name} entity);
+
+    @Query("DELETE FROM ${table_name} WHERE id = :id")
+    CompletionStage<Void> deleteById(${id_type} id);
+
+    @Query("TRUNCATE ${table_name}")
+    CompletableFuture<Void> deleteAll();
+}

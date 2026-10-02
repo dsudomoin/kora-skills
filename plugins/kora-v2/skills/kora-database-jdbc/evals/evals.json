@@ -1,0 +1,481 @@
+{
+  "evals": [
+    {
+      "id": "kora-database-jdbc-crud",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "Create a Kora JDBC repository for a User with an auto-generated Long id, email, name and createdAt columns. I need findById, findAll, insert and delete.",
+      "expected_behavior": [
+        "Defines a record annotated with @EntityJdbc from io.koraframework.database.jdbc.annotation, plus @Table/@Column/@Id from io.koraframework.database.common.annotation",
+        "Declares a @Repository interface extending JdbcRepository with synchronous method signatures",
+        "Uses SQL macros such as %{return#selects}, %{return#table}, %{entity#inserts} in @Query",
+        "Returns @Nullable User (preferred over Optional) for findById and List<User> for findAll",
+        "Adds annotationProcessor \"io.koraframework:annotation-processors\" (or ksp \"io.koraframework:symbol-processors\") and a JDBC driver dependency",
+        "Does not use ru.tinkoff.kora packages, JPA @Entity, reflection-based ORM annotations, or field injection"
+      ],
+      "tags": [
+        "repository",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-config-section-db",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "My Kora 2.0 service compiles fine but dies at startup with 'ConfigValueException: Config expected value, but got null at path: ROOT.jdbc.username'. My application.conf has a db { } block with jdbcUrl, username and password, and nothing under jdbc.",
+      "expected_behavior": [
+        "Identifies the cause as the 1.x section name: the config section was renamed from db to jdbc in Kora 2.0",
+        "States that JdbcDatabaseModule wires new JdbcDatabaseFactoryModule(\"jdbc\"), so the path in the message is the one Kora looks for, not one the file contains",
+        "Renames the whole block to jdbc { } rather than adding a jdbc.username key next to db",
+        "Notes that the stale db { } block is an unrecognised HOCON section, ignored without a warning, which is why the build stayed green",
+        "Does not suggest a namingStrategy, a config-mapper change, or renaming JdbcDatabaseConfig fields"
+      ],
+      "tags": [
+        "config",
+        "migration",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-config-section-in-test-hocon",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "I renamed db to jdbc in every .conf file for the Kora 2.0 migration, but one @KoraAppTest still fails with 'Config expected value, but got null at path: ROOT.jdbc.username'. The resource files are definitely migrated.",
+      "expected_behavior": [
+        "Points at HOCON embedded in test sources via KoraConfigModification.ofString(\"\"\"...\"\"\")",
+        "Explains that inline test HOCON carries the same keys and is missed by scans that only read .conf and .yaml files",
+        "Applies the same rename inside the ofString block: jdbc { jdbcUrl, username, password, poolName }",
+        "Mentions KoraConfigModification.ofSystemProperty / withSystemProperty as the other test config entry points",
+        "Does not conclude the resource files are still wrong when they have already been migrated"
+      ],
+      "tags": [
+        "config",
+        "migration",
+        "regression",
+        "testing"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-entityjdbc-package",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "Porting a repository to Kora 2.0: I changed every import from ru.tinkoff.kora to io.koraframework and now javac says 'cannot find symbol: class EntityJdbc' for io.koraframework.database.jdbc.EntityJdbc. @Repository, @Query and @Column resolve fine.",
+      "expected_behavior": [
+        "States that @EntityJdbc moved to io.koraframework.database.jdbc.annotation.EntityJdbc in Kora 2.0",
+        "Notes that it is the only database annotation whose package changed — @Repository, @Query, @Id, @Table, @Column, @Embedded and @Batch stay in io.koraframework.database.common.annotation",
+        "Warns against applying one blanket package-rewrite rule to every database annotation and recommends checking each import",
+        "Does not suggest that @EntityJdbc was removed or replaced by another annotation"
+      ],
+      "tags": [
+        "entity",
+        "migration",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-suspend-repository",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "Kotlin, Kora 2.0. KSP fails with 'Suspend methods are not supported by the repository generator' on my PetRepository. Can I just drop the suspend keyword from the repository interface?",
+      "expected_behavior": [
+        "Confirms repository contracts are synchronous in Kora 2.0 and that suspend, Mono, Flux and CompletionStage repository methods were all removed",
+        "States that dropping suspend is not a mechanical keyword deletion: it propagates up through services, controllers and tests",
+        "Names the behavioural consequences: coroutine cancellation no longer cancels the database call, transaction boundaries are now the inTx lambda rather than a coroutine context, and exceptions propagate as ordinary throws",
+        "Says the runTest/runBlocking wrappers around the now-synchronous calls should be removed, and kotlinx-coroutines dependencies dropped once the last coroutine usage is gone",
+        "Mentions that a suspend repository kept only as a duplicate of an existing synchronous one should be deleted outright rather than converted into a second interface",
+        "Points at Java StructuredTaskScope (preview, --enable-preview) for real parallel fan-out instead of keeping a coroutine bridge",
+        "Does not suggest wrapping the repository call in withContext(Dispatchers.IO) to keep the suspend signature"
+      ],
+      "tags": [
+        "kotlin",
+        "migration",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-connection-factory-renamed",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "Migrating a Kora service to 2.0: repository.getJdbcConnectionFactory().inTx(...) no longer compiles, and JdbcConnectionFactory cannot be resolved either. What replaces it?",
+      "expected_behavior": [
+        "States that JdbcRepository now exposes executor() returning JdbcExecutor from io.koraframework.database.jdbc",
+        "Shows repository.executor().inTx(...) as the replacement and notes JdbcExecutor can also be injected directly into a @Component",
+        "Mentions that the graph implementation is JdbcDataSource, so no JdbcDatabase or JdbcConnectionFactory component exists any more",
+        "Maps currentConnectionContext() to currentContext() and the post-action methods to ConnectionContext.afterCommit / afterRollback if those appear",
+        "Does not invent a JdbcConnectionFactory replacement class or suggest injecting javax.sql.DataSource and managing transactions by hand"
+      ],
+      "tags": [
+        "transactions",
+        "migration",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-kotlin-intx-sam",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "Kotlin, Kora 2.0. repository.executor().inTx { repository.insert(entity); entity } fails with 'Cannot infer type for type parameter T'. The same code shape worked before the migration.",
+      "expected_behavior": [
+        "Explains that inTx now has several overloads (SqlSupplier, SqlRunnable, SqlFunction<ConnectionContext,T>, SqlConsumer, each with and without a TxIsolation) so Kotlin cannot pick one from a bare lambda",
+        "Gives the fix as an explicit SAM constructor: inTx(JdbcExecutor.SqlSupplier { ... }) when a value is returned and inTx(JdbcExecutor.SqlRunnable { ... }) when nothing is",
+        "Notes that the error text (or 'Overload resolution ambiguity') never mentions transactions, which is why it is easy to misdiagnose",
+        "Notes that Java infers correctly from a bare lambda, so only Kotlin call sites need changing",
+        "Does not suggest casting the lambda, adding explicit type arguments to inTx, or restructuring the transaction to avoid the problem"
+      ],
+      "tags": [
+        "kotlin",
+        "transactions",
+        "migration",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-kotlin-mapper-nullability",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "Kotlin, Kora 2.0. My column mapper 'class TaskStatusParameterMapper : JdbcParameterColumnMapper<TaskStatus> { override fun set(stmt: PreparedStatement, index: Int, value: TaskStatus) { ... } }' fails with \"'set' overrides nothing\". The Java version of the same mapper in another module compiles.",
+      "expected_behavior": [
+        "Identifies the cause as nullability: the 2.0 mapper contracts are JSpecify-marked, so the value parameter must be declared TaskStatus?",
+        "Shows the corrected signature: override fun set(stmt: PreparedStatement, index: Int, value: TaskStatus?)",
+        "Notes the same applies to JdbcResultColumnMapper.apply(rs, index) and JdbcRowMapper.apply(row), and that return types may still be narrowed to non-null",
+        "Explains the Java/Kotlin asymmetry: Java does not enforce the annotation, which is why the Java twin compiles",
+        "Points out that the error message never mentions nullability",
+        "Does not suggest changing the generic type argument to TaskStatus? or adding @JvmSuppressWildcards / a platform-type cast"
+      ],
+      "tags": [
+        "kotlin",
+        "mappers",
+        "migration",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-mapper-component-rules",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "Kora 2.0. One of my JDBC mappers fails the graph build with 'No component found for dependency: JdbcResultColumnMapper<Status>' and another with 'Multiple components match dependency'. Should every mapper just be a @Component?",
+      "expected_behavior": [
+        "Answers no, and ties the decision to the mapper's own shape rather than a blanket rule",
+        "States that a @Mapping-named mapper that is final (Kotlin: not open) with a public no-arg constructor and no @Tag is instantiated by the generated repository itself and needs no @Component",
+        "States that a mapper with constructor dependencies, a non-final Java class, or a @Tag is injected as a constructor parameter of the generated repository and therefore must be a @Component",
+        "States that a field or parameter with no @Mapping resolves its mapper from the graph by type, so that mapper must be a @Component and only one component may produce that type",
+        "Maps each error to its cause: 'No component found' means an injected mapper is missing from the graph, 'Multiple components match' means two components produce the same mapper type",
+        "Does not recommend annotating every mapper with @Component, and does not suggest @Tag as the default fix"
+      ],
+      "tags": [
+        "mappers",
+        "di",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-no-r2dbc-vertx",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "We are on Kora 2.0 and want non-blocking database access. Should we move our repositories from database-jdbc to database-r2dbc, or to the Vert.x SQL module?",
+      "expected_behavior": [
+        "States plainly that database-r2dbc and database-vertx do not exist in Kora 2.0 — they were removed, and there is no reactive database module to migrate to",
+        "Explains the 2.0 execution model: contracts are synchronous and blocking JDBC runs on virtual threads, so a reactive driver is not the lever it used to be",
+        "Recommends staying on database-jdbc and sizing the Hikari pool as the real concurrency limit",
+        "Does not invent a replacement artifact, suggest wrapping repositories in CompletableFuture/Mono to simulate reactivity, or point at 1.x kora-docs pages for r2dbc/vertx (the 2.0 docs have no such module)"
+      ],
+      "tags": [
+        "migration",
+        "regression",
+        "architecture"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-macros",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "In my Kora 2.0 repository the query @Query(\"DELETE FROM %{entity#table} WHERE id = :id\") UpdateCount deleteById(Long id) fails the build with 'Query macro target entity cannot be resolved'. The entity is annotated with @EntityJdbc and @Table.",
+      "expected_behavior": [
+        "Explains that a macro target must resolve within the annotated method: a parameter name, return, a nested path, or a type parameter of the repository",
+        "Points out that deleteById(Long id) has no parameter called entity, so %{entity#table} cannot resolve regardless of the entity's annotations",
+        "Fixes it by naming the table literally, or by targeting the repository's type parameter (%{V#table}) in a generic base interface",
+        "Lists the real 2.0 macro command set — table, table as alias, selects, columns, values, inserts, updates, where — and notes there is no deletes command",
+        "Does not invent a %{entity#deletes} macro or claim @Table is missing"
+      ],
+      "tags": [
+        "macros",
+        "repository",
+        "intermediate"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-generated-id",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "How do I insert a row and get back the database-generated identity id in a Kora 2.0 JDBC repository?",
+      "expected_behavior": [
+        "Annotates the insert method with @Id and returns the id type (e.g. Long), or projects it with an explicit RETURNING id clause",
+        "Excludes the id column from the INSERT with %{entity#inserts -= @id}",
+        "Notes that @Id-on-method also works with @Batch, returning List<Long> in input order",
+        "Does not invent a @GeneratedValue annotation or a %{entity#deletes} macro"
+      ],
+      "tags": [
+        "identifiers",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-transaction",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "Write a Kora 2.0 service that inserts an order and reserves inventory atomically, sending a notification only after the transaction commits.",
+      "expected_behavior": [
+        "Runs the work inside repository.executor().inTx(...), or through an injected JdbcExecutor",
+        "Calls multiple repository methods inside the same inTx lambda so they share one transaction and roll back together",
+        "Registers the notification with ConnectionContext.afterCommit(...), taking the context from the inTx overload that supplies it rather than the nullable currentContext()",
+        "Declares the service as a @Component with constructor injection",
+        "Does not use @Transactional, declarative propagation, getJdbcConnectionFactory(), or addPostCommitAction"
+      ],
+      "tags": [
+        "transactions",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-batch",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "Add bulk insert and update methods to my Kora 2.0 JDBC UserRepository.",
+      "expected_behavior": [
+        "Annotates the List<User> parameter with @Batch (the annotation targets the parameter, not the method)",
+        "Returns UpdateCount, void, int[]/long[], or generated ids with @Id — not an arbitrary projection of rows",
+        "Uses %{entity#inserts} / %{entity#updates} macros in @Query",
+        "Does not call PreparedStatement.addBatch by hand or reach for a JdbcTemplate-style helper"
+      ],
+      "tags": [
+        "repository",
+        "intermediate"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-enum-mapper",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "My Kora 2.0 entity has a Status enum stored as an integer code column. How do I map it both ways, in Java and in Kotlin?",
+      "expected_behavior": [
+        "Implements JdbcResultColumnMapper<Status> with apply(ResultSet rs, int index) to read the code",
+        "Implements JdbcParameterColumnMapper<Status> with set(PreparedStatement, int, value) to write it, handling null via setNull",
+        "Selects both by repeating @Mapping on the field — the annotation is @Repeatable, there is no array attribute form",
+        "In Kotlin declares the mapper parameter as Status? and uses @field: for @Id/@Column while applying @Mapping without a use-site target",
+        "Decides @Component correctly: a final/no-arg mapper named by @Mapping is constructed by the generated repository and needs none",
+        "Does not use a JPA AttributeConverter or an external converter framework"
+      ],
+      "tags": [
+        "mappers",
+        "intermediate"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-composite-key",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "I have an order_items table with a composite primary key (order_id, product_id). How do I model it in Kora 2.0 JDBC?",
+      "expected_behavior": [
+        "Models the key as a nested record/data class referenced with @Id @Embedded on the parent entity field (Kotlin: @field:Id @field:Embedded)",
+        "Uses %{id#where} in findById/deleteById and %{entity#where = @id} when the method takes the entity",
+        "Keeps @EntityJdbc on the parent entity and notes the nested key type does not need it",
+        "Targets the key columns in ON CONFLICT with %{entity#selects = @id} rather than hardcoding them",
+        "Does not use JPA @IdClass or @EmbeddedId"
+      ],
+      "tags": [
+        "entity",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-jsonb",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "How do I persist a nested record into a PostgreSQL jsonb column with Kora 2.0 JDBC?",
+      "expected_behavior": [
+        "Adds io.koraframework:database-jdbc-postgres and extends PostgresJdbcDatabaseModule on the @KoraApp in place of JdbcDatabaseModule (it extends JdbcDatabaseModule)",
+        "Tags the entity field with @PgJsonb from io.koraframework.database.jdbc.postgres.annotation (@PgJson for a json column) and annotates the payload type with @Json from io.koraframework.json.common.annotation",
+        "Keeps only the PostgreSQL tag on the field — @Json goes on the payload type, not next to @PgJsonb on the field",
+        "Wires io.koraframework.json.common.JsonModule so the JsonReader/JsonWriter for the payload are in the graph",
+        "Writes the INSERT without a ::jsonb cast, because the parameter is sent as a jsonb-typed PGobject",
+        "Explains that @PgJsonb vs @PgJson only changes the sent parameter type, and that jsonb operators such as @> need a @PgJsonb parameter",
+        "Does not hand-write a generic @Json-tagged JdbcParameterColumnMapper/JdbcResultColumnMapper module when database-jdbc-postgres is available, does not use Jackson ObjectMapper directly, and does not reference JsonCommonModule / the json-module artifact"
+      ],
+      "tags": [
+        "mappers",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-config",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "Configure the HikariCP connection pool for a Kora 2.0 JDBC service with credentials from environment variables, a 20-connection pool, and query metrics and logs visible in observability.",
+      "expected_behavior": [
+        "Places jdbcUrl, username, password, poolName and maxPoolSize under the jdbc section (not db) read by JdbcDatabaseConfig",
+        "Enables telemetry.logging.enabled and telemetry.metrics.enabled explicitly, noting both default to false in Kora 2.0",
+        "Uses HOCON duration strings like connectionTimeout = \"10s\" rather than millisecond numbers",
+        "Substitutes credentials with environment variables (${POSTGRES_JDBC_URL}, ${POSTGRES_USER}, ${POSTGRES_PASS})",
+        "Wires JdbcDatabaseModule and a config module (HoconConfigModule) into @KoraApp, plus a metrics module for the registry",
+        "Does not build a DataSource by hand or use raw Hikari property names as top-level keys"
+      ],
+      "tags": [
+        "configuration",
+        "telemetry",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-stale-incremental-build",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "Kora 2.0 build fails with 'SQL query placeholder has no matching method parameter: :id / Available parameters: - :arg0'. My repository method is findById(Long id) and the parameter really is called id. A clean rebuild in a colleague's checkout works.",
+      "expected_behavior": [
+        "Identifies :arg0 as the tell that the processor read the repository interface from a compiled class file with synthetic parameter names, not from the source",
+        "Attributes it to an incremental/cached build rather than to the query or the method signature",
+        "Fixes it with ./gradlew clean or --rerun-tasks",
+        "Does not suggest renaming parameters to arg0, switching to positional placeholders, or adding -parameters as the fix",
+        "Mentions the related case where phantom ru.tinkoff.kora errors come from stale sources under build/generated, and that generated code must never be hand-edited"
+      ],
+      "tags": [
+        "build",
+        "regression",
+        "troubleshooting"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-testing",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "How should I write an integration test for a Kora 2.0 JDBC repository against a real PostgreSQL?",
+      "expected_behavior": [
+        "Uses @KoraAppTest with io.koraframework:test-junit5 and injects the repository with @TestComponent",
+        "Starts PostgreSQL via Testcontainers and points the config at it through KoraConfigModification (ofSystemProperty/withSystemProperty, or ofString for an inline jdbc { } block)",
+        "Uses the jdbc section name in any inline test HOCON",
+        "Exercises the real generated repository implementation rather than instantiating or mocking it",
+        "Does not use a boot-test annotation from another framework, a JPA slice test, or mock the repository"
+      ],
+      "tags": [
+        "testing",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-postgres-any-list",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "Java, Kora 2.0, PostgreSQL. I need a repository method that loads all orders whose id is in a List<Long> I get from the caller, and one that deletes by a Set<UUID>. WHERE id IN (:ids) does not work. How do I do this?",
+      "expected_behavior": [
+        "Adds implementation \"io.koraframework:database-jdbc-postgres\" (version from kora-bom 2.0.0.RC2) and notes it brings database-jdbc and the org.postgresql:postgresql driver",
+        "Replaces JdbcDatabaseModule with io.koraframework.database.jdbc.postgres.PostgresJdbcDatabaseModule on the @KoraApp",
+        "Writes WHERE id = ANY(:ids) and binds the whole collection as one array parameter",
+        "Tags the parameters @Pg (io.koraframework.database.jdbc.postgres.annotation.Pg): @Pg List<Long> ids and @Pg Set<UUID> ids",
+        "States that collection parameters accept List, Set or Collection while results are always List",
+        "States that the mappers are tagged, so without @Pg the build fails with No component found for dependency: JdbcParameterColumnMapper<List<Long>>",
+        "Does not expand the list into IN (?, ?, ...) by string concatenation and does not hand-write a List<Long> JdbcParameterColumnMapper"
+      ],
+      "tags": [
+        "postgres",
+        "mappers",
+        "repository"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-postgres-kotlin",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "Kotlin, Kora 2.0, PostgreSQL. My data class has tags: List<String> (varchar[]), scores: LongArray (bigint[]) and ttl: Duration (interval). How do I map these with KSP?",
+      "expected_behavior": [
+        "Uses database-jdbc-postgres with PostgresJdbcDatabaseModule and ksp(\"io.koraframework:symbol-processors\")",
+        "Annotates the properties @Pg without a use-site target (@Pg val tags: List<String>, @Pg val scores: LongArray, @Pg val ttl: Duration?), keeping @field:Id for the key",
+        "Explains that LongArray maps to the long[] mapper and cannot read an array containing NULL elements — List<Long?> is used for nullable elements",
+        "Explains that @Pg Duration rejects an interval with years or months on read and points at @Pg Period for calendar intervals",
+        "Keeps the repository synchronous (no suspend) and does not use kapt"
+      ],
+      "tags": [
+        "postgres",
+        "kotlin",
+        "mappers"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-postgres-range-interval",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "Kora 2.0 JDBC on PostgreSQL: a booking table has a tstzrange column 'during' and a subscription table has an interval column 'billing_cycle' holding values like '1 month'. How do I map them and query bookings overlapping a window?",
+      "expected_behavior": [
+        "Maps the range column to PgRange<OffsetDateTime> from io.koraframework.database.jdbc.postgres, with no tag",
+        "Builds values with PgRange.closedOpen / closed / open / openClosed / empty, and treats a null bound as unbounded",
+        "Queries with WHERE during && :window taking a PgRange<OffsetDateTime> parameter",
+        "Maps billing_cycle to @Pg Period, because Duration rejects intervals with months",
+        "Warns that PostgreSQL canonicalises discrete ranges to [) and tstzrange bounds come back in the session time zone, so a read value can differ from the written one",
+        "Does not write a custom PGobject mapper for the range or the interval"
+      ],
+      "tags": [
+        "postgres",
+        "mappers",
+        "entity"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-postgres-json-nullable",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "In a Kora 2.0 PostgreSQL entity I need a jsonb column where 'no value' (SQL NULL) and an explicit JSON null are different states. Is there support for that?",
+      "expected_behavior": [
+        "Uses JsonNullable<T> from io.koraframework.json.common on a field tagged @PgJsonb (or @PgJson)",
+        "States the mapping: JsonNullable.undefined() <-> SQL NULL, JsonNullable.nullValue() <-> JSON literal null, JsonNullable.of(value) <-> the serialised value",
+        "Declares the field non-null, because SQL NULL reads as undefined() rather than a null reference",
+        "Requires database-jdbc-postgres with PostgresJdbcDatabaseModule and JsonModule, and a @Json payload type",
+        "Does not model the two states with an extra boolean column or a hand-written mapper"
+      ],
+      "tags": [
+        "postgres",
+        "json",
+        "mappers"
+      ]
+    },
+    {
+      "id": "kora-database-jdbc-kotlin-snake-case",
+      "skills": [
+        "kora-database-jdbc"
+      ],
+      "query": "Kotlin Kora 2.0 JDBC entity: data class Job(@field:Id val id: UUID, val executorUuid: UUID, val createdAt: LocalDateTime). Do I need @Column on the camelCase properties for %{return#selects} to hit executor_uuid and created_at?",
+      "expected_behavior": [
+        "Answers no: KSP converts property names with the same snake_case converter as the Java processor, so executorUuid -> executor_uuid and createdAt -> created_at",
+        "Gives HTTPClient -> http_client as the acronym behaviour of the converter",
+        "Reserves @field:Column for names the converter does not produce, joins with aliases, or legacy schemas",
+        "Does not recommend blanket @Column on every Kotlin property as a workaround"
+      ],
+      "tags": [
+        "kotlin",
+        "entity",
+        "naming"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+package ${packagePath};
+
+import io.koraframework.application.graph.LifecycleWrapper;
+import io.koraframework.application.graph.Wrapped;
+import io.koraframework.common.annotation.Module;
+
+/**
+ * Attaching a lifecycle to a type you cannot make implement {@code Lifecycle}.
+ *
+ * <p>A module method that returns {@code Wrapped<T>} registers a component of type <b>T</b>: the
+ * container unwraps it, so consumers keep injecting {@code T} and never see the wrapper. Returning
+ * {@code T} instead of {@code Wrapped<T>} compiles and wires fine — the hooks simply never run.
+ *
+ * <p>{@code LifecycleWrapper} has exactly one constructor:
+ * <pre>{@code
+ * LifecycleWrapper(T value, ThrowingConsumer<T> init, ThrowingConsumer<T> release)
+ * }</pre>
+ * There is no static {@code wrap(...)}. Both consumers are mandatory and may throw checked
+ * exceptions; pass {@code v -> {}} for a hook you do not need.
+ */
+@Module
+public interface ${ModuleName} {
+
+    default Wrapped<${ComponentType}> ${methodName}(${ConfigType} config) {
+        var component = new ${ComponentType}(config);
+
+        return new LifecycleWrapper<>(
+            component,
+            c -> c.start(),   // init:    runs before any dependent is created
+            c -> c.close()    // release: runs after every dependent has been released
+        );
+    }
+
+    // Two independently configured instances of one type: give each its own tag.
+    //
+    // @Tag(PrimaryTag.class)
+    // default Wrapped<Connection> primary(ConnectionConfig config) {
+    //     var connection = Connection.open(config.primaryUrl());
+    //     return new LifecycleWrapper<>(connection, Connection::verify, Connection::close);
+    // }
+    //
+    // @Tag(ReplicaTag.class)
+    // default Wrapped<Connection> replica(ConnectionConfig config) {
+    //     var connection = Connection.open(config.replicaUrl());
+    //     return new LifecycleWrapper<>(connection, Connection::verify, Connection::close);
+    // }
+}

@@ -1,0 +1,221 @@
+{
+  "evals": [
+    {
+      "id": "kora-kafka-producer-basic",
+      "skills": ["kora-kafka-producer"],
+      "query": "Create a Kora Kafka publisher interface that sends String messages to a 'user-events' topic.",
+      "expected_behavior": [
+        "Declares an interface (never a class) annotated with @KafkaPublisher from io.koraframework.kafka.common.annotation, whose single value() is a kafka.producer.* config path",
+        "Adds a method annotated with @Topic (the nested @KafkaPublisher.Topic) whose value is a topic config path, absolute or leading-dot relative to the publisher path",
+        "Adds the io.koraframework:kafka dependency through the io.koraframework:kora-bom platform and KafkaModule (io.koraframework.kafka.common.KafkaModule) to the @KoraApp interface",
+        "Includes the annotation-processors (Java) or symbol-processors (Kotlin) processor",
+        "Configures kafka.producer with driverProperties bootstrap.servers and a topic section with topic = \"user-events\"",
+        "Does not use ru.tinkoff.kora packages, io.koraframework:json-module, or io.koraframework:kora-parent",
+        "Does not use field injection or a non-Kora messaging-template abstraction; uses @KafkaPublisher with constructor injection"
+      ],
+      "tags": ["producer", "basic"]
+    },
+    {
+      "id": "kora-kafka-producer-json",
+      "skills": ["kora-kafka-producer"],
+      "query": "I need to publish a UserEvent record (userId, eventType, timestamp) to Kafka as JSON in my Kora service.",
+      "expected_behavior": [
+        "Annotates the DTO with @Json from io.koraframework.json.common.annotation",
+        "Annotates the value parameter with @Json so the processor resolves the JSON Serializer<T>",
+        "Adds the io.koraframework:json-common dependency (NOT json-module, which does not exist in 2.0) and JsonModule from io.koraframework.json.common",
+        "Does not set key.serializer / value.serializer manually in driverProperties for the @Json parameter",
+        "Does not wire a reflective ObjectMapper or com.fasterxml.jackson types; relies on Kora's compile-time @Json serializer"
+      ],
+      "tags": ["producer", "serialization", "basic"]
+    },
+    {
+      "id": "kora-kafka-producer-signatures",
+      "skills": ["kora-kafka-producer"],
+      "query": "Add three send methods to my Kafka publisher: fire-and-forget, one that returns broker metadata synchronously, and one that is asynchronous.",
+      "expected_behavior": [
+        "Declares a method returning RecordMetadata for the blocking case",
+        "Declares a method returning Future<RecordMetadata>, CompletionStage<RecordMetadata> or CompletableFuture<RecordMetadata> for the async case",
+        "States that a void return is NOT fire-and-forget: the generated $X_Impl ends every non-future signature in .get() and blocks until the broker acks, rethrowing failures as KafkaPublishException",
+        "Achieves real fire-and-forget by returning a Future and ignoring it, or by passing a Callback, rather than by declaring void",
+        "Each method is annotated with @Topic, or takes a ProducerRecord when @Topic is omitted",
+        "Does not introduce Reactor Mono/Flux, RxJava or any non-Kora async type"
+      ],
+      "tags": ["producer", "signatures", "advanced"]
+    },
+    {
+      "id": "kora-kafka-producer-async-still-supported",
+      "skills": ["kora-kafka-producer"],
+      "query": "I am porting a Kora 1.x service to Kora 2.0. My publisher has `CompletionStage<RecordMetadata> send(String value)`. Kora 2.0 dropped reactive and suspend contracts, so do I have to make this synchronous?",
+      "expected_behavior": [
+        "Answers NO: the Kafka publisher is an exception to the 'Kora 2.0 contracts are synchronous' rule and keeps its asynchronous return types",
+        "Confirms Future<RecordMetadata>, CompletionStage<RecordMetadata> and CompletableFuture<RecordMetadata> are all still accepted by the publisher processor",
+        "Confirms Kotlin suspend fun and Deferred<RecordMetadata> publisher methods are still accepted by the KSP processor",
+        "Does not rewrite the method to a blocking void or RecordMetadata return on the false premise that async was removed",
+        "Does not confuse the publisher with repositories, HTTP clients or controllers, where suspend and reactive contracts really were removed",
+        "If it mentions Kotlin suspend/Deferred, notes they need org.jetbrains.kotlinx:kotlinx-coroutines-jdk8 because the generated code calls kotlinx.coroutines.future.await / asDeferred"
+      ],
+      "tags": ["producer", "signatures", "regression", "migration"]
+    },
+    {
+      "id": "kora-kafka-producer-no-context-parameter",
+      "skills": ["kora-kafka-producer"],
+      "query": "Port this Kora 1.x publisher to 2.0: `@Topic(\".topic\") void send(Context ctx, String value);` — I want the request context propagated with the record.",
+      "expected_behavior": [
+        "States that Context does not exist anywhere in Kora 2.0 and must be removed from the signature",
+        "Explains that the publisher processor classifies parameters by type, so an unrecognised Context parameter is treated as a PAYLOAD parameter (the key), not as metadata",
+        "Predicts the resulting failure as a missing Serializer<Context> for that parameter rather than an 'unknown annotation' or 'unsupported parameter' error",
+        "Propagates correlation data through org.apache.kafka.common.header.Headers, which is a recognised special parameter type",
+        "Does not invent a @Context annotation, a ScopedValue-based publisher parameter, or a Kora 2.0 Context replacement type"
+      ],
+      "tags": ["producer", "signatures", "regression", "migration"]
+    },
+    {
+      "id": "kora-kafka-producer-transactional",
+      "skills": ["kora-kafka-producer"],
+      "query": "I want to send several Kafka records atomically so they all commit or all roll back.",
+      "expected_behavior": [
+        "Declares a payload @KafkaPublisher interface and a SECOND @KafkaPublisher interface that extends TransactionalPublisher<P> and nothing else",
+        "Imports TransactionalPublisher from io.koraframework.kafka.common.producer",
+        "Leaves the transactional interface empty — it inherits begin(), inTx(...) and withTx(...) and must declare no send methods of its own",
+        "Sends inside inTx(...) so the transaction commits when the lambda returns and aborts when it throws",
+        "Configures the transactional section with idPrefix / maxPoolSize / maxWaitTime ONLY, and puts driverProperties on the wrapped publisher's section instead",
+        "Clarifies that a Kafka transaction is not atomic with a database write (suggests transactional outbox), and does not assume an external @Transactional bridges Kafka and the database"
+      ],
+      "tags": ["producer", "transactions", "advanced"]
+    },
+    {
+      "id": "kora-kafka-producer-transactional-invalid-shape",
+      "skills": ["kora-kafka-producer"],
+      "query": "Review this Kora 2.0 publisher: `@KafkaPublisher(\"kafka.producer.tx\") public interface TxPublisher extends TransactionalPublisher<OrderPublisher>, AutoCloseable { @Topic(\".topic\") void send(String value); }` where OrderPublisher is a plain interface with no annotations.",
+      "expected_behavior": [
+        "Flags the extra AutoCloseable supertype: a @KafkaPublisher interface must extend either nothing or exactly one TransactionalPublisher<T>",
+        "Flags the send method on the transactional interface: the processor generates the transactional impl from the type alone and never implements declared methods, so the generated $TxPublisher_Impl fails to compile as not abstract and not overriding send",
+        "Flags that the TransactionalPublisher type argument OrderPublisher must itself be annotated @KafkaPublisher",
+        "Rewrites it as an empty transactional interface extending only TransactionalPublisher<OrderPublisher>, with @KafkaPublisher added to OrderPublisher",
+        "Does not suggest annotating the transactional interface's methods, adding @Component to it, or implementing TransactionalPublisher manually"
+      ],
+      "tags": ["producer", "transactions", "regression"]
+    },
+    {
+      "id": "kora-kafka-producer-error-handling",
+      "skills": ["kora-kafka-producer"],
+      "query": "How do I handle publish failures and serialization errors when sending to Kafka in Kora?",
+      "expected_behavior": [
+        "Catches io.koraframework.kafka.common.exceptions.KafkaPublishException for blocking sends and inspects getCause()",
+        "Catches org.apache.kafka.common.errors.SerializationException for serialization failures and notes the record never reached the broker",
+        "For Future/CompletionStage signatures, handles failures via the returned handle (for example exceptionally / whenComplete)",
+        "Does not claim KafkaPublishException is thrown synchronously by async Future/CompletionStage methods",
+        "Does not wrap JsonWriter.toByteArray in try/catch (IOException)",
+        "Does not rely on a non-Kora error-handling framework; handles failures with plain try/catch and Kora exception types"
+      ],
+      "tags": ["producer", "error-handling", "advanced"]
+    },
+    {
+      "id": "kora-kafka-producer-json-writer-no-ioexception",
+      "skills": ["kora-kafka-producer"],
+      "query": "This custom Kafka serializer stopped compiling after the Kora 2.0 upgrade: `public byte[] serialize(String topic, MyEvent data) { try { return writer.toByteArray(data); } catch (IOException e) { throw new SerializationException(e); } }`",
+      "expected_behavior": [
+        "Identifies the error as 'exception IOException is never thrown in body of corresponding try statement'",
+        "Explains that JsonWriter.toByteArray declares no checked exception in Kora 2.0 (the 1.x throws IOException and the *Unchecked variants are both gone)",
+        "Removes the try/catch and the java.io.IOException import, returning writer.toByteArray(data) directly",
+        "Does not replace the catch with catch (Exception e) merely to keep the old structure, and does not suggest toByteArrayUnchecked, which no longer exists",
+        "Registers the serializer as a @Component bound under a @Tag matching the publisher parameter"
+      ],
+      "tags": ["producer", "serialization", "regression", "migration"]
+    },
+    {
+      "id": "kora-kafka-producer-custom-serializer",
+      "skills": ["kora-kafka-producer"],
+      "query": "I need a custom Kafka serializer for my event type instead of the default JSON one.",
+      "expected_behavior": [
+        "Implements org.apache.kafka.common.serialization.Serializer<T> and registers it as a @Component",
+        "Binds the serializer under a @Tag and references the same @Tag class literal on the publisher method parameter or ProducerRecord type argument",
+        "Resolves the serializer from the application graph at compile time rather than via reflection",
+        "Does not configure value.serializer as a class name string in driverProperties for the tagged parameter",
+        "Selects the serializer with @Tag rather than @Qualifier or external bean definitions"
+      ],
+      "tags": ["producer", "serialization", "advanced"]
+    },
+    {
+      "id": "kora-kafka-producer-headers-record",
+      "skills": ["kora-kafka-producer"],
+      "query": "I want to publish a Kafka record with a key, headers, and a callback in my Kora publisher.",
+      "expected_behavior": [
+        "Declares a @Topic method taking value plus optional key and org.apache.kafka.common.header.Headers",
+        "Declares the ProducerRecord<K, V> method WITHOUT @Topic (the topic comes from the record) and in a SEPARATE @KafkaPublisher interface from the @Topic methods",
+        "Declares a method accepting an org.apache.kafka.clients.producer.Callback alongside the record or unpacked parameters",
+        "Explains that mixing @Topic methods and ProducerRecord methods in one interface makes the generated $X_TopicConfig record and $X_PublisherModule factory disagree on arity, so the generated code does not compile",
+        "Does not use field injection and uses constructor injection for the publisher in the caller"
+      ],
+      "tags": ["producer", "signatures", "advanced"]
+    },
+    {
+      "id": "kora-kafka-producer-telemetry-defaults",
+      "skills": ["kora-kafka-producer"],
+      "query": "Show me a Kora 2.0 Kafka publisher config that demonstrates producer metrics and logs. My current config only sets driverProperties and I see no producer meters or log lines.",
+      "expected_behavior": [
+        "States that in Kora 2.0 telemetry logging.enabled and metrics.enabled both default to FALSE (only tracing.enabled defaults to true), so nothing is emitted until they are switched on",
+        "Explicitly sets kafka.producer.<name>.telemetry.logging.enabled = true and telemetry.metrics.enabled = true in the config it produces",
+        "Does not claim producer telemetry is on by default or that a missing dependency / log level is the cause",
+        "Optionally mentions metrics.driverMetrics (default false) to bind Micrometer KafkaClientMetrics to the raw producer",
+        "Names the real meters (messaging.client.operation.duration, messaging.client.sent.messages) rather than inventing kafka_producer_* metric names"
+      ],
+      "tags": ["producer", "telemetry", "regression"]
+    },
+    {
+      "id": "kora-kafka-producer-telemetry-custom-listener",
+      "skills": ["kora-kafka-producer"],
+      "query": "Port my Kora 1.x producer telemetry customisation to 2.0. I had a KafkaProducerLogger implementation registered through a telemetry listener factory component to change the log lines.",
+      "expected_behavior": [
+        "States that the 1.x KafkaProducerLogger-style listener interfaces and their factory registration no longer exist in Kora 2.0",
+        "Replaces it by declaring a @Component that EXTENDS DefaultKafkaPublisherLoggerFactory (or DefaultKafkaPublisherMetricsFactory for meters), which KafkaPublisherModule (via KafkaModule) injects as a @Nullable dependency into the default telemetry factory",
+        "Passes the injected @Tag(KafkaPublisherTelemetry.class) MaskingStrategy to super(...) — DefaultKafkaPublisherLoggerFactory has no no-arg constructor",
+        "Mentions that replacing telemetry wholesale means a @Component implementing KafkaPublisherTelemetryFactory, which overrides the @DefaultComponent supplied by KafkaPublisherModule",
+        "Uses the io.koraframework.kafka.common.producer.telemetry package (impl subpackage for the Default* classes)",
+        "Does not invent a listener-registration API, an All<T> collection of listeners, or a config key that names a logger class"
+      ],
+      "tags": ["producer", "telemetry", "regression", "migration"]
+    },
+    {
+      "id": "kora-kafka-producer-header-masking",
+      "skills": ["kora-kafka-producer"],
+      "query": "Our Kora 2.0 Kafka publisher adds an `x-api-key` header to every record. I want producer debug logs, including the record payload, but the API key must never be logged. How do I configure this?",
+      "expected_behavior": [
+        "Enables kafka.producer.<name>.telemetry.logging.enabled = true and explains that headers are logged only when the publisher's logger is at TRACE",
+        "Adds x-api-key to telemetry.logging.maskHeaders while keeping authorization, cookie and set-cookie, since the configured list replaces the default; matching is case-insensitive",
+        "States that the Kafka publisher never logs record keys or values, at any level — only masked headers — so the payload cannot be obtained from producer telemetry",
+        "Mentions that the masked value is produced by the @Tag(KafkaPublisherTelemetry.class) MaskingStrategy (default ***), replaceable with a tagged MaskingStrategy component such as MaskingKeepLast",
+        "Does not invent a producer DataMasker, a body-masking config key or a payload-logging switch for the publisher"
+      ],
+      "tags": ["producer", "telemetry", "masking"]
+    },
+    {
+      "id": "kora-kafka-producer-testcontainers-coordinates",
+      "skills": ["kora-kafka-producer"],
+      "query": "Write a Kotlin @KoraAppTest integration test for my Kora 2.0 Kafka publisher using Testcontainers, and give me the Gradle test dependencies.",
+      "expected_behavior": [
+        "Does NOT use the Testcontainers 1.x coordinate org.testcontainers:kafka, which no longer exists in the Testcontainers 2.x line Kora 2.0 builds against",
+        "Uses org.testcontainers:testcontainers-kafka with the org.testcontainers.kafka.KafkaContainer class (or the io.goodforgod:testcontainers-extensions-kafka extension the migrated Kora examples use)",
+        "Uses @KoraAppTest with KoraAppTestConfigModifier and KoraConfigModification.ofSystemProperty(...) to feed the broker address into the HOCON substitution",
+        "Injects the publisher with @TestComponent",
+        "Notes that the publisher must be reachable from a @Root in MAIN sources or Kora prunes it, and that @KoraAppTest(components = ...) does not bring a pruned node back",
+        "Does not use org.testcontainers.containers.KafkaContainer (the removed 1.x Confluent-based class)"
+      ],
+      "tags": ["producer", "testing", "regression", "migration"]
+    },
+    {
+      "id": "kora-kafka-producer-suspend-in-transaction",
+      "skills": ["kora-kafka-producer"],
+      "query": "In Kotlin, I want to publish two events inside one Kafka transaction from a suspend function. My publisher method is `suspend fun publish(event: MyEvent): RecordMetadata`.",
+      "expected_behavior": [
+        "Keeps the suspend publisher method — it is a supported Kora 2.0 KSP publisher shape",
+        "Adds org.jetbrains.kotlinx:kotlinx-coroutines-jdk8 because the generated $X_Impl.kt calls kotlinx.coroutines.future.await",
+        "Uses begin().use { } for the transaction, because use is an inline function and therefore permits suspend calls in its lambda",
+        "Explains that inTx/withTx take non-inline SAM callbacks (TransactionalConsumer / TransactionalFunction), so a suspend send cannot be called from inside them",
+        "If it uses inTx for a non-suspend case, names the SAM type explicitly because inTx and withTx are each overloaded and Kotlin cannot infer the SAM from a bare lambda",
+        "Does not mark the transactional wrapper interface's inherited methods as suspend or add methods to it"
+      ],
+      "tags": ["producer", "transactions", "kotlin", "advanced"]
+    }
+  ]
+}

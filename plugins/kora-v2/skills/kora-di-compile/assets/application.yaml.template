@@ -1,0 +1,20 @@
+# Kora 2.x application configuration — YAML (io.koraframework:config-yaml, YamlConfigModule).
+# Loaded from src/main/resources/application.yaml.
+# Typed config, @ConfigSource and @ConfigMapper are covered by the kora-config-yaml skill.
+
+# Log levels are a Map<String, String> under `logging.levels` (io.koraframework.logging.common).
+logging:
+  levels:
+    "ROOT": "WARN"
+    "${packagePath}": "INFO"
+    "io.koraframework": "INFO"
+
+# Environment substitution:
+#   ${VAR}            required — startup fails if the variable is unset
+#   ${?VAR}           optional — the key is left unset if the variable is absent
+#   ${VAR:someValue}  inline default
+#
+# app:
+#   name: ${APP_NAME}
+#   region: ${?APP_REGION}
+#   tier: ${APP_TIER:standard}

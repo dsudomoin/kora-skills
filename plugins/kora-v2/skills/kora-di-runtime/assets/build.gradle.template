@@ -1,0 +1,74 @@
+// Minimal Java scaffold for exercising Kora 2.0 runtime DI.
+// The authoritative project setup lives in the kora-project-setup-java skill; this file exists so
+// the templates in this directory can be dropped into a compiling project.
+
+plugins {
+    id "java"
+    id "application"
+}
+
+java {
+    toolchain {
+        // Kora 2.0 artifacts are compiled for JVM 25 - a floor, not a preference.
+        // The JDK running Gradle itself must be 25+ as well.
+        languageVersion = JavaLanguageVersion.of(25)
+        vendor = JvmVendorSpec.ADOPTIUM
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+// The annotation-processor classpath is separate from the application classpath,
+// so it needs the BOM explicitly. Every configuration below extends koraBom.
+configurations {
+    koraBom
+    annotationProcessor.extendsFrom(koraBom)
+    compileOnly.extendsFrom(koraBom)
+    implementation.extendsFrom(koraBom)
+    testImplementation.extendsFrom(koraBom)
+    testAnnotationProcessor.extendsFrom(koraBom)
+}
+
+dependencies {
+    // BOM declared once; pins every io.koraframework:* artifact. Do not version them.
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+
+    // Mandatory: generates ApplicationGraph. Without it nothing is wired.
+    annotationProcessor "io.koraframework:annotation-processors"
+
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
+
+    testAnnotationProcessor "io.koraframework:annotation-processors"
+    testImplementation platform("org.junit:junit-bom:$junitVersion")
+    testImplementation "org.junit.jupiter:junit-jupiter"
+    testImplementation "io.koraframework:test-junit5"
+}
+
+application {
+    applicationName = "application"
+    // Replace with your own package.
+    mainClass = "com.example.Application"
+    applicationDefaultJvmArgs = ["-Dfile.encoding=UTF-8"]
+}
+
+distTar {
+    archiveFileName = "application.tar"
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = "UTF-8"
+    options.incremental = true
+    options.fork = false
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        showStandardStreams = true
+        events("passed", "skipped", "failed")
+        exceptionFormat = "full"
+    }
+}

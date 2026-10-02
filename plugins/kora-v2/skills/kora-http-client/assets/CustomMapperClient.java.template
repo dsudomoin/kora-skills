@@ -1,0 +1,185 @@
+package com.example.client;
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Mapping;
+import io.koraframework.http.client.common.annotation.HttpClient;
+import io.koraframework.http.client.common.annotation.ResponseCodeMapper;
+import io.koraframework.http.client.common.exception.HttpClientDecoderException;
+import io.koraframework.http.client.common.request.HttpClientRequestMapper;
+import io.koraframework.http.client.common.response.HttpClientResponse;
+import io.koraframework.http.client.common.response.HttpClientResponseMapper;
+import io.koraframework.http.common.HttpMethod;
+import io.koraframework.http.common.annotation.HttpRoute;
+import io.koraframework.http.common.annotation.Path;
+import io.koraframework.http.common.body.HttpBody;
+import io.koraframework.http.common.body.HttpBodyOutput;
+import io.koraframework.json.common.JsonReader;
+import io.koraframework.json.common.annotation.Json;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+
+/**
+ * Kora 2.0 client with custom request and response mappers. Use when the built-in mapping does not
+ * fit: a non-JSON request body, or a different response shape per HTTP status code.
+ *
+ * WHICH MAPPER NEEDS @Component — decided by how the generated constructor obtains it:
+ *
+ *   - @Mapping on a BODY PARAMETER (HttpClientRequestMapper): always a constructor parameter,
+ *     so @Component is ALWAYS required. Without it:
+ *       No component found for dependency: ...RequestMapper (no tags)
+ *
+ *   - @Mapping on a METHOD, or @ResponseCodeMapper(mapper = X.class): the generated code writes
+ *       private static final X mapper = new X();
+ *     when X is `final` with a single public no-arg constructor. Such a class must NOT be a
+ *     @Component — that registers a second HttpClientResponseMapper<T> in the graph, which becomes
+ *     "Multiple components match" as soon as anything resolves that type from the graph.
+ *     A mapper with constructor dependencies (a JsonReader<T> below) cannot be built by the
+ *     generator, so it MUST be a @Component.
+ *
+ * Both cases appear below — PlainTextRequestMapper and the two @ResponseCodeMapper flavours.
+ *
+ * Configuration (application.conf):
+ * <pre>
+ * httpClient.customMapper {
+ *   url = "http://localhost:8080"
+ *   requestTimeout = 10s
+ * }
+ * </pre>
+ */
+@HttpClient("httpClient.customMapper")
+public interface CustomMapperClient {
+
+    // ============================================================
+    // Custom request body — @Mapping on the body parameter
+    // ============================================================
+
+    record PlainTextGreetingBody(String name) {}
+
+    /** Always injected by the generated client, therefore always a @Component. */
+    @Component
+    final class PlainTextRequestMapper implements HttpClientRequestMapper<PlainTextGreetingBody> {
+
+        /** Kora 2.0 signature: apply(T) — the 1.x apply(Context, T) form is gone. */
+        @Override
+        public HttpBodyOutput apply(PlainTextGreetingBody value) {
+            return HttpBody.plaintext("Hello " + value.name());
+        }
+    }
+
+    @HttpRoute(method = HttpMethod.POST, path = "/data/mapping-request")
+    String sendGreeting(@Mapping(PlainTextRequestMapper.class) PlainTextGreetingBody body);
+
+    // ============================================================
+    // Status-aware response decoding — mappers WITH dependencies
+    // ============================================================
+
+    sealed interface MappedResponse permits Payload, Error {
+
+        @Json
+        record Payload(String message) implements MappedResponse {}
+
+        @Json
+        record Error(int code, String message) implements MappedResponse {}
+
+        @Json
+        record ErrorPayload(String message) {}
+    }
+
+    /** Takes a JsonReader, so the generator cannot build it: @Component is required. */
+    @Component
+    final class MappedResponseSuccessMapper implements HttpClientResponseMapper<MappedResponse> {
+
+        private final JsonReader<MappedResponse.Payload> jsonReader;
+
+        public MappedResponseSuccessMapper(JsonReader<MappedResponse.Payload> jsonReader) {
+            this.jsonReader = jsonReader;
+        }
+
+        @Override
+        public MappedResponse apply(HttpClientResponse response) throws IOException, HttpClientDecoderException {
+            try (var is = response.body().asInputStream()) {
+                var payload = this.jsonReader.read(is.readAllBytes());
+                if (payload == null) {
+                    // read() is @Nullable in Kora 2.0; the generated client wraps this in another
+                    // HttpClientDecoderException, like every other mapper failure.
+                    throw new HttpClientDecoderException(new IllegalStateException("empty success payload"));
+                }
+                return payload;
+            }
+        }
+    }
+
+    /** Same rule — a dependency means @Component. The status code is read from the response. */
+    @Component
+    final class MappedResponseErrorMapper implements HttpClientResponseMapper<MappedResponse> {
+
+        private final JsonReader<MappedResponse.ErrorPayload> jsonReader;
+
+        public MappedResponseErrorMapper(JsonReader<MappedResponse.ErrorPayload> jsonReader) {
+            this.jsonReader = jsonReader;
+        }
+
+        @Override
+        public MappedResponse apply(HttpClientResponse response) throws IOException, HttpClientDecoderException {
+            try (var is = response.body().asInputStream()) {
+                var payload = this.jsonReader.read(is.readAllBytes());
+                var message = payload == null ? "" : payload.message();
+                return new MappedResponse.Error(response.code(), message);
+            }
+        }
+    }
+
+    /** ResponseCodeMapper.DEFAULT (-1) covers every status not listed explicitly. */
+    @ResponseCodeMapper(code = ResponseCodeMapper.DEFAULT, mapper = MappedResponseErrorMapper.class)
+    @ResponseCodeMapper(code = 200, mapper = MappedResponseSuccessMapper.class)
+    @HttpRoute(method = HttpMethod.GET, path = "/data/mapping-by-code/{code}")
+    MappedResponse getMappedByCode(@Path int code);
+
+    // ============================================================
+    // Response mapper WITHOUT dependencies — no @Component
+    // ============================================================
+
+    /**
+     * final + a single public no-arg constructor, so the generated client instantiates it itself.
+     * Adding @Component here is the "Multiple components match" trap.
+     */
+    final class RawTextResponseMapper implements HttpClientResponseMapper<String> {
+
+        @Override
+        public String apply(HttpClientResponse response) throws IOException {
+            try (var is = response.body().asInputStream()) {
+                return new String(is.readAllBytes(), StandardCharsets.UTF_8).strip();
+            }
+        }
+    }
+
+    /**
+     * @Mapping on the METHOD attaches a response mapper — and disables the 2xx status check, so
+     * this mapper is called for every status code and non-2xx no longer throws on its own.
+     */
+    @Mapping(RawTextResponseMapper.class)
+    @HttpRoute(method = HttpMethod.GET, path = "/data/raw")
+    String getRawText();
+
+    // ============================================================
+    // Usage
+    // ============================================================
+    //
+    // @Component
+    // public final class DataService {
+    //
+    //     private final CustomMapperClient client;
+    //
+    //     public DataService(CustomMapperClient client) {
+    //         this.client = client;
+    //     }
+    //
+    //     public String describe(int code) {
+    //         return switch (this.client.getMappedByCode(code)) {
+    //             case MappedResponse.Payload p -> p.message();
+    //             case MappedResponse.Error e -> "failed with " + e.code() + ": " + e.message();
+    //         };
+    //     }
+    // }
+}

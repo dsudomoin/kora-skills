@@ -1,0 +1,28 @@
+package ${packagePath}.publisher;
+
+import io.koraframework.json.common.annotation.Json;
+import io.koraframework.kafka.common.annotation.KafkaPublisher;
+import io.koraframework.kafka.common.annotation.KafkaPublisher.Topic;
+import io.koraframework.kafka.common.producer.TransactionalPublisher;
+
+// Domain publisher plus its transactional wrapper.
+//
+// TransactionalPublisher<P> requires P to be annotated @KafkaPublisher, and the
+// transactional interface itself must declare no methods of its own — it inherits
+// begin(), inTx(...) and withTx(...). A stray send method here fails the build inside
+// the generated $TxOrderEventPublisher_Impl.
+@KafkaPublisher("kafka.producer.orderEvents")
+public interface OrderEventPublisher {
+
+    @Json
+    record OrderEvent(String orderId, String eventType, String payload) {}
+
+    @Topic(".topic")
+    void publish(@Json OrderEvent event);
+
+    // Config path kafka.producer.txOrderEvents carries idPrefix / maxPoolSize /
+    // maxWaitTime only. The driver properties come from kafka.producer.orderEvents.
+    @KafkaPublisher("kafka.producer.txOrderEvents")
+    interface TxOrderEventPublisher extends TransactionalPublisher<OrderEventPublisher> {
+    }
+}

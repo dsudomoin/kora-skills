@@ -1,0 +1,74 @@
+// Outbound call wrapped with @Fallback + @CircuitBreakable + @Retryable + @Timeout (Kora 2.0).
+// Requires the spec interfaces from ResilientSpecs.java.template.
+// Replace `com.example.app.resilience` with your package.
+
+package com.example.app.resilience;
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.resilient.circuitbreaker.annotation.CircuitBreakable;
+import io.koraframework.resilient.fallback.annotation.Fallback;
+import io.koraframework.resilient.retry.annotation.Retryable;
+import io.koraframework.resilient.timeout.annotation.Timeout;
+
+@Component
+public class PaymentService {                                           // NOT final
+
+    private final PaymentGateway gateway;
+
+    public PaymentService(PaymentGateway gateway) {
+        this.gateway = gateway;
+    }
+
+    // Declaration order IS nesting order: the FIRST annotation listed is the OUTERMOST wrapper,
+    // the LAST is innermost and calls the real body.
+    //   1. @Timeout (innermost) bounds ONE attempt.
+    //   2. @Retryable repeats that timed attempt.
+    //   3. @CircuitBreakable short-circuits before any retry runs once it is OPEN.
+    //   4. @Fallback (outermost) catches CallNotPermittedException, RetryExhaustedException,
+    //      TimeoutExhaustedException and the business exception alike.
+    //
+    // Moving @Fallback to the bottom makes it innermost: it would swallow the failure before the
+    // circuit breaker records it, and the breaker would never open.
+    @Fallback(method = "chargeFallback(request)")
+    @CircuitBreakable(PaymentCircuitBreaker.class)
+    @Retryable(PaymentRetry.class)
+    @Timeout(PaymentTimeouter.class)
+    public PaymentResult charge(PaymentRequest request) {
+        return gateway.charge(request);
+    }
+
+    // Overall budget instead of a per-attempt bound: @Timeout above @Retryable.
+    // Make the budget larger than the whole retry schedule or later attempts never run.
+    @Timeout(PaymentTimeouter.class)
+    @Retryable(PaymentRetry.class)
+    public PaymentResult chargeWithOverallBudget(PaymentRequest request) {
+        return gateway.charge(request);
+    }
+
+    // Fallback method: same class, protected or public, parameters exactly as referenced above,
+    // plus at most one @Fallback.Reason parameter.
+    protected PaymentResult chargeFallback(PaymentRequest request) {
+        return PaymentResult.pendingManualReview(request.id());
+    }
+}
+
+// ---------------------------------------------------------------- placeholders
+
+record PaymentRequest(String id, long amountMinor) {}
+
+record PaymentResult(String id, String status) {
+
+    static PaymentResult pendingManualReview(String id) {
+        return new PaymentResult(id, "PENDING_MANUAL_REVIEW");
+    }
+}
+
+@Component
+class PaymentGateway {
+
+    PaymentResult charge(PaymentRequest request) {
+        return new PaymentResult(request.id(), "CHARGED");
+    }
+}
+
+// See ResilientSpecs.java.template for the spec interfaces and the matching HOCON.

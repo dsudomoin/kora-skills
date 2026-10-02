@@ -1,0 +1,39 @@
+// Proto contract shared by the Kora gRPC client and its server.
+// Save as: src/main/proto/${service_name}.proto
+//
+// Generated with protoc 3.25.3 + protoc-gen-grpc-java 1.84.0 (see the build templates).
+// The generated ${service_name}Grpc class is what Kora keys everything on:
+//   - the config section is grpcClient.${service_name}  (the proto service SIMPLE name)
+//   - client interceptors are scoped with @Tag(${service_name}Grpc.class)
+syntax = "proto3";
+
+// The proto package becomes the prefix of ${service_name}Grpc.SERVICE_NAME. Kora strips it and
+// reads grpcClient.${service_name}, so two services with the same simple name collide.
+package ${proto_package};
+
+// One Java file per message; without it everything is nested in java_outer_classname.
+option java_multiple_files = true;
+option java_package = "${proto_package}";
+option java_outer_classname = "${service_name}Proto";
+
+service ${service_name} {
+  // Unary — served by *BlockingStub or *FutureStub.
+  rpc ${method_name} (${request_class}) returns (${response_class}) {}
+
+  // Server streaming — *BlockingStub returns Iterator<${response_class}>.
+  // rpc ${method_name}Stream (${request_class}) returns (stream ${response_class}) {}
+
+  // Client streaming — needs the async *Stub.
+  // rpc ${method_name}Many (stream ${request_class}) returns (${response_class}) {}
+
+  // Bidirectional — needs the async *Stub.
+  // rpc ${method_name}Both (stream ${request_class}) returns (stream ${response_class}) {}
+}
+
+message ${request_class} {
+  string name = 1;
+}
+
+message ${response_class} {
+  string message = 1;
+}

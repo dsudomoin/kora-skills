@@ -1,0 +1,115 @@
+// Kotlin twin of S3FileClient.java.template — artifact io.koraframework.experimental:s3-client-kora.
+// Needs ksp("io.koraframework:symbol-processors"), a Kora HTTP client module and
+// KoraS3ClientModule on @KoraApp.
+//
+// Replace `com.example.storage` with your package.
+
+package com.example.storage
+
+import io.koraframework.s3.client.kora.annotation.S3
+import io.koraframework.s3.client.kora.model.request.GetObjectArgs
+import io.koraframework.s3.client.kora.model.request.ListObjectsArgs
+import io.koraframework.s3.client.kora.model.request.PutObjectArgs
+import io.koraframework.s3.client.kora.model.response.GetObjectResult
+import io.koraframework.s3.client.kora.model.response.HeadObjectResult
+import io.koraframework.s3.client.kora.model.response.ListBucketResult
+import java.io.InputStream
+import java.util.UUID
+
+/**
+ * `@S3.Client` value is the config path holding the client config; `@S3.Bucket` value is a config
+ * path holding the bucket NAME, and a leading dot makes it relative — `".bucket"` resolves to
+ * `s3client.uploads.bucket`.
+ *
+ * Nullability is expressed in the Kotlin type (`HeadObjectResult?`), never with JSpecify
+ * annotations. All contracts are synchronous — `suspend` is not supported in Kora 2.0.
+ */
+@S3.Client("s3client.uploads")
+@S3.Bucket(".bucket")
+interface S3FileClient {
+
+    // ------------------------------------------------------------------ put
+
+    /** Returns the ETag; declare `Unit` instead if you do not need it. */
+    @S3.Put("files/{fileId}")
+    fun upload(fileId: String, body: ByteArray): String
+
+    @S3.Put("files/{tenantId}/{fileId}")
+    fun uploadForTenant(tenantId: String, fileId: UUID, body: ByteArray): String
+
+    /**
+     * An InputStream body triggers a multipart upload in `upload.partSize` chunks (default 5 MiB);
+     * a stream that ends inside the first part is sent as a single PutObject instead.
+     */
+    @S3.Put("files/{fileId}")
+    fun uploadStream(fileId: String, body: InputStream): String
+
+    @S3.Put("files/{fileId}")
+    fun uploadWithOptions(fileId: String, args: PutObjectArgs, body: ByteArray): String
+
+    // ------------------------------------------------------------------ get
+
+    /**
+     * `GetObjectResult` is `Closeable` — close it and the body stream:
+     * ```
+     * client.download(id).use { obj -> obj.body().asInputStream().use { it.readAllBytes() } }
+     * ```
+     */
+    @S3.Get("files/{fileId}")
+    fun download(fileId: String): GetObjectResult
+
+    /** ByteArray does the read-and-close for you. */
+    @S3.Get("files/{fileId}")
+    fun downloadBytes(fileId: String): ByteArray
+
+    /** A non-nullable return throws S3ClientNoSuchKeyException when the object is missing. */
+    @S3.Get("files/{fileId}")
+    fun downloadOrNull(fileId: String): GetObjectResult?
+
+    /** GetObjectArgs carries range (Range.fromTo/from/last), versionId and conditional headers. */
+    @S3.Get("files/{fileId}")
+    fun downloadRange(fileId: String, args: GetObjectArgs): GetObjectResult
+
+    // ----------------------------------------------------------------- head
+
+    /** Metadata only — `@S3.Get` does not serve metadata in Kora 2.0. */
+    @S3.Head("files/{fileId}")
+    fun meta(fileId: String): HeadObjectResult
+
+    @S3.Head("files/{fileId}")
+    fun metaOrNull(fileId: String): HeadObjectResult?
+
+    // ----------------------------------------------------------------- list
+
+    @S3.List("files/")
+    fun listAll(): ListBucketResult
+
+    @S3.List("files/{tenantId}/")
+    fun listKeys(tenantId: String): List<String>
+
+    /**
+     * With a ListObjectsArgs parameter the annotation prefix is not applied — set it yourself.
+     * `maxKeys` replaces the 1.x `@S3.List(limit = N)`, `delimiter` the 1.x `delimiter` attribute.
+     */
+    @S3.List
+    fun listPage(args: ListObjectsArgs): ListBucketResult
+
+    /** An Iterator return pages lazily. */
+    @S3.List
+    fun listLazily(args: ListObjectsArgs): Iterator<ListBucketResult.ListBucketItem>
+
+    // --------------------------------------------------------------- delete
+
+    /**
+     * `@S3.Delete` generates deleteObject only and must return Unit. There is no declarative batch
+     * delete — a collection parameter is rejected as a key. Use the AWS SDK client's
+     * `deleteObjects(...)` or the runtime `S3Client#deleteObjects(creds, bucket, keys)`.
+     */
+    @S3.Delete("files/{fileId}")
+    fun delete(fileId: String)
+
+    // -------------------------------------------------- bucket chosen at runtime
+
+    @S3.Get
+    fun downloadFrom(@S3.Bucket bucket: String, key: String): ByteArray
+}

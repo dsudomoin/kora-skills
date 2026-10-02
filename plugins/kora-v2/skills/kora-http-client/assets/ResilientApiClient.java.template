@@ -1,0 +1,164 @@
+package com.example.client;
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Root;
+import io.koraframework.http.client.common.annotation.HttpClient;
+import io.koraframework.http.common.HttpMethod;
+import io.koraframework.http.common.annotation.HttpRoute;
+import io.koraframework.http.common.annotation.Path;
+import io.koraframework.http.common.annotation.Query;
+import io.koraframework.json.common.annotation.Json;
+import io.koraframework.resilient.circuitbreaker.CircuitBreaker;
+import io.koraframework.resilient.circuitbreaker.annotation.CircuitBreakable;
+import io.koraframework.resilient.circuitbreaker.annotation.CircuitBreakerSpec;
+import io.koraframework.resilient.fallback.annotation.Fallback;
+import io.koraframework.resilient.retry.Retry;
+import io.koraframework.resilient.retry.annotation.RetrySpec;
+import io.koraframework.resilient.retry.annotation.Retryable;
+import io.koraframework.resilient.timeout.Timeouter;
+import io.koraframework.resilient.timeout.annotation.Timeout;
+import io.koraframework.resilient.timeout.annotation.TimeoutSpec;
+
+import java.util.List;
+
+/**
+ * Kora 2.0 declarative HTTP client with resilience aspects.
+ *
+ * KORA 2.0 REPLACED STRING NAMES WITH TYPED SPECIFICATION INTERFACES.
+ * @Retry("itemApi") / @CircuitBreaker("itemApi") no longer exist:
+ *
+ *   1.x                                  2.0
+ *   @Retry("itemApi")                    @Retryable(ItemApiRetry.class)
+ *   @CircuitBreaker("itemApi")           @CircuitBreakable(ItemApiCircuitBreaker.class)
+ *   @Timeout("itemApi")                  @Timeout(ItemApiTimeouter.class)
+ *   @Fallback(value = "...", method=...) @Fallback(method = "...")     // value removed
+ *   —                                    @RateLimited(Spec.class)      // new
+ *
+ * One spec interface per logical configuration name, shared across classes — not one per method.
+ *
+ * Build:
+ * <pre>
+ * implementation "io.koraframework:http-client-ok"
+ * implementation "io.koraframework:resilient-kora"
+ * </pre>
+ * and the @KoraApp interface must extend io.koraframework.resilient.ResilientModule.
+ *
+ * Configuration (application.conf):
+ * <pre>
+ * httpClient.itemApi {
+ *   url = "http://items-service:8080"
+ *   requestTimeout = 30s
+ * }
+ *
+ * resilient {
+ *   retry.itemApi   { delay = 100ms, attempts = 3 }
+ *   timeout.itemApi { duration = 5s }
+ *   circuitbreaker.itemApi {
+ *     # 1.x slidingWindowSize became countBased.windowSize. `type` is optional (default
+ *     # STRIPED_APPROX, itself count-based); it is set here only to make the window explicit.
+ *     # Omitting countBased fails graph init with IllegalArgumentException:
+ *     #   CircuitBreaker 'itemApi' property 'countBased' is not configured
+ *     type = FIXED_WINDOW
+ *     countBased.windowSize = 20
+ *     minimumRequiredCalls = 10
+ *     failureRateThreshold = 50
+ *     permittedCallsInHalfOpenState = 1
+ *     waitDurationInOpenState = 10s
+ *   }
+ * }
+ * </pre>
+ *
+ * Named sections no longer inherit from `default` — every required value must be present in each
+ * section, and a `default` section nobody references is dead config.
+ *
+ * Full reference: ../kora-aop-resilient/SKILL.md
+ */
+public final class ResilientApiClient {
+
+    private ResilientApiClient() {}
+
+    // ============================================================
+    // Specification interfaces — one per logical configuration name
+    // ============================================================
+
+    @RetrySpec("resilient.retry.itemApi")
+    public interface ItemApiRetry extends Retry {}
+
+    @CircuitBreakerSpec("resilient.circuitbreaker.itemApi")
+    public interface ItemApiCircuitBreaker extends CircuitBreaker {}
+
+    @TimeoutSpec("resilient.timeout.itemApi")
+    public interface ItemApiTimeouter extends Timeouter {}
+
+    // ============================================================
+    // The client — aspects that need no sibling method go here
+    // ============================================================
+
+    /**
+     * The processor copies AOP annotations from these interface methods onto the generated
+     * $ItemApiClient_ClientImpl and leaves that class non-final, so the aspect can subclass it.
+     */
+    @HttpClient("httpClient.itemApi")
+    public interface ItemApiClient {
+
+        @Retryable(ItemApiRetry.class)
+        @HttpRoute(method = HttpMethod.GET, path = "/items/{id}")
+        @Json
+        ItemResponse getItem(@Path String id);
+
+        @CircuitBreakable(ItemApiCircuitBreaker.class)
+        @HttpRoute(method = HttpMethod.POST, path = "/items")
+        @Json
+        ItemResponse createItem(@Json CreateItemRequest request);
+
+        @Timeout(ItemApiTimeouter.class)
+        @HttpRoute(method = HttpMethod.GET, path = "/items")
+        @Json
+        List<ItemResponse> listItems(@Query("page") int page);
+    }
+
+    // ============================================================
+    // @Fallback belongs on a service class, not on the client interface
+    // ============================================================
+
+    /**
+     * @Fallback resolves its target among the methods DECLARED BY the same class as the annotated
+     * method. The generated $ItemApiClient_ClientImpl declares only the route methods — a `default`
+     * fallback method written in the client interface is not carried onto it, so the reference
+     * cannot be resolved there. Put the pair on a service class instead, exactly as the migrated
+     * Kora 2.0 examples do.
+     *
+     * The fallback signature must match the arguments named in the reference: "listItemsFallback(page)"
+     * passes the annotated method's `page` argument through.
+     */
+    @Root
+    @Component
+    public static class ItemService {   // NOT final: the AOP aspect generates a subclass of it
+
+        private final ItemApiClient client;
+
+        public ItemService(ItemApiClient client) {
+            this.client = client;
+        }
+
+        @Fallback(method = "listItemsFallback(page)")
+        public List<ItemResponse> listItems(int page) {
+            return this.client.listItems(page);
+        }
+
+        /** Graceful degradation. Declared in this class, which is what @Fallback requires. */
+        protected List<ItemResponse> listItemsFallback(int page) {
+            return List.of();
+        }
+    }
+
+    // ============================================================
+    // DTOs
+    // ============================================================
+
+    @Json
+    public record ItemResponse(String id, String name, String description, Long price) {}
+
+    @Json
+    public record CreateItemRequest(String name, String description, Long price) {}
+}

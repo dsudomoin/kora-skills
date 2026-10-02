@@ -1,0 +1,129 @@
+// Kora 2.x JDK scheduled jobs — artifact io.koraframework:scheduling-jdk.
+//
+// Requires on the @KoraApp interface:  SchedulingJdkModule
+// Requires in the build:               annotationProcessor "io.koraframework:annotation-processors"
+//
+// Scheduling does NOT generate an AOP proxy: the generated module calls this class through
+// ValueOf<T>, so the class may be final. `open`/non-final is only needed if you add a
+// proxy-based aspect (@Log, @Retryable, @Timeout, @Cacheable) to the same class.
+//
+// Replace `com.example.app.jobs` with your package.
+
+package com.example.app.jobs;
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.scheduling.jdk.annotation.ScheduleAtFixedRate;
+import io.koraframework.scheduling.jdk.annotation.ScheduleOnce;
+import io.koraframework.scheduling.jdk.annotation.ScheduleWithCron;
+import io.koraframework.scheduling.jdk.annotation.ScheduleWithFixedDelay;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+
+@Component
+public final class ScheduledJobs {
+
+    private static final Logger log = LoggerFactory.getLogger(ScheduledJobs.class);
+
+    /**
+     * Fixed rate — the period is measured start-to-start. If a run overruns the period the next run
+     * starts late; runs of the same job never overlap.
+     * Use for: heartbeat, metric scrape, health poll.
+     */
+    @ScheduleAtFixedRate(initialDelay = 30, period = 60, unit = ChronoUnit.SECONDS)
+    void heartbeat() {
+        log.debug("heartbeat");
+    }
+
+    /**
+     * Fixed delay — a full delay of idle time after the previous run returned.
+     * Use for: batch processing, data sync, cleanup, anything whose duration varies.
+     *
+     * Timings come from the config path; the annotation carries none, so `delay` is required there.
+     */
+    @ScheduleWithFixedDelay(config = "scheduling.jobs.cleanup")
+    void cleanup() {
+        // Shutdown waits up to scheduling.jdk.shutdownWait, then interrupts this method.
+        // Bound the run so it finishes inside that budget.
+        var deadline = Instant.now().plus(Duration.ofSeconds(20));
+
+        while (Instant.now().isBefore(deadline)) {
+            var removed = purgeExpiredBatch(500);
+            if (removed == 0) {
+                return;
+            }
+        }
+        log.info("cleanup yielding at deadline, resuming next run");
+    }
+
+    /**
+     * One shot — runs once, `delay` after startup.
+     * Use for: cache warm-up, late binding, work that must not block graph initialisation.
+     */
+    @ScheduleOnce(delay = 5, unit = ChronoUnit.MINUTES)
+    void warmup() {
+        log.info("warming caches");
+    }
+
+    /**
+     * Cron — in-process, no Quartz. 5, 6 or 7 fields, JVM default time zone.
+     * Quartz-only modifiers L, W, # and C are not supported here.
+     * DST: a skipped local time does not fire, a repeated local time fires twice.
+     */
+    @ScheduleWithCron("0 0 3 * * ?")
+    void nightlyCompaction() {
+        log.info("nightly compaction");
+    }
+
+    private int purgeExpiredBatch(int limit) {
+        // ... delete up to `limit` expired rows, return how many were removed ...
+        return 0;
+    }
+}
+
+// ============== CONFIGURATION ==============
+
+// application.conf (HOCON):
+//
+// scheduling {
+//   jdk {
+//     shutdownWait = 30s            # drain budget for running jobs, then interrupt; default 30s
+//     maxConcurrentExecutions = 50  # optional cap on concurrent runs; default unlimited.
+//                                   # No `threads` key: every run is a fresh virtual thread.
+//   }
+//   telemetry {
+//     logging.enabled = false       # default false
+//     metrics.enabled = false       # default false — job metrics are OFF unless you enable them
+//     tracing.enabled = true        # default true (no-op without a Tracer component)
+//   }
+//
+//   jobs.cleanup {
+//     initialDelay = 30s
+//     delay        = 5m
+//     telemetry.logging.enabled = true   # per-job override of the block above
+//   }
+// }
+
+// application.yaml (YAML):
+//
+// scheduling:
+//   jdk:
+//     shutdownWait: "30s"
+//     maxConcurrentExecutions: 50
+//   telemetry:
+//     logging:
+//       enabled: false
+//     metrics:
+//       enabled: false
+//     tracing:
+//       enabled: true
+//   jobs:
+//     cleanup:
+//       initialDelay: "30s"
+//       delay: "5m"
+//       telemetry:
+//         logging:
+//           enabled: true

@@ -1,0 +1,96 @@
+package ${package};
+
+import io.koraframework.common.annotation.Module;
+import io.koraframework.json.common.JsonReader;
+import io.koraframework.json.common.JsonWriter;
+import tools.jackson.core.exc.StreamReadException;
+${imports}
+
+/**
+ * Custom JSON mappers for {@code ${type_name}}.
+ *
+ * <p>Supply a {@code JsonReader<T>} / {@code JsonWriter<T>} component when the type cannot
+ * carry {@code @Json} itself:</p>
+ * <ul>
+ *   <li>third-party classes,</li>
+ *   <li>a non-standard wire format for a built-in type (a custom date pattern),</li>
+ *   <li>your own value types.</li>
+ * </ul>
+ *
+ * <p>A plain {@code default} factory is an ordinary component and <b>wins</b> over the
+ * {@code @DefaultComponent} factories in {@code JsonModule} — that is how a built-in mapper
+ * is replaced. Add {@code @DefaultComponent} only to make your own mapper overridable in
+ * turn; never to override a Kora built-in, which would leave two defaults competing.</p>
+ *
+ * <p>Wire it in:</p>
+ * <pre>
+ * {@code
+ * @KoraApp
+ * public interface Application extends JsonModule, ${mapper_module_name} {}
+ * }
+ * </pre>
+ *
+ * <p>Kora 2.0 runs on Jackson 3 ({@code tools.jackson.core}). Name and value are written as
+ * two calls — {@code writeName("x")} then {@code writeString(...)}; strings are read with
+ * {@code getString()} / {@code getValueAsString()}, not {@code getText()}. {@code read} and
+ * {@code write} declare only the unchecked {@code JacksonException}, so never wrap a call in
+ * {@code try/catch (IOException)}.</p>
+ */
+@Module
+public interface ${mapper_module_name} {
+
+    /**
+     * Reader for {@code ${type_name}}. Returns {@code null} for {@code JsonToken.VALUE_NULL}
+     * — that is how every built-in reader behaves and how {@code @Nullable} fields decode.
+     *
+     * <p>The parser arrives on the value's first token and must be left on its last one; use
+     * {@code parser.nextToken(); parser.skipChildren();} to discard an unknown subtree.</p>
+     */
+    default JsonReader<${type_name}> ${reader_method_name}() {
+        return parser -> switch (parser.currentToken()) {
+            case VALUE_NULL -> null;
+            case VALUE_STRING -> ${default_value};
+            default -> throw new StreamReadException(parser,
+                "Failed to read json ${type_name}: expected a string, but got " + parser.currentToken()
+                    + " (at " + parser.streamReadContext().pathAsPointer() + ")");
+        };
+    }
+
+    /**
+     * Writer for {@code ${type_name}}. The contract passes a {@code @Nullable} value, so the
+     * null branch is mandatory.
+     */
+    default JsonWriter<${type_name}> ${writer_method_name}() {
+        return (generator, value) -> {
+            if (value == null) {
+                generator.writeNull();
+            } else {
+                generator.writeString(value.toString());
+            }
+        };
+    }
+}
+
+/*
+ * Object-shaped value instead of a scalar:
+ *
+ *   generator.writeStartObject();
+ *   generator.writeName("amount");
+ *   generator.writeNumber(value.amount());
+ *   generator.writeName("currency");
+ *   generator.writeString(value.currency());
+ *   generator.writeEndObject();
+ *
+ * Per-field instead of per-type: annotate the field with
+ * @Mapping(MyReader.class) @Mapping(MyWriter.class) (io.koraframework.common.annotation).
+ * A final mapper class with a no-arg constructor is instantiated by the generated code;
+ * anything else becomes a constructor dependency and must be a DI component.
+ *
+ * Anything expensive — DateTimeFormatter, lookup tables, regexes — belongs in the factory
+ * method body or a static final field, not inside read/write.
+ *
+ * A body larger than a single expression usually wants an explicit class instead of a
+ * lambda; add the imports it needs — tools.jackson.core.JsonParser,
+ * tools.jackson.core.JsonGenerator, tools.jackson.core.JsonToken,
+ * org.jspecify.annotations.Nullable.
+ */

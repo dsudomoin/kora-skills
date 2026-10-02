@@ -1,0 +1,73 @@
+package com.example.controller
+
+import io.koraframework.common.annotation.Component
+import io.koraframework.http.common.HttpMethod
+import io.koraframework.http.common.HttpResponseEntity
+import io.koraframework.http.common.annotation.HttpRoute
+import io.koraframework.http.common.annotation.Path
+import io.koraframework.http.common.annotation.Query
+import io.koraframework.http.common.header.HttpHeaders
+import io.koraframework.http.server.common.annotation.HttpController
+import io.koraframework.http.server.common.response.HttpServerResponse
+import io.koraframework.http.server.common.response.HttpServerResponseException
+import io.koraframework.json.common.annotation.Json
+
+/**
+ * CRUD controller template — Kora 2.0 (Kotlin).
+ *
+ * Behaviourally identical to UserController.java.template. Kotlin differences:
+ * - optionality is the nullable type; never a Java nullability annotation
+ * - handlers are plain functions. `suspend` is rejected by KSP with
+ *   "Suspend methods are not supported by the HTTP server controller generator"
+ *
+ * Requires: ksp("io.koraframework:symbol-processors"), io.koraframework:http-server-undertow,
+ * io.koraframework:json-common, and @KoraApp extending UndertowPublicHttpServerModule + JsonModule.
+ */
+@Component
+@HttpController
+class UserController(private val userService: UserService) {
+
+    @HttpRoute(method = HttpMethod.GET, path = "/users/{userId}")
+    @Json
+    fun getUser(@Path userId: String): UserResponse =
+        userService.findById(userId)
+            ?: throw HttpServerResponseException.of(404, "User not found: $userId")
+
+    @HttpRoute(method = HttpMethod.GET, path = "/users")
+    @Json
+    fun listUsers(@Query page: Int?, @Query size: Int?): List<UserResponse> =
+        userService.findAll(page ?: 0, size ?: 10)
+
+    @HttpRoute(method = HttpMethod.POST, path = "/users")
+    @Json
+    fun createUser(@Json request: UserRequest): HttpResponseEntity<UserResponse> {
+        val created = userService.create(request)
+        return HttpResponseEntity.of(201, HttpHeaders.of("Location", "/users/${created.id}"), created)
+    }
+
+    @HttpRoute(method = HttpMethod.PUT, path = "/users/{userId}")
+    @Json
+    fun updateUser(@Path userId: String, @Json request: UserRequest): UserResponse =
+        userService.update(userId, request)
+            ?: throw HttpServerResponseException.of(404, "User not found: $userId")
+
+    @HttpRoute(method = HttpMethod.DELETE, path = "/users/{userId}")
+    fun deleteUser(@Path userId: String): HttpServerResponse {
+        userService.delete(userId)
+        return HttpServerResponse.of(204)
+    }
+
+    @Json
+    data class UserRequest(val email: String, val name: String)
+
+    @Json
+    data class UserResponse(val id: String, val email: String, val name: String)
+
+    interface UserService {
+        fun findById(id: String): UserResponse?
+        fun findAll(page: Int, size: Int): List<UserResponse>
+        fun create(request: UserRequest): UserResponse
+        fun update(id: String, request: UserRequest): UserResponse?
+        fun delete(id: String)
+    }
+}

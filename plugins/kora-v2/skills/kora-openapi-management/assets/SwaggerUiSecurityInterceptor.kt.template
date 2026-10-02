@@ -1,0 +1,61 @@
+package com.example.api
+
+import io.koraframework.common.annotation.Component
+import io.koraframework.common.annotation.Tag
+import io.koraframework.http.common.body.HttpBody
+import io.koraframework.http.server.common.HttpServer
+import io.koraframework.http.server.common.interceptor.HttpServerInterceptor
+import io.koraframework.http.server.common.request.HttpServerRequest
+import io.koraframework.http.server.common.response.HttpServerResponse
+import java.security.MessageDigest
+
+/**
+ * Gates the OpenAPI documentation routes (`/openapi`, `/swagger-ui`, `/scalar`) with a bearer
+ * token, letting every other request through untouched.
+ *
+ * The routes are contributed by `OpenApiManagementModule`, not by your code, so there is no method
+ * to annotate with `@InterceptWith`. A global interceptor is the only hook, and it is collected by
+ * exactly one tag: `@Tag(HttpServer::class)`. The Kora 1.x `@Tag(HttpServerModule::class)` still
+ * compiles — `HttpServerModule` is a real type in 2.0 — but nothing claims that tag, so the
+ * component is never collected and the docs stay open. Assert the 401 in a test rather than
+ * trusting the annotation.
+ *
+ * The token comes from the `DOCS_API_TOKEN` environment variable. Behaviour is fail closed: with
+ * the variable unset the documentation routes return 401. Do not add the interceptor to a
+ * deployment whose docs are meant to be public.
+ */
+@Tag(HttpServer::class)
+@Component
+class SwaggerUiSecurityInterceptor : HttpServerInterceptor {
+
+    private val requiredToken: ByteArray? = System.getenv("DOCS_API_TOKEN")
+        ?.takeIf { it.isNotBlank() }
+        ?.toByteArray(Charsets.UTF_8)
+
+    override fun intercept(request: HttpServerRequest, chain: HttpServerInterceptor.InterceptChain): HttpServerResponse {
+        if (!isDocsRequest(request.path()) || isAuthorized(request)) {
+            return chain.process(request)
+        }
+
+        return HttpServerResponse.of(401, HttpBody.plaintext("Unauthorized"))
+    }
+
+    private fun isDocsRequest(path: String): Boolean =
+        DOCS_PREFIXES.any { path == it || path.startsWith("$it/") }
+
+    private fun isAuthorized(request: HttpServerRequest): Boolean {
+        val expected = requiredToken ?: return false
+        val header = request.headers().getFirst("Authorization") ?: return false
+        if (!header.startsWith(BEARER_PREFIX)) {
+            return false
+        }
+
+        val presented = header.substring(BEARER_PREFIX.length).toByteArray(Charsets.UTF_8)
+        return MessageDigest.isEqual(expected, presented)
+    }
+
+    private companion object {
+        private val DOCS_PREFIXES = listOf("/openapi", "/swagger-ui", "/scalar")
+        private const val BEARER_PREFIX = "Bearer "
+    }
+}

@@ -1,0 +1,81 @@
+// Kora 2.0 Database Service - build.gradle template
+// JDBC repositories with Flyway migrations and PostgreSQL.
+// JDBC transactions are part of the database-jdbc module (no separate transaction artifact).
+// The JDBC config section is `jdbc` in 2.0 (it was `db` in 1.x).
+
+plugins {
+    id "java"
+    id "application"
+}
+
+repositories {
+    mavenCentral()
+    // io.koraframework:kora-bom:2.0.0.RC2 is on Maven Central; nothing else is needed.
+    // Only the 2.0.0-SNAPSHOT development line also needs:
+    // maven { url = "https://central.sonatype.com/repository/maven-snapshots" }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+        vendor = JvmVendorSpec.ADOPTIUM
+    }
+}
+
+configurations {
+    koraBom
+    annotationProcessor.extendsFrom(koraBom)
+    compileOnly.extendsFrom(koraBom)
+    implementation.extendsFrom(koraBom)
+    testImplementation.extendsFrom(koraBom)
+}
+
+dependencies {
+    // Kora BOM - owns every Kora module version
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+
+    // Annotation processor
+    annotationProcessor "io.koraframework:annotation-processors"
+
+    // Core modules
+    implementation "io.koraframework:logging-logback"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:json-common"
+
+    // Database (JDBC) and Flyway migrations - scripts live in src/main/resources/db/migration
+    implementation "io.koraframework:database-jdbc"
+    implementation "io.koraframework:database-flyway"
+
+    // JDBC driver - external, database-jdbc ships Hikari but never a driver.
+    // Alternative: database-jdbc-postgres instead of database-jdbc brings PostgreSQL mappers and this driver.
+    implementation "org.postgresql:postgresql:42.7.13"
+
+    // Flyway dialect - database-flyway ships flyway-core only.
+    // Match the version to the flyway-core your build resolves:
+    //   ./gradlew dependencyInsight --dependency flyway-core
+    implementation "org.flywaydb:flyway-database-postgresql:13.8.1"
+
+    // Testing - test-junit5 declares Mockito/MockK compileOnly, add your own
+    testImplementation "io.koraframework:test-junit5"
+    testImplementation "org.testcontainers:testcontainers-junit-jupiter:2.0.5"
+}
+
+application {
+    applicationName = "application"
+    mainClass = "com.example.app.Application"
+    applicationDefaultJvmArgs = ["-Dfile.encoding=UTF-8"]
+}
+
+compileJava {
+    options.encoding = "UTF-8"
+    options.incremental = true
+    options.fork = false
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        showStandardStreams = true
+        events("passed", "skipped", "failed")
+    }
+}

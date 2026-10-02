@@ -1,0 +1,155 @@
+package com.example.client
+
+import io.koraframework.common.annotation.Component
+import io.koraframework.common.annotation.Mapping
+import io.koraframework.http.client.common.annotation.HttpClient
+import io.koraframework.http.client.common.annotation.ResponseCodeMapper
+import io.koraframework.http.client.common.exception.HttpClientDecoderException
+import io.koraframework.http.client.common.request.HttpClientRequestMapper
+import io.koraframework.http.client.common.response.HttpClientResponse
+import io.koraframework.http.client.common.response.HttpClientResponseMapper
+import io.koraframework.http.common.HttpMethod
+import io.koraframework.http.common.annotation.HttpRoute
+import io.koraframework.http.common.annotation.Path
+import io.koraframework.http.common.body.HttpBody
+import io.koraframework.http.common.body.HttpBodyOutput
+import io.koraframework.json.common.JsonReader
+import io.koraframework.json.common.annotation.Json
+import java.nio.charset.StandardCharsets
+
+/**
+ * Kora 2.0 client with custom request and response mappers (Kotlin / KSP).
+ *
+ * WHICH MAPPER NEEDS @Component — decided by how the generated constructor obtains it:
+ *
+ *   - @Mapping on a BODY PARAMETER (HttpClientRequestMapper): always a constructor parameter,
+ *     so @Component is ALWAYS required.
+ *
+ *   - @Mapping on a METHOD, or @ResponseCodeMapper(mapper = X::class): KSP writes
+ *       private val mapper = X()
+ *     when X is not `open` and has exactly one constructor taking no parameters. Kotlin classes are
+ *     final by default, so an ordinary `class X : HttpClientResponseMapper<T>` with no constructor
+ *     arguments falls into this case and must NOT be a @Component — that registers a second
+ *     HttpClientResponseMapper<T> and becomes "Multiple components match" as soon as anything
+ *     resolves that type from the graph. A mapper with constructor dependencies (a JsonReader<T>
+ *     below) MUST be a @Component.
+ *
+ * KOTLIN-ONLY TRAPS
+ *   - JsonReader<T>.read(...) returns T? in Kora 2.0 — use requireNotNull.
+ *   - Kora contracts are @NullMarked. Override a @Nullable member with the nullable Kotlin type or
+ *     the compiler reports "'apply' overrides nothing", which never mentions nullability.
+ *   - Client methods must not be `suspend`; KSP rejects them.
+ *
+ * Configuration (application.conf):
+ * ```
+ * httpClient.customMapper {
+ *   url = "http://localhost:8080"
+ *   requestTimeout = 10s
+ * }
+ * ```
+ */
+@HttpClient("httpClient.customMapper")
+interface CustomMapperClient {
+
+    // ============================================================
+    // Custom request body — @Mapping on the body parameter
+    // ============================================================
+
+    data class PlainTextGreetingBody(val name: String)
+
+    /** Always injected by the generated client, therefore always a @Component. */
+    @Component
+    class PlainTextRequestMapper : HttpClientRequestMapper<PlainTextGreetingBody> {
+        override fun apply(value: PlainTextGreetingBody): HttpBodyOutput =
+            HttpBody.plaintext("Hello ${value.name}")
+    }
+
+    @HttpRoute(method = HttpMethod.POST, path = "/data/mapping-request")
+    fun sendGreeting(@Mapping(PlainTextRequestMapper::class) body: PlainTextGreetingBody): String
+
+    // ============================================================
+    // Status-aware response decoding — mappers WITH dependencies
+    // ============================================================
+
+    sealed interface MappedResponse {
+
+        @Json
+        data class Payload(val message: String) : MappedResponse
+
+        @Json
+        data class Error(val code: Int, val message: String) : MappedResponse
+
+        @Json
+        data class ErrorPayload(val message: String)
+    }
+
+    /** Takes a JsonReader, so KSP cannot build it: @Component is required. */
+    @Component
+    class MappedResponseSuccessMapper(
+        private val jsonReader: JsonReader<MappedResponse.Payload>
+    ) : HttpClientResponseMapper<MappedResponse> {
+
+        override fun apply(response: HttpClientResponse): MappedResponse {
+            response.body().asInputStream().use { input ->
+                // read() is nullable in Kora 2.0; the generated client wraps this in another
+                // HttpClientDecoderException, like every other mapper failure.
+                return jsonReader.read(input.readAllBytes())
+                    ?: throw HttpClientDecoderException(IllegalStateException("empty success payload"))
+            }
+        }
+    }
+
+    /** Same rule — a dependency means @Component. The status code is read from the response. */
+    @Component
+    class MappedResponseErrorMapper(
+        private val jsonReader: JsonReader<MappedResponse.ErrorPayload>
+    ) : HttpClientResponseMapper<MappedResponse> {
+
+        override fun apply(response: HttpClientResponse): MappedResponse {
+            response.body().asInputStream().use { input ->
+                val payload = jsonReader.read(input.readAllBytes())
+                return MappedResponse.Error(response.code(), payload?.message.orEmpty())
+            }
+        }
+    }
+
+    /** ResponseCodeMapper.DEFAULT (-1) covers every status not listed explicitly. */
+    @ResponseCodeMapper(code = ResponseCodeMapper.DEFAULT, mapper = MappedResponseErrorMapper::class)
+    @ResponseCodeMapper(code = 200, mapper = MappedResponseSuccessMapper::class)
+    @HttpRoute(method = HttpMethod.GET, path = "/data/mapping-by-code/{code}")
+    fun getMappedByCode(@Path code: Int): MappedResponse
+
+    // ============================================================
+    // Response mapper WITHOUT dependencies — no @Component
+    // ============================================================
+
+    /**
+     * Not `open`, single no-arg constructor, so KSP instantiates it in the generated client.
+     * Adding @Component here is the "Multiple components match" trap.
+     */
+    class RawTextResponseMapper : HttpClientResponseMapper<String> {
+        override fun apply(response: HttpClientResponse): String =
+            response.body().asInputStream().use { String(it.readAllBytes(), StandardCharsets.UTF_8).trim() }
+    }
+
+    /**
+     * @Mapping on the METHOD attaches a response mapper — and disables the 2xx status check, so
+     * this mapper is called for every status code and non-2xx no longer throws on its own.
+     */
+    @Mapping(RawTextResponseMapper::class)
+    @HttpRoute(method = HttpMethod.GET, path = "/data/raw")
+    fun getRawText(): String
+
+    // ============================================================
+    // Usage
+    // ============================================================
+    //
+    // @Component
+    // class DataService(private val client: CustomMapperClient) {
+    //
+    //     fun describe(code: Int): String = when (val result = client.getMappedByCode(code)) {
+    //         is CustomMapperClient.MappedResponse.Payload -> result.message
+    //         is CustomMapperClient.MappedResponse.Error -> "failed with ${result.code}: ${result.message}"
+    //     }
+    // }
+}

@@ -1,0 +1,86 @@
+// Kora 2.0 SOAP client — Kotlin + KSP.
+// Requires gradle.properties:  koraVersion=2.0.0.RC2
+//
+// Build chain:
+//   src/main/resources/wsdl/*.wsdl
+//     -> wsdl2java (Apache CXF 4.x, jakarta) -> jakarta.jws @WebService interface + JAXB models (Java)
+//     -> ksp io.koraframework:symbol-processors -> $Iface_SoapClientImpl + $Iface_SoapClientModule
+//     -> @KoraApp graph: inject the @WebService interface
+
+import org.gradle.api.tasks.testing.logging.TestExceptionFormat
+
+plugins {
+    id("application")
+    kotlin("jvm") version ("2.4.20")
+    id("com.google.devtools.ksp") version ("2.3.12")
+    id("com.github.bjornvester.wsdl2java") version ("2.0.2")
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+    ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
+
+    implementation("io.koraframework:soap-client")
+
+    // HTTP transport: exactly one of http-client-ok / http-client-apache / http-client-jdk.
+    implementation("io.koraframework:http-client-ok")
+
+    implementation("io.koraframework:config-hocon")
+    implementation("io.koraframework:logging-logback")
+
+    testImplementation("io.koraframework:test-junit5")
+
+    // No excludes on soap-client, and no coroutines dependency: Kora 2.0 SOAP contracts are
+    // synchronous — there is no suspend variant to support.
+}
+
+kotlin {
+    jvmToolchain {
+        // Kora 2.0 artifacts are class-file 69; 25 is the floor, not a preference.
+        languageVersion.set(JavaLanguageVersion.of(25))
+        vendor.set(JvmVendorSpec.ADOPTIUM)
+    }
+}
+
+wsdl2java {
+    cxfVersion.set("4.0.2")
+    wsdlDir.set(layout.projectDirectory.dir("src/main/resources/wsdl"))
+    useJakarta.set(true)       // false emits javax.jws, which Kora 2.0 does not process at all
+    markGenerated.set(true)
+    verbose.set(false)
+    packageName.set("com.example.generated.soap")
+    generatedSourceDir.set(layout.buildDirectory.dir("generated/sources/wsdl2java/java"))
+    includesWithOptions.set(
+        // -wsdlLocation keeps the local build path out of the generated @WebServiceClient
+        mapOf("**/simple-service.wsdl" to listOf("-wsdlLocation", "https://example.com/simple/service?wsdl"))
+    )
+}
+
+// wsdl2java emits Java; without this KSP never sees the @WebService interface and generates nothing.
+sourceSets.main {
+    java.srcDir(layout.buildDirectory.dir("generated/sources/wsdl2java/java"))
+}
+
+application {
+    applicationName = "application"
+    mainClass.set("com.example.ApplicationKt")
+    applicationDefaultJvmArgs = listOf("-Dfile.encoding=UTF-8")
+}
+
+tasks.test {
+    useJUnitPlatform()
+    testLogging {
+        events("passed", "skipped", "failed")
+        exceptionFormat = TestExceptionFormat.FULL
+    }
+}
+
+// After changing packageName, or any package rename:
+//   ./gradlew clean --continue
+//   ./gradlew classes testClasses --continue --no-build-cache
+// wsdl2java does not delete its previous output and the build-cache key ignores packageName,
+// so both packages end up in one source set and kotlinc/javac report errors in build/generated.

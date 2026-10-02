@@ -1,0 +1,173 @@
+# Kora 2.0 Kafka consumer configuration
+#
+# Placeholders to replace: ${listenerName}, ${listenerNameLower}, ${topics}, ${topicName},
+#                          ${topicsPattern}, ${consumerGroupId}, ${serviceName}, ${packagePath}
+#
+# HOCON has no ${VAR:default} placeholder. Write the literal first and override it with an optional
+# substitution ${?VAR} on the next line — the later assignment wins when the variable is set.
+# ${VAR} on its own is a REQUIRED substitution and aborts startup when unset.
+#
+# References: references/kafka-consumer-reference.md (every key)
+#             references/kafka-strategies-reference.md (subscribe vs assign)
+#             references/kafka-telemetry-reference.md (logging/metrics are OFF by default)
+
+kafka {
+
+  consumer {
+
+    # ------------------------------------------------------------------
+    # ${listenerName} — subscribe strategy (group.id present)
+    # Config path used by @KafkaListener("kafka.consumer.${listenerNameLower}")
+    # ------------------------------------------------------------------
+    ${listenerNameLower} {
+
+      # Either topics or topicsPattern. A bare string is accepted for a single topic.
+      topics = [${topics}]
+      # topicsPattern = "${topicsPattern}"   # subscribe mode only
+
+      # How long each poll() waits for records
+      pollTimeout = 5s
+
+      # First pause after an unhandled exception; doubles per consecutive failure, capped at 60s
+      backoffTimeout = 15s
+
+      # Budget for in-flight records during graceful shutdown
+      shutdownWait = 30s
+
+      # Independent consumers for this listener; 0 disables it entirely
+      threads = 1
+
+      # Deliver an empty ConsumerRecords to a BATCH listener on every poll
+      allowEmptyRecords = false
+
+      # Fail startup if the first poll has not happened in time (unset = never fail)
+      # initializationFailTimeout = 30s
+
+      # offset only applies to the ASSIGN strategy — with a group.id it is ignored
+      # offset = "earliest"
+
+      driverProperties {
+        "bootstrap.servers" = "localhost:9092"
+        "bootstrap.servers" = ${?KAFKA_BOOTSTRAP}
+
+        # group.id present => subscribe container (partitions split across instances)
+        "group.id" = "${consumerGroupId}"
+
+        # Where a brand-new consumer group starts. This, not the Kora `offset` key.
+        "auto.offset.reset" = "earliest"
+
+        # Leave enable.auto.commit unset so Kora commits after your handler returns.
+        # Setting it true hands committing to the driver's timer and can lose records.
+        # "enable.auto.commit" = false
+
+        "max.poll.records" = 500
+        "max.poll.interval.ms" = 300000
+        "session.timeout.ms" = 45000
+        "heartbeat.interval.ms" = 3000
+
+        # Only committed records (needed downstream of a transactional publisher)
+        # "isolation.level" = "read_committed"
+
+        # Do NOT set key.deserializer / value.deserializer — the container always uses
+        # ByteArrayDeserializer and applies the Kora Deserializer chosen by your method signature.
+      }
+
+      telemetry {
+        # Both default to false in Kora 2.0. logging.enabled also gates the container's own
+        # lifecycle log lines, so a listener with it off is completely silent.
+        logging.enabled = true
+        # At TRACE the record log adds headers, key and value. Headers listed here are masked;
+        # JSON values are masked only by a @Tag(KafkaConsumerTelemetry.class) DataMasker component.
+        # logging.maskHeaders = ["authorization", "cookie", "set-cookie"]
+
+        metrics {
+          enabled = true
+          # Bind the Kafka client's own Micrometer meters — high cardinality, opt in deliberately
+          driverMetrics = false
+          slo = [1, 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000]
+          tags {
+            "consumer-type" = "${listenerNameLower}"
+          }
+        }
+
+        tracing {
+          enabled = true
+          attributes {
+            "service.name" = "${serviceName}"
+          }
+        }
+      }
+    }
+
+    # ------------------------------------------------------------------
+    # Assign strategy — no group.id, every instance reads every partition.
+    # Takes one or more topics; topicsPattern is rejected at startup.
+    # Nothing is ever committed; `offset` decides where each start begins.
+    # ------------------------------------------------------------------
+    # ${listenerNameLower}Broadcast {
+    #   topics = ["${topicName}"]
+    #   offset = "earliest"                 # earliest | latest | a Duration such as 5m
+    #   partitionRefreshInterval = 1m
+    #   driverProperties {
+    #     "bootstrap.servers" = "localhost:9092"
+    #     "bootstrap.servers" = ${?KAFKA_BOOTSTRAP}
+    #   }
+    # }
+
+    # ------------------------------------------------------------------
+    # Batch listener — ConsumerRecords<K, V> signature, one commit per poll
+    # ------------------------------------------------------------------
+    # ${listenerNameLower}Batch {
+    #   topics = ["${topicName}"]
+    #   pollTimeout = 10s
+    #   threads = 2
+    #   driverProperties {
+    #     "bootstrap.servers" = ${?KAFKA_BOOTSTRAP}
+    #     "group.id" = "${consumerGroupId}-batch"
+    #     "max.poll.records" = 1000
+    #     "fetch.min.bytes" = 1048576
+    #     "fetch.max.wait.ms" = 500
+    #   }
+    # }
+  }
+
+  producer {
+
+    # Dead letter queue for records this consumer cannot process
+    dlq {
+      driverProperties {
+        "bootstrap.servers" = "localhost:9092"
+        "bootstrap.servers" = ${?KAFKA_BOOTSTRAP}
+        "acks" = "all"
+        "retries" = 3
+        "linger.ms" = 5
+      }
+
+      # @KafkaPublisher.Topic("kafka.producer.dlq.topic")
+      topic {
+        topic = "${topicName}-dlq"
+        # partition = 0
+      }
+
+      telemetry {
+        logging.enabled = true
+        metrics.enabled = true
+        tracing.enabled = true
+      }
+    }
+  }
+}
+
+# Retry on a listener method: @Retryable(MySpec.class) with @RetrySpec("resilient.retry.${listenerNameLower}")
+# Keep attempts x delay well under max.poll.interval.ms.
+# resilient.retry.${listenerNameLower} {
+#   delay = 100ms
+#   attempts = 3
+# }
+
+# The section is logging.levels — the consumer logs under the listener's canonical class name.
+logging.levels {
+  "ROOT" = "INFO"
+  "io.koraframework" = "INFO"
+  "${packagePath}" = "DEBUG"
+}

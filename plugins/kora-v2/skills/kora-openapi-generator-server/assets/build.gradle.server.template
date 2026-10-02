@@ -1,0 +1,120 @@
+// Kora 2.x — OpenAPI HTTP server (Java)
+//
+// gradle.properties:
+//   koraVersion=2.0.0.RC2
+//
+// IMPORTANT: the JVM that RUNS GRADLE must be 25+, because
+// io.koraframework:openapi-generator lands on the buildscript classpath below and is
+// resolved by the Gradle JVM, not by the toolchain. On an older Gradle JVM configuration
+// fails with:
+//   Dependency requires at least JVM runtime version 25. This build uses a Java 21 JVM.
+// Fix it via JAVA_HOME / org.gradle.java.home / the IDE's Gradle JVM setting.
+
+import org.openapitools.generator.gradle.plugin.tasks.GenerateTask
+
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+    dependencies {
+        // The "kora" generator itself. Versioned by $koraVersion, NOT by the plugin version.
+        classpath("io.koraframework:openapi-generator:$koraVersion")
+    }
+}
+
+plugins {
+    id "java"
+    id "application"
+
+    // The OpenAPI Generator Gradle plugin — a different artifact from the line above.
+    // The Kora generator is built against openapi-generator 7.25.0, so 7.25.0 is aligned.
+    id "org.openapi.generator" version "7.25.0"
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+configurations {
+    koraBom
+    annotationProcessor.extendsFrom(koraBom)
+    compileOnly.extendsFrom(koraBom)
+    implementation.extendsFrom(koraBom)
+    testImplementation.extendsFrom(koraBom)
+    testAnnotationProcessor.extendsFrom(koraBom)
+}
+
+dependencies {
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+
+    // MANDATORY: without it the generated @HttpController produces no routes at all.
+    annotationProcessor "io.koraframework:annotation-processors"
+
+    implementation "io.koraframework:http-server-undertow"
+    implementation "io.koraframework:json-common"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
+
+    // Required by configOptions.enableServerValidation = "true".
+    implementation "io.koraframework:validation-module"
+
+    // Optional: serves /openapi and /swagger-ui — see the kora-openapi-management skill.
+    // implementation "io.koraframework:openapi-management"
+
+    testImplementation "io.koraframework:test-junit5"
+}
+
+application {
+    mainClass = "com.example.petapi.Application"
+    applicationDefaultJvmArgs = ["-Dfile.encoding=UTF-8"]
+}
+
+def openApiGenerateHttpServer = tasks.register("openApiGenerateHttpServer", GenerateTask) {
+    generatorName = "kora"
+    group = "openapi tools"
+    inputSpec = layout.projectDirectory.file("src/main/resources/openapi/pet-api.yaml")
+
+    // One outputDir per spec. Two tasks sharing a directory fight over .openapi-generator/FILES.
+    outputDir = layout.buildDirectory.dir("generated/pet-api-server")
+
+    def corePackage = "com.example.petapi"
+    apiPackage = "${corePackage}.api"       // controller, delegate, responses, mappers, ApiSecurity
+    modelPackage = "${corePackage}.model"   // models + generated JSON readers/writers
+    invokerPackage = "${corePackage}.invoker"
+
+    configOptions = [
+            // Only java-client, java-server, kotlin-client, kotlin-server exist in Kora 2.0.
+            mode                  : "java-server",
+
+            // Emits Kora validation annotations; needs validation-module + ValidationModule.
+            enableServerValidation: "true",
+
+            // Defaults shown for reference — remove the lines you do not change.
+            // enableServerValidationInterceptor: "true",   // false only if you map ViolationException yourself
+            // requestInDelegateParams          : "false",  // true adds HttpServerRequest to EVERY method
+            // delegateMethodBodyMode           : "none",   // "throwException" also generates a default delegate
+            // rawBodyMode                      : "BYTES",  // BYTES | BODY | OBJECT, for bare `type: object` bodies
+            // prefixPath                       : '"/api/v1"',  // NOTE the inner quotes in java-server mode
+    ]
+}
+
+sourceSets.main {
+    java.srcDirs += openApiGenerateHttpServer.get().outputDir
+}
+compileJava.dependsOn openApiGenerateHttpServer
+
+test {
+    useJUnitPlatform()
+}
+
+// After changing apiPackage / modelPackage, run once:
+//   ./gradlew clean build --no-build-cache
+// The generator never deletes previous output and the build-cache key ignores those settings,
+// so old and new packages coexist and produce phantom "package … does not exist" errors
+// pointing into build/generated. Never fix those by editing generated code.

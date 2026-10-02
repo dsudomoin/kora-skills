@@ -1,0 +1,53 @@
+package ${packagePath}
+
+import io.koraframework.common.annotation.Component
+import io.koraframework.common.annotation.Tag
+
+/**
+ * One of several implementations of `${InterfaceName}`, selected by tag.
+ *
+ * Import `Tag` from **io.koraframework.common.annotation** — `io.koraframework.common` holds
+ * `Configurer`, `Either`, `Principal` and `PromisedProxy`, not the DI annotations.
+ */
+@Tag(${TagClass}::class)
+@Component
+class ${ComponentName}(
+    private val ${dependencyName}: ${DependencyType}
+) : ${InterfaceName} {
+
+    override fun ${methodName}() {
+        // implementation
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Consuming tagged components
+// ---------------------------------------------------------------------------
+//
+// Pick specific implementations:
+//
+// @Component
+// class UserService(
+//     @Tag(RedisTag::class) private val remote: Cache,
+//     @Tag(LocalTag::class) private val local: Cache
+// )
+//
+// Collect every implementation, tagged or not — All<T> is an Iterable, not a List:
+//
+// @Component
+// class CacheAdmin(
+//     @Tag(Tag.Any::class) private val caches: All<Cache>
+// ) {
+//     fun invalidateAll() {
+//         for (cache in caches) {
+//             cache.invalidate()
+//         }
+//     }
+// }
+//
+// Collect only one tag's implementations:
+//
+//     class RedisCacheAdmin(@Tag(RedisTag::class) private val redisCaches: All<Cache>)
+//
+// Overriding a module function inside @KoraApp: repeat the @Tag, or the override registers an
+// untagged component and every tagged consumer stops seeing it.

@@ -1,0 +1,451 @@
+{
+  "evals": [
+    {
+      "id": "kora-http-server-crud-controller",
+      "skills": [
+        "kora-http-server"
+      ],
+      "query": "Create a Kora ProductController with GET list, GET by id, POST create, PUT update and DELETE routes for products.",
+      "expected_behavior": [
+        "Annotates the class with @Component and @HttpController",
+        "Imports @HttpController from io.koraframework.http.server.common.annotation and @HttpRoute/@Path/@Query from io.koraframework.http.common.annotation",
+        "Declares each route with @HttpRoute(method = HttpMethod.GET/POST/PUT/DELETE, path = ...), either writing the full path on each route or factoring the shared prefix into @HttpController(\"/products\")",
+        "Binds the id with @Path and the JSON body with @Json on both the method and the body parameter",
+        "Returns 201 from create via HttpResponseEntity.of(201, HttpHeaders.of(\"Location\", ...), body)",
+        "Uses constructor injection only, no field injection"
+      ],
+      "anti_behavior": [
+        "Imports any ru.tinkoff.kora package",
+        "Imports HttpServerResponse or HttpServerResponseException from io.koraframework.http.server.common instead of its .response subpackage",
+        "Uses foreign-framework annotations such as @RestController, @GetMapping or @RequestBody"
+      ],
+      "tags": [
+        "controller",
+        "basic",
+        "regression-coordinates"
+      ]
+    },
+    {
+      "id": "kora-http-server-controller-prefix",
+      "skills": [
+        "kora-http-server"
+      ],
+      "query": "In our Kora 2.0 Kotlin service I put the shared prefix on the controller — @HttpController(\"api/v1\") — and every route under it returns 404, but the identical Java controller works. Why?",
+      "expected_behavior": [
+        "Confirms that @HttpController does take a path prefix in Kora 2.0 (String value() default \"\"), so the approach itself is right",
+        "Identifies the cause as the missing leading slash combined with how KSP joins the halves: the Kotlin processor concatenates \"$rootPath$path\" verbatim, producing api/v1/users instead of /api/v1/users",
+        "Contrasts it with the Java processor, which adds a leading slash to both halves and strips a trailing slash from the prefix, which is why the Java twin works",
+        "Gives the fix as writing the prefix with a leading slash and no trailing slash: @HttpController(\"/api/v1\")",
+        "Suggests reading the registered route template out of the generated <Controller>Module rather than guessing"
+      ],
+      "anti_behavior": [
+        "Claims @HttpController takes no path argument in Kora 2.0, or that a prefix is unsupported",
+        "Tells the user to delete the prefix and repeat it in every @HttpRoute path as the only fix",
+        "Blames a missing @Component, a missing @Path binding, or the KSP version",
+        "Claims Java and Kotlin compose the prefix identically"
+      ],
+      "tags": [
+        "controller",
+        "kotlin",
+        "regression-routing"
+      ]
+    },
+    {
+      "id": "kora-http-server-global-interceptor-tag",
+      "skills": [
+        "kora-http-server"
+      ],
+      "query": "Our Kora 1.x service has a global interceptor annotated @Tag(HttpServerModule.class) implements HttpServerInterceptor. We migrated to Kora 2.0, everything compiles and the app starts, but the interceptor never runs. Why?",
+      "expected_behavior": [
+        "Identifies the cause as the tag: Kora 2.0 collects server-scoped interceptors by @Tag(HttpServer.class) from io.koraframework.http.server.common",
+        "States that HttpServerModule still exists in 2.0 so the old annotation still COMPILES with no error or warning, and the component is silently pruned from the graph",
+        "Points at HttpServerModule.publicHttpApiRouter, which declares @Tag(HttpServer.class) All<HttpServerInterceptor> as the collection point",
+        "Warns that simply removing the tag does NOT fix it — an untagged @Component interceptor is dropped the same way",
+        "Also updates the signature to HttpServerResponse intercept(HttpServerRequest request, InterceptChain chain) with no Context and no CompletionStage",
+        "Recommends a test asserting the interceptor's observable effect, because the failure is invisible at build time"
+      ],
+      "anti_behavior": [
+        "Claims the code does not compile, or that a warning or error is emitted",
+        "Says @Tag(HttpServerModule.class) is still correct in Kora 2.0",
+        "Suggests removing the tag entirely as the fix",
+        "Claims Kora 2.0 allows only one global interceptor",
+        "Suggests a foreign-framework registration such as a WebMvcConfigurer or a filter chain"
+      ],
+      "tags": [
+        "interceptors",
+        "regression-silent",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-http-server-port-keys-migration",
+      "skills": [
+        "kora-http-server"
+      ],
+      "query": "Our Kora 1.x application.conf has httpServer { publicApiHttpPort = 9090, privateApiHttpPort = 9095 }. We upgraded to Kora 2.0 and the service starts with no errors, but our load balancer and Prometheus scraper get nothing. What happened?",
+      "expected_behavior": [
+        "Identifies the keys as Kora 1.x names: publicApiHttpPort is now httpServer.port and privateApiHttpPort is now httpServer.system.port",
+        "Explains that a stale key is an unrecognised HOCON key, ignored silently, so each server falls back to its own default",
+        "States the defaults explicitly: 8080 for the public server and 8085 for the system server",
+        "Concludes the service came up green on the WRONG ports (8080/8085 instead of 9090/9095), which is why probes and scrapers hit nothing",
+        "Also renames privateApiHttpMetricsPath / privateApiHttpReadinessPath / privateApiHttpLivenessPath to httpServer.system.{metricsPath,readinessPath,livenessPath}",
+        "Recommends verifying by actually curling both ports rather than trusting a clean startup"
+      ],
+      "anti_behavior": [
+        "Claims SystemHttpServerConfig inherits port() = 8080 from HttpServerConfig",
+        "Claims both servers bind 8080 and the app fails with 'Address already in use' as the primary symptom",
+        "Says the stale keys produce a warning, an error, or a startup failure",
+        "Leaves the 1.x key names in the corrected config"
+      ],
+      "tags": [
+        "configuration",
+        "regression-silent",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-http-server-telemetry-defaults",
+      "skills": [
+        "kora-http-server"
+      ],
+      "query": "Set up a Kora 2.0 HTTP server that exposes Prometheus metrics and logs every request, with the metrics endpoint on a separate port.",
+      "expected_behavior": [
+        "Sets httpServer.telemetry.metrics.enabled = true and httpServer.telemetry.logging.enabled = true explicitly",
+        "States that both default to false in Kora 2.0, so metrics and request logs do not appear unless enabled",
+        "Notes that metrics.enabled defaulted to true in Kora 1.x, so this silently changes behaviour on migration",
+        "Puts the metrics endpoint under httpServer.system (default port 8085, default path /metrics)",
+        "Plugs UndertowPublicHttpServerModule into the @KoraApp interface and notes it also starts the system server"
+      ],
+      "anti_behavior": [
+        "Claims httpServer.telemetry.metrics.enabled or logging.enabled default to true in Kora 2.0",
+        "Writes an example that claims to demonstrate metrics or logging without enabling them",
+        "Uses privateApiHttpPort or privateApiHttpMetricsPath",
+        "Claims tracing is enabled by default under httpServer.system (SystemHttpServerTracingConfig overrides it to false)"
+      ],
+      "tags": [
+        "configuration",
+        "telemetry",
+        "regression-silent"
+      ]
+    },
+    {
+      "id": "kora-http-server-mapper-component-rule",
+      "skills": [
+        "kora-http-server"
+      ],
+      "query": "In Kora 2.0 I wrote a custom HttpServerResponseMapper and referenced it with @Mapping(MyMapper.class), but the build fails with 'No component found for dependency: MyMapper'. My colleague has the opposite problem: 'Multiple components match dependency: HttpServerResponseMapper<Order>'. Explain both.",
+      "expected_behavior": [
+        "Explains that @Mapping(X.class) makes the generated module ask the graph for the concrete class X, so X must be @Component even when it has no constructor arguments",
+        "States that this is why the first build fails, and that adding @Component to MyMapper fixes it",
+        "Explains the second error as two non-default @Component providers matching the same untagged HttpServerResponseMapper<Order> slot",
+        "Resolves the second by keeping one provider, or separating them with @Tag, or marking one @DefaultComponent",
+        "Notes that the framework's own mappers are @DefaultComponent so a user @Component overrides them without a conflict",
+        "Mentions that reading the generated <Controller>Module shows exactly which type the graph is asked for"
+      ],
+      "anti_behavior": [
+        "Claims the rule depends on whether the mapper has dependencies (that Kora constructs dependency-free mappers itself)",
+        "Advises removing @Component from a @Mapping-referenced mapper to fix 'No component found'",
+        "Invents a registration API such as a mapper registry or a module method that must be hand-written for every mapper"
+      ],
+      "tags": [
+        "response-mapping",
+        "regression-di",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-http-server-kotlin-mapper-nullability",
+      "skills": [
+        "kora-http-server"
+      ],
+      "query": "I ported a Kora HttpServerResponseMapper from Java to Kotlin. The Java one compiles; the Kotlin one fails with \"'apply' overrides nothing\". The signature looks identical.",
+      "expected_behavior": [
+        "Identifies the cause as nullability: the contract is HttpServerResponseMapper<T>.apply(HttpServerRequest, @Nullable T) and Kora's HTTP modules are @NullMarked (JSpecify)",
+        "Gives the fix as declaring the parameter nullable: override fun apply(request: HttpServerRequest, result: T?): HttpServerResponse",
+        "Notes that the error message never mentions nullability, which is what makes it confusing",
+        "Explains that this asymmetry is Kotlin-only — the Java twin compiles because Java does not enforce the annotation",
+        "Suggests requireNotNull(result) inside the body when the mapper genuinely needs a non-null value"
+      ],
+      "anti_behavior": [
+        "Suggests adding a Java nullability annotation such as @Nullable or @field:Nullable in Kotlin",
+        "Suggests changing the mapper's type parameter to T? in the implements/`:` clause",
+        "Blames the Kotlin or KSP version, or suggests @JvmName / @JvmStatic"
+      ],
+      "tags": [
+        "response-mapping",
+        "kotlin",
+        "regression-nullability"
+      ]
+    },
+    {
+      "id": "kora-http-server-no-reactive-or-suspend",
+      "skills": [
+        "kora-http-server"
+      ],
+      "query": "Migrate this Kora 1.x controller to 2.0: a Java method returning Mono<UserResponse>, a Java method returning CompletionStage<UserResponse>, and a Kotlin `suspend fun getUser(): UserResponse`. They call two services that used to run in parallel.",
+      "expected_behavior": [
+        "States that Kora 2.0 contracts are synchronous and run on virtual threads, so all three become plain synchronous return types",
+        "Notes that http-server-common ships no HttpServerResponseMapper for Mono, Flux or CompletionStage, so such a return type fails with 'No component found for dependency'",
+        "Notes that the Kotlin processor rejects suspend outright with 'Suspend methods are not supported by the HTTP server controller generator'",
+        "Recreates the parallelism with StructuredTaskScope inside a synchronous handler rather than dropping it",
+        "Flags StructuredTaskScope as a preview API requiring --enable-preview on javac, Kotlin, tests and the launcher"
+      ],
+      "anti_behavior": [
+        "Keeps Mono, Flux or CompletionStage as a Kora 2.0 handler return type",
+        "Keeps `suspend` on an @HttpRoute method",
+        "Suggests adding a reactor or coroutine adapter module to restore the old contracts",
+        "Silently serializes the two calls without mentioning that the parallelism was lost"
+      ],
+      "tags": [
+        "response-types",
+        "regression-async",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-http-server-context-removed",
+      "skills": [
+        "kora-http-server"
+      ],
+      "query": "Our Kora 1.x interceptor stores a resolved tenant in a Context.Key and the controller reads it with Context.current().get(KEY). Port this to Kora 2.0.",
+      "expected_behavior": [
+        "States that Context was removed from the entire Kora framework in 2.0, not merely renamed or moved",
+        "Offers request enrichment as the primary replacement: chain.process(request.toBuilder().header(\"x-tenant-id\", tenant).build()) with the handler binding it via @Header or an HttpServerRequestMapper",
+        "Warns to call headerRemove(name) before header(name, value) so a client cannot forge the value",
+        "Offers ScopedValue as the alternative for values read deep in the call stack, guarded with isBound() before get()",
+        "Mentions Principal / Principal.current() as the purpose-built mechanism when the value is the authenticated caller",
+        "Uses the 2.0 interceptor signature intercept(HttpServerRequest, InterceptChain) returning HttpServerResponse"
+      ],
+      "anti_behavior": [
+        "Imports io.koraframework.common.Context or claims Context simply moved packages",
+        "Suggests a ThreadLocal as the recommended replacement",
+        "Keeps a Context parameter on the interceptor, request mapper or response mapper signature",
+        "Calls ScopedValue.get() without checking isBound()"
+      ],
+      "tags": [
+        "interceptors",
+        "regression-removed-api",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-http-server-error-interceptor",
+      "skills": [
+        "kora-http-server"
+      ],
+      "query": "Add centralized exception handling to my Kora 2.0 HTTP service that converts exceptions to JSON error responses for all routes. Here is our 1.x version: it is tagged @Tag(HttpServerModule.class), chains .exceptionally(...), unwraps CompletionException, and calls errorWriter.toByteArrayUnchecked(err) inside try/catch (IOException).",
+      "expected_behavior": [
+        "Implements HttpServerInterceptor from io.koraframework.http.server.common.interceptor and registers it with @Tag(HttpServer.class) and @Component",
+        "Replaces .exceptionally(...) with a plain try/catch around chain.process(request), since intercept declares throws Exception",
+        "Drops the CompletionException unwrapping as unnecessary in a synchronous call",
+        "Returns a caught HttpServerResponseException as-is, noting it implements HttpServerResponse so the handler's status and body are preserved",
+        "Calls errorWriter.toByteArray(error) with NO try/catch (IOException), stating that the catch is now a compile error: 'exception IOException is never thrown in body of corresponding try statement'",
+        "Builds the body with HttpBody.json(...) and returns HttpServerResponse.of(code, body)"
+      ],
+      "anti_behavior": [
+        "Keeps @Tag(HttpServerModule.class)",
+        "Keeps toByteArrayUnchecked, toStringUnchecked or readUnchecked",
+        "Wraps toByteArray in try/catch (IOException)",
+        "Keeps CompletionStage, .exceptionally(...) or CompletionException unwrapping",
+        "Invents an @ExceptionHandler, @ControllerAdvice or HttpServerExceptionHandler type"
+      ],
+      "tags": [
+        "error-handling",
+        "interceptors",
+        "regression-silent",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-http-server-interceptor-scopes",
+      "skills": [
+        "kora-http-server"
+      ],
+      "query": "In Kora 2.0, how do I apply one interceptor to every route, another to just one controller, and a third to a single route? And do interceptors run on the readiness probe?",
+      "expected_behavior": [
+        "Uses @Tag(HttpServer.class) + @Component for the server-scoped interceptor",
+        "Uses @InterceptWith(X.class) on the controller class for controller scope and on a single @HttpRoute method for route scope",
+        "Describes the order as server -> controller -> method -> handler",
+        "States that server-scoped interceptors are sorted by class simple name, not declaration order, and that there is no @Order annotation",
+        "Answers the probe question: no — the system server is built by the @SystemApi-tagged factory module, so its router collects @Tag(SystemApi.class) interceptors and never sees a @Tag(HttpServer.class) one; /system/readiness, /system/liveness and /metrics are not intercepted",
+        "Notes that Kora 2.0 accepts any number of server-scoped interceptors"
+      ],
+      "anti_behavior": [
+        "Uses @Tag(HttpServerModule.class) for the server-scoped interceptor",
+        "Claims only one global interceptor is allowed",
+        "Claims interceptors run in declaration order or that an @Order annotation exists",
+        "Claims server-scoped interceptors also protect the system/probe endpoints"
+      ],
+      "tags": [
+        "interceptors",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-http-server-void-and-status",
+      "skills": [
+        "kora-http-server"
+      ],
+      "query": "In a Kora 2.0 controller, what should a DELETE handler return if it produces no body? Does it need a response mapper?",
+      "expected_behavior": [
+        "States that a void (Kotlin Unit) handler needs NO response mapper — the processor emits HttpServerResponse.of(200) directly",
+        "Shows returning HttpServerResponse.of(204) when 204 No Content is wanted rather than 200",
+        "Warns that in Java the return type must be primitive void, not java.lang.Void, because only void is special-cased",
+        "Notes that attaching @Mapping to a void/Unit method re-enables a mapper parameter the generated body never calls, so it only adds a graph dependency"
+      ],
+      "anti_behavior": [
+        "Claims a void or Unit handler requires its own HttpServerResponseMapper",
+        "Suggests HttpServerResponse.noContent() or another fluent builder that does not exist",
+        "Returns java.lang.Void as the handler return type"
+      ],
+      "tags": [
+        "response-types",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-http-server-param-binding",
+      "skills": [
+        "kora-http-server"
+      ],
+      "query": "I need a Kora 2.0 search endpoint GET /search/{category} that also reads optional page, size and sort query params plus an optional X-Request-Id header.",
+      "expected_behavior": [
+        "Uses @Path for the category segment, with the argument name matching the {category} segment",
+        "Uses @Query for page/size/sort and @Header for X-Request-Id, all from io.koraframework.http.common.annotation",
+        "Marks the optional Java parameters with org.jspecify.annotations.Nullable and uses boxed types (Integer, not int)",
+        "In Kotlin uses a nullable type and no annotation at all",
+        "States that there is no required=false attribute; nullability alone controls optionality",
+        "Notes that a missing required parameter or an unparseable value becomes a 400 automatically"
+      ],
+      "anti_behavior": [
+        "Invents a required=false attribute on @Query, @Header or @Cookie",
+        "Uses jakarta.annotation.Nullable, javax.annotation.Nullable or @field:Nullable in Kotlin",
+        "Uses foreign-framework @RequestParam or @PathVariable",
+        "Marks an optional parameter with a Java primitive type"
+      ],
+      "tags": [
+        "request-mapping",
+        "basic"
+      ]
+    },
+    {
+      "id": "kora-http-server-deps-setup",
+      "skills": [
+        "kora-http-server"
+      ],
+      "query": "What Gradle dependencies, processor and application-graph module do I need to start a Kora 2.0 HTTP server in Java?",
+      "expected_behavior": [
+        "Adds the BOM as platform(\"io.koraframework:kora-bom:$koraVersion\") with koraVersion = 2.0.0.RC2 from plain mavenCentral()",
+        "Adds annotationProcessor \"io.koraframework:annotation-processors\" (Kotlin: ksp \"io.koraframework:symbol-processors\")",
+        "Adds implementation \"io.koraframework:http-server-undertow\" and io.koraframework:json-common for JSON",
+        "Extends UndertowPublicHttpServerModule on the @KoraApp interface and notes it also starts the system server on httpServer.system.port",
+        "States Java 25 as the minimum, since Kora 2.0 artifacts are compiled to class-file 69",
+        "Does not pin versions on individual io.koraframework artifacts"
+      ],
+      "anti_behavior": [
+        "Uses the ru.tinkoff.kora:kora-parent BOM or any ru.tinkoff.kora artifact",
+        "Uses io.koraframework:json-module (the 2.0 artifact is json-common)",
+        "Extends UndertowHttpServerModule, which does not exist in Kora 2.0",
+        "Pins 2.0.0-SNAPSHOT, 2.0.0.alpha6 or a 1.x version for a new project",
+        "Adds a snapshot repository for a released version"
+      ],
+      "tags": [
+        "setup",
+        "basic",
+        "regression-coordinates"
+      ]
+    },
+    {
+      "id": "kora-http-server-custom-request-mapper",
+      "skills": [
+        "kora-http-server"
+      ],
+      "query": "I want to build a UserContext object from request headers in a Kora 2.0 controller without parsing them in every handler.",
+      "expected_behavior": [
+        "Implements HttpServerRequestMapper<UserContext> from io.koraframework.http.server.common.request and reads values via request.headers().getFirst(...)",
+        "Annotates the mapper @Component, because @Mapping injects the concrete class",
+        "Binds the parameter with @Mapping(UserContextRequestMapper.class)",
+        "Uses the 2.0 signature apply(HttpServerRequest request) with no Context parameter",
+        "Mentions HttpServerResponseMapper + @Mapping for the symmetric response case"
+      ],
+      "anti_behavior": [
+        "Includes a Context parameter in the mapper signature",
+        "Omits @Component on the mapper referenced by @Mapping",
+        "Imports HttpServerRequestMapper from io.koraframework.http.server.common instead of its .request subpackage",
+        "Uses a foreign-framework argument resolver"
+      ],
+      "tags": [
+        "request-mapping",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-http-server-server-header",
+      "skills": [
+        "kora-http-server"
+      ],
+      "query": "A security scan of our Kora 2.0 service flags that responses advertise the server software. Another team says the opposite: their monitoring expects a Server header and none arrives. How do the Server, Date and Connection headers work, and can I send my own Server value from a controller?",
+      "expected_behavior": [
+        "States that the Server header is off by default: httpServer.headerServerNameEnabled defaults to false, and when set to true every response carries Server: Kora",
+        "States that httpServer.headerServerDateEnabled defaults to true (Date on every response) and httpServer.headerKeepAliveEnabled defaults to false",
+        "Explains that the Server value is fixed and a server header set on HttpServerResponse/HttpResponseEntity by a handler or interceptor is dropped by the Undertow transport",
+        "Notes the same keys are valid under httpServer.system"
+      ],
+      "anti_behavior": [
+        "Claims Kora always sends Server: Kora and it cannot be disabled",
+        "Invents a key for a custom server name such as serverName or headerServerName = \"...\"",
+        "Suggests adding the Server header from an interceptor as a working way to set it"
+      ],
+      "tags": [
+        "configuration",
+        "headers",
+        "security"
+      ]
+    },
+    {
+      "id": "kora-http-server-log-masking",
+      "skills": [
+        "kora-http-server"
+      ],
+      "query": "We enabled httpServer.telemetry.logging in Kora 2.0 and set logging.mask = \"<hidden>\" plus maskHeaders = [\"x-api-key\"]. The custom mask text never shows up, Authorization is now logged in clear, and at TRACE the JSON request bodies show user passwords. Fix the config and code.",
+      "expected_behavior": [
+        "Explains that there is no mask config key; the replacement comes from a MaskingStrategy component tagged @Tag(HttpServerTelemetry.class), which replaces the module's default (\"***\")",
+        "Explains that maskHeaders replaces the default [authorization, cookie, set-cookie], so the defaults must be listed again alongside x-api-key",
+        "Explains that bodies are logged only at TRACE and are masked only when a @Tag(HttpServerTelemetry.class) DataMasker for the body format is in the graph, e.g. JsonDataMasker built from MaskingPathRules.builder().mask(\"password\", new MaskingFull()).build()",
+        "Names the format selection by Content-Type: json for */json and *+json, xml for */xml and *+xml, form-urlencoded for application/x-www-form-urlencoded",
+        "Links or defers to the shared masking model in kora-aop-logging instead of inventing HTTP-only masking classes"
+      ],
+      "anti_behavior": [
+        "Keeps telemetry.logging.mask in the config as if it worked",
+        "Claims header names in maskHeaders must be lower case to match",
+        "Claims Kora masks passwords in logged bodies by default",
+        "Uses Spring or Logback-pattern based masking instead of the Kora tagged components"
+      ],
+      "tags": [
+        "telemetry",
+        "logging",
+        "masking",
+        "configuration"
+      ]
+    },
+    {
+      "id": "kora-http-server-cookie-padding",
+      "skills": [
+        "kora-http-server"
+      ],
+      "query": "Our Kora 2.0 controller reads @Cookie(\"session\") String session, and the value is a base64 token ending with ==. Is the padding preserved, and what about a value with = in the middle?",
+      "expected_behavior": [
+        "States that a run of '=' at the end of a cookie value (base64 padding) is kept as part of the value",
+        "States that an '=' followed by more characters still acts as a separator, so values with an inner '=' should be URL-encoded (or base64url without inner '=')"
+      ],
+      "anti_behavior": [
+        "Claims the parser always strips trailing '=' and tells the user to re-pad the token manually",
+        "Invents a config key to change cookie parsing"
+      ],
+      "tags": [
+        "request-mapping",
+        "cookie"
+      ]
+    }
+  ]
+}

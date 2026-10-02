@@ -1,0 +1,72 @@
+package ${package};
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.http.client.common.auth.HttpClientTokenProvider;
+import io.koraframework.http.client.common.interceptor.HttpClientInterceptor;
+import io.koraframework.http.client.common.request.HttpClientRequest;
+import io.koraframework.http.client.common.response.HttpClientResponse;
+
+/**
+ * Bearer interceptor that retries once after a 401 with a freshly fetched token.
+ *
+ * <p>Requires: {@code TokenCache}, and an {@code HttpClientTokenProvider} in the graph.</p>
+ *
+ * <p>Use this <b>instead of</b> {@code BearerAuthHttpClientInterceptor}, not next to it — both
+ * write the {@code Authorization} header. Attach it with
+ * {@code @InterceptWith(CustomAuthInterceptor.class)} on the {@code @HttpClient} interface (every
+ * route) or on a single {@code @HttpRoute} method.</p>
+ *
+ * <p>{@code @Component} is required here. The generated client takes each {@code @InterceptWith}
+ * class as a constructor parameter and nothing in the framework constructs interceptors, so the
+ * class must be in the graph — this holds whether or not it has constructor dependencies. Do not
+ * <em>also</em> declare it in a {@code @Module}: that gives
+ * {@code Multiple components match dependency:}.</p>
+ *
+ * <p>The contract is synchronous: {@code processRequest(chain, request)}, returning
+ * {@code HttpClientResponse}. There is no {@code Context} parameter (the type was removed from
+ * Kora 2.0) and no {@code CompletionStage}. Blocking here is correct — the call runs on a virtual
+ * thread.</p>
+ */
+@Component
+public final class CustomAuthInterceptor implements HttpClientInterceptor {
+
+    private final HttpClientTokenProvider tokenProvider;
+    private final TokenCache tokenCache;
+
+    public CustomAuthInterceptor(HttpClientTokenProvider tokenProvider, TokenCache tokenCache) {
+        this.tokenProvider = tokenProvider;
+        this.tokenCache = tokenCache;
+    }
+
+    @Override
+    public HttpClientResponse processRequest(InterceptChain chain, HttpClientRequest request) throws Exception {
+        var response = chain.process(authorize(request));
+        if (response.code() != 401) {
+            return response;
+        }
+
+        // Only the response the generated client finally returns is auto-closed; this one is not.
+        response.close();
+        this.tokenCache.invalidate();
+
+        // Exactly one retry: a revoked credential in a loop is a request storm against the issuer.
+        // A 403 is deliberately not retried — a fresh token is just as unauthorized.
+        return chain.process(authorize(request));
+    }
+
+    /**
+     * Rebuilt from the original request every time. {@code header(...)} replaces, so re-authorizing
+     * an already-authorized request would also work — but {@code queryParam(...)} appends, and
+     * rebuilding from the original is the habit that stays correct for query- and cookie-based
+     * schemes.
+     */
+    private HttpClientRequest authorize(HttpClientRequest request) {
+        var token = this.tokenProvider.getToken(request);
+        if (token == null) {
+            return request;
+        }
+        return request.toBuilder()
+                .header("authorization", "Bearer " + token)
+                .build();
+    }
+}

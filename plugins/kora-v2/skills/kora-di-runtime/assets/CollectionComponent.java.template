@@ -1,0 +1,71 @@
+package ${packagePath};
+
+import io.koraframework.application.graph.All;
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Tag;
+
+/**
+ * Collecting every implementation of a type.
+ *
+ * <p>{@code All<T>} (io.koraframework.application.graph.All) extends <b>Iterable&lt;T&gt;</b>, not
+ * {@code List<T>}: no {@code size()}, {@code get(int)} or {@code stream()}. It is also sealed, so it
+ * cannot be implemented — use {@code All.of(...)} in tests.
+ *
+ * <p>{@code List<T>} is not a collection claim. A {@code List<${ComponentType}>} parameter asks for
+ * a single component of that type and fails with "no component found".
+ *
+ * <p>Which components arrive is decided by the tag on the parameter:
+ * <ul>
+ *   <li>{@code All<T>} — untagged components only (the usual reason implementations go missing)</li>
+ *   <li>{@code @Tag(Tag.Any.class) All<T>} — every component of that type</li>
+ *   <li>{@code @Tag(X.class) All<T>} — only components tagged {@code X}</li>
+ * </ul>
+ *
+ * <p>Order follows resolution order: deterministic for a given source set, but not something to
+ * encode behaviour against. Where order matters, give the element interface an explicit
+ * {@code order()} and sort.
+ */
+@Component
+public final class ${ComponentName} {
+
+    private final All<${ComponentType}> ${collectionName};
+
+    public ${ComponentName}(@Tag(Tag.Any.class) All<${ComponentType}> ${collectionName}) {
+        this.${collectionName} = ${collectionName};
+    }
+
+    public void processAll(${DataType} data) {
+        for (var element : ${collectionName}) {
+            element.process(data);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Variants
+// ---------------------------------------------------------------------------
+//
+// Materialise into a List — List.copyOf does NOT accept an Iterable:
+//
+//     private final List<Handler> handlers;
+//
+//     public Dispatcher(@Tag(Tag.Any.class) All<Handler> handlers) {
+//         var list = new ArrayList<Handler>();
+//         handlers.forEach(list::add);
+//         this.handlers = List.copyOf(list);
+//     }
+//
+// Refresh-isolated members — each element resolves to the current instance, and this component is
+// not rebuilt when a member refreshes:
+//
+//     public HealthAggregator(@Tag(Tag.Any.class) All<ValueOf<HealthCheck>> checks) { … }
+//
+//     for (var check : checks) {
+//         if (!check.get().isHealthy()) { … }
+//     }
+//
+// All<PromiseOf<T>> is the lazy form; PromiseOf.get() returns Optional<T>.
+//
+// Members declared @Conditional whose condition failed are skipped, not returned as null.
+// All<T> filters once at construction; All<ValueOf<T>>/All<PromiseOf<T>> re-filter on every
+// iterator() call.

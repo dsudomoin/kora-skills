@@ -1,0 +1,53 @@
+// Kora 2.0 Kotlin service using the @Validate aspect.
+//
+// The generated AOP proxy subclasses the service, so the class must be `open` AND the annotated
+// function must be `open`. KSP reports a clear error otherwise:
+//   AOP aspect cannot be applied to class '...' because the class is not open.
+//
+// For HTTP 400 mapping see references/violation-exception-reference.md.
+// DTOs come from ValidatedDto.kt.template.
+// Replace `com.example.app.service` / `com.example.app.dto` with your packages.
+
+package com.example.app.service
+
+import com.example.app.dto.CreateOrder
+import com.example.app.dto.Order
+import io.koraframework.common.annotation.Component
+import io.koraframework.validation.common.Validator
+import io.koraframework.validation.common.annotation.NotBlank
+import io.koraframework.validation.common.annotation.Size
+import io.koraframework.validation.common.annotation.Valid
+import io.koraframework.validation.common.annotation.Validate
+import java.util.UUID
+
+@Component
+open class OrdersService(
+    private val bodyValidator: Validator<CreateOrder>          // supplied by the @Valid DI extension
+) {
+
+    // Declarative: arguments are validated before the body runs.
+    @Validate
+    open fun create(@Valid body: CreateOrder, @NotBlank tenantId: String): Order =
+        Order(UUID.randomUUID(), body.sku, body.quantity, tenantId)
+
+    // failFast = true throws on the first violation instead of collecting all of them.
+    @Validate(failFast = true)
+    open fun createFast(@Valid body: CreateOrder): Order =
+        Order(UUID.randomUUID(), body.sku, body.quantity, "default")
+
+    // Result validation: @Validate enables the aspect, @Valid validates the returned elements,
+    // @Size constrains the list itself. Constraints for the result go on the FUNCTION.
+    @Size(min = 1, max = 100)
+    @Valid
+    @Validate
+    open fun findAll(@NotBlank tenantId: String): List<Order> =
+        listOf(Order(UUID.randomUUID(), "SKU-1", 1, tenantId))
+
+    // Imperative: full control over when and how failures are handled.
+    open fun createManual(body: CreateOrder): Order {
+        bodyValidator.validateAndThrow(body)                            // collect all, then throw
+        // ...or stop at the first violation:
+        // bodyValidator.validateAndThrow(body, io.koraframework.validation.common.ValidationContext.failFast())
+        return Order(UUID.randomUUID(), body.sku, body.quantity, "default")
+    }
+}

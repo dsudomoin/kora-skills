@@ -1,0 +1,79 @@
+// Kora 2.x — single-module Java service publishing to Kafka.
+// Kora 2.0 artifacts are built for Java 25; the toolchain below is the minimum, not a preference.
+
+plugins {
+    id "java"
+    id "application"
+}
+
+repositories {
+    mavenCentral()
+}
+
+configurations {
+    koraBom
+    annotationProcessor.extendsFrom(koraBom)
+    compileOnly.extendsFrom(koraBom)
+    implementation.extendsFrom(koraBom)
+    testImplementation.extendsFrom(koraBom)
+    testAnnotationProcessor.extendsFrom(koraBom)
+}
+
+dependencies {
+    // koraVersion=2.0.0.RC2 lives in gradle.properties
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+
+    // Mandatory: without it nothing is generated and the only symptom is
+    // "cannot find symbol: ApplicationGraph"
+    annotationProcessor "io.koraframework:annotation-processors"
+
+    // Brings org.apache.kafka:kafka-clients 4.3.1 transitively
+    implementation "io.koraframework:kafka"
+
+    // Only needed for @Json payloads (artifact was ru.tinkoff.kora:json-module in 1.x)
+    implementation "io.koraframework:json-common"
+
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
+
+    testAnnotationProcessor "io.koraframework:annotation-processors"
+    testImplementation "io.koraframework:test-junit5"
+
+    // Testcontainers 2.x renamed every module: org.testcontainers:kafka no longer exists.
+    // The container is started from a static initializer in the tests, so the JUnit
+    // integration module (org.testcontainers:testcontainers-junit-jupiter) is not needed.
+    testImplementation "org.testcontainers:testcontainers-kafka:2.0.5"
+    // The upstream kora-examples Kafka projects instead use the wrapper
+    //   testImplementation "io.goodforgod:testcontainers-extensions-kafka:0.15.0"
+    // Either works; this template drives the container directly to keep the test self-contained.
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+        vendor = JvmVendorSpec.ADOPTIUM
+    }
+}
+
+application {
+    applicationName = "application"
+    mainClass = "${packagePath}.Application"
+    applicationDefaultJvmArgs = ["-Dfile.encoding=UTF-8"]
+}
+
+run {
+    environment(["KAFKA_BOOTSTRAP_SERVERS": "localhost:9092"])
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = "UTF-8"
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events "passed", "skipped", "failed"
+        showStandardStreams = true
+        exceptionFormat = "full"
+    }
+}

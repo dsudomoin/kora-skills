@@ -1,0 +1,47 @@
+package ${package}
+
+import io.koraframework.application.graph.All
+import io.koraframework.common.annotation.Module
+import io.koraframework.micrometer.module.MetricsConfig
+import io.koraframework.micrometer.module.MetricsTagsProvider
+import io.koraframework.micrometer.module.PrometheusMeterRegistryInitializer
+import io.micrometer.core.instrument.Tag
+import io.micrometer.core.instrument.config.MeterFilter
+
+/**
+ * Metrics customization module (Kora 2.0).
+ *
+ * For common tags alone you need no initializer: use metrics.tags in application.conf or a
+ * MetricsTagsProvider component (see AppMetricsTagsProvider.kt.template). Declare your own
+ * PrometheusMeterRegistryInitializer only for other registry.config() settings -- meter
+ * filters, deny rules, naming conventions.
+ *
+ * MetricsModule collects every PrometheusMeterRegistryInitializer with
+ * All<PrometheusMeterRegistryInitializer> and applies them inside
+ * PrometheusMeterRegistryWrapper.init(), BEFORE the JVM binders are bound and before
+ * kora.up is registered.
+ *
+ * Declaring one removes MetricsModule's @DefaultComponent common-tags initializer from that
+ * All<>, so metrics.tags and every MetricsTagsProvider would be silently ignored. This
+ * initializer therefore re-applies the same merge: providers first, config last (config wins).
+ *
+ * PrometheusMeterRegistryInitializer extends
+ * Function<PrometheusMeterRegistry, PrometheusMeterRegistry>, so it MUST return the
+ * registry. In Kotlin that means the lambda's last expression is `registry`.
+ */
+@Module
+interface CustomMetricsConfig {
+
+    fun meterFiltersInit(config: MetricsConfig, tagsProviders: All<MetricsTagsProvider>): PrometheusMeterRegistryInitializer {
+        val merged = LinkedHashMap<String, String>()
+        tagsProviders.forEach { merged.putAll(it.tags()) }
+        merged.putAll(config.tags())
+        val commonTags = merged.map { (key, value) -> Tag.of(key, value) }
+        return PrometheusMeterRegistryInitializer { registry ->
+            registry.config()
+                .meterFilter(MeterFilter.commonTags(commonTags))
+                .meterFilter(MeterFilter.denyNameStartsWith("jvm.buffer"))
+            registry
+        }
+    }
+}

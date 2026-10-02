@@ -1,0 +1,81 @@
+package ${package};
+
+import io.koraframework.database.common.UpdateCount;
+import io.koraframework.database.common.annotation.Batch;
+import io.koraframework.database.common.annotation.Id;
+import io.koraframework.database.common.annotation.Query;
+import io.koraframework.database.common.annotation.Repository;
+import io.koraframework.database.jdbc.JdbcRepository;
+import org.jspecify.annotations.Nullable;
+
+import java.util.List;
+
+/**
+ * CRUD repository with a single-field id, driven by SQL macros.
+ *
+ * Kora 2.0 generates $${repository_name}_Impl at compile time — no reflection, no proxies.
+ * Repository contracts are synchronous: no suspend, no Mono/Flux, no CompletionStage.
+ *
+ * Macros used here:
+ *   %{return#selects}      column list of the return entity
+ *   %{return#table}        the entity's @Table name
+ *   %{entity#inserts}      table(columns) VALUES (:entity.field, ...)
+ *   %{entity#updates}      column = :entity.field, ... — @Id fields are excluded automatically
+ *   %{entity#where = @id}  WHERE over the @Id field(s)
+ *   %{entity#selects = @id} the @Id column(s), for an ON CONFLICT target
+ *
+ * A macro target must exist in the annotated method. `%{entity#table}` inside deleteById(id) has
+ * no `entity` parameter and fails to compile with "Query macro target `entity` cannot be
+ * resolved" — that is why the delete queries below name the table literally.
+ *
+ * The id parameter type must match the entity's @Id field type exactly.
+ */
+@Repository
+public interface ${repository_name} extends JdbcRepository {
+
+    /** Returns null when the row does not exist — preferred over Optional (no allocation). */
+    @Query("SELECT %{return#selects} FROM %{return#table} WHERE id = :id")
+    @Nullable
+    ${entity_name} findById(${id_type} id);
+
+    /** Empty list when nothing matches, never null. */
+    @Query("SELECT %{return#selects} FROM %{return#table}")
+    List<${entity_name}> findAll();
+
+    @Query("INSERT INTO %{entity#inserts}")
+    UpdateCount insert(${entity_name} entity);
+
+    /**
+     * Insert and return the key the database assigned.
+     * @Id on the method makes the generated code prepare the statement with RETURN_GENERATED_KEYS
+     * and read Statement.getGeneratedKeys(). Exclude the key column from the INSERT itself.
+     */
+    @Query("INSERT INTO %{entity#inserts -= @id}")
+    @Id
+    ${id_type} insertAndGetId(${entity_name} entity);
+
+    /** @Batch goes on the parameter (@Target(PARAMETER)), never on the method. */
+    @Query("INSERT INTO %{entity#inserts}")
+    UpdateCount insertBatch(@Batch List<${entity_name}> entity);
+
+    /** Generated keys work for batches too, returning them in input order. */
+    @Query("INSERT INTO %{entity#inserts -= @id}")
+    @Id
+    List<${id_type}> insertBatchAndGetIds(@Batch List<${entity_name}> entity);
+
+    @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
+    UpdateCount update(${entity_name} entity);
+
+    @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
+    UpdateCount updateBatch(@Batch List<${entity_name}> entity);
+
+    /** PostgreSQL upsert; the ON CONFLICT target is the @Id column(s). */
+    @Query("INSERT INTO %{entity#inserts} ON CONFLICT (%{entity#selects = @id}) DO UPDATE SET %{entity#updates}")
+    UpdateCount upsert(${entity_name} entity);
+
+    @Query("DELETE FROM ${table_name} WHERE id = :id")
+    UpdateCount deleteById(${id_type} id);
+
+    @Query("DELETE FROM ${table_name}")
+    UpdateCount deleteAll();
+}

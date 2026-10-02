@@ -1,0 +1,44 @@
+package ${package}.telemetry;
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Tag;
+import io.koraframework.http.server.common.HttpServer;
+import io.koraframework.http.server.common.interceptor.HttpServerInterceptor;
+import io.koraframework.http.server.common.request.HttpServerRequest;
+import io.koraframework.http.server.common.response.HttpServerResponse;
+import io.koraframework.logging.common.MDC;
+
+import java.util.UUID;
+
+/**
+ * Seeds a correlation id into Kora MDC for every request, so it appears on every record written
+ * inside the request scope.
+ *
+ * The Undertow request handler binds a fresh Kora MDC around the whole exchange, so MDC.put here
+ * is safe and the values are discarded with the request — no cleanup needed.
+ *
+ * Do NOT put traceId/spanId in by hand: KoraAsyncAppender captures Span.current().getSpanContext()
+ * and ConsoleTextRecordEncoder prints them.
+ *
+ * @Tag(HttpServer.class) is what makes this global — HttpServerModule injects
+ * @Tag(HttpServer.class) All<HttpServerInterceptor>, so several interceptors may coexist.
+ * The Kora 1.x tag @Tag(HttpServerModule.class) still compiles but is never looked up, leaving
+ * the interceptor silently uninvoked.
+ */
+@Tag(HttpServer.class)
+@Component
+public final class LoggingInterceptor implements HttpServerInterceptor {
+
+    private static final String REQUEST_ID_HEADER = "x-request-id";
+
+    @Override
+    public HttpServerResponse intercept(HttpServerRequest request, InterceptChain chain) throws Exception {
+        MDC.put("requestId", requestIdOf(request));
+        return chain.process(request);
+    }
+
+    private static String requestIdOf(HttpServerRequest request) {
+        var value = request.headers().getFirst(REQUEST_ID_HEADER);   // @Nullable; header names are lower-cased
+        return value != null ? value : UUID.randomUUID().toString();
+    }
+}

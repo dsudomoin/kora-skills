@@ -1,0 +1,71 @@
+package ${packagePath};
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Tag;
+
+/**
+ * One of several implementations of {@code ${InterfaceName}}, selected by tag.
+ *
+ * <p>Import {@code Tag} from <b>io.koraframework.common.annotation</b> — {@code io.koraframework.common}
+ * holds {@code Configurer}, {@code Either}, {@code Principal} and {@code PromisedProxy}, not the DI
+ * annotations.
+ */
+@Tag(${TagClass}.class)
+@Component
+public final class ${ComponentName} implements ${InterfaceName} {
+
+    private final ${DependencyType} ${dependencyName};
+
+    public ${ComponentName}(${DependencyType} ${dependencyName}) {
+        this.${dependencyName} = ${dependencyName};
+    }
+
+    @Override
+    public void ${methodName}() {
+        // implementation
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Consuming tagged components
+// ---------------------------------------------------------------------------
+//
+// Pick specific implementations:
+//
+// @Component
+// public final class UserService {
+//
+//     private final Cache remote;
+//     private final Cache local;
+//
+//     public UserService(@Tag(RedisTag.class) Cache remote,
+//                        @Tag(LocalTag.class) Cache local) {
+//         this.remote = remote;
+//         this.local = local;
+//     }
+// }
+//
+// Collect every implementation, tagged or not — All<T> is an Iterable, not a List:
+//
+// @Component
+// public final class CacheAdmin {
+//
+//     private final All<Cache> caches;
+//
+//     public CacheAdmin(@Tag(Tag.Any.class) All<Cache> caches) {
+//         this.caches = caches;
+//     }
+//
+//     public void invalidateAll() {
+//         for (var cache : caches) {
+//             cache.invalidate();
+//         }
+//     }
+// }
+//
+// Collect only one tag's implementations:
+//
+//     public RedisCacheAdmin(@Tag(RedisTag.class) All<Cache> redisCaches) { … }
+//
+// Overriding a module method inside @KoraApp: repeat the @Tag, or the override registers an
+// untagged component and every tagged consumer stops seeing it.

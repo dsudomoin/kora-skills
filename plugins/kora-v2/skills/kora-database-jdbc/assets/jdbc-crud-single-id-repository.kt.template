@@ -1,0 +1,70 @@
+package ${package}
+
+import io.koraframework.database.common.UpdateCount
+import io.koraframework.database.common.annotation.Batch
+import io.koraframework.database.common.annotation.Id
+import io.koraframework.database.common.annotation.Query
+import io.koraframework.database.common.annotation.Repository
+import io.koraframework.database.jdbc.JdbcRepository
+
+/**
+ * CRUD repository with a single-field id, driven by SQL macros (Kotlin).
+ *
+ * KSP generates $${repository_name}_Impl at compile time.
+ *
+ * Repository contracts are synchronous. `suspend fun` is rejected outright:
+ *   "Suspend methods are not supported by the repository generator."
+ * Use nullable return types (`T?`) rather than Optional.
+ *
+ * Macros used here:
+ *   %{return#selects}       column list of the return entity
+ *   %{return#table}         the entity's @Table name
+ *   %{entity#inserts}       table(columns) VALUES (:entity.field, ...)
+ *   %{entity#updates}       column = :entity.field, ... — @Id fields are excluded automatically
+ *   %{entity#where = @id}   WHERE over the @Id field(s)
+ *   %{entity#selects = @id} the @Id column(s), for an ON CONFLICT target
+ *
+ * A macro target must exist in the annotated method, so the delete queries name the table
+ * literally: `%{entity#table}` in `deleteById(id)` has no `entity` parameter and would fail with
+ * "Query macro target `entity` cannot be resolved".
+ */
+@Repository
+interface ${repository_name} : JdbcRepository {
+
+    @Query("SELECT %{return#selects} FROM %{return#table} WHERE id = :id")
+    fun findById(id: ${id_type}): ${entity_name}?
+
+    @Query("SELECT %{return#selects} FROM %{return#table}")
+    fun findAll(): List<${entity_name}>
+
+    @Query("INSERT INTO %{entity#inserts}")
+    fun insert(entity: ${entity_name}): UpdateCount
+
+    /** Insert and return the key the database assigned; the key column is excluded from the INSERT. */
+    @Id
+    @Query("INSERT INTO %{entity#inserts -= @id}")
+    fun insertAndGetId(entity: ${entity_name}): ${id_type}
+
+    /** @Batch goes on the parameter, never on the function. */
+    @Query("INSERT INTO %{entity#inserts}")
+    fun insertBatch(@Batch entity: List<${entity_name}>): UpdateCount
+
+    @Id
+    @Query("INSERT INTO %{entity#inserts -= @id}")
+    fun insertBatchAndGetIds(@Batch entity: List<${entity_name}>): List<${id_type}>
+
+    @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
+    fun update(entity: ${entity_name}): UpdateCount
+
+    @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
+    fun updateBatch(@Batch entity: List<${entity_name}>): UpdateCount
+
+    @Query("INSERT INTO %{entity#inserts} ON CONFLICT (%{entity#selects = @id}) DO UPDATE SET %{entity#updates}")
+    fun upsert(entity: ${entity_name}): UpdateCount
+
+    @Query("DELETE FROM ${table_name} WHERE id = :id")
+    fun deleteById(id: ${id_type}): UpdateCount
+
+    @Query("DELETE FROM ${table_name}")
+    fun deleteAll(): UpdateCount
+}

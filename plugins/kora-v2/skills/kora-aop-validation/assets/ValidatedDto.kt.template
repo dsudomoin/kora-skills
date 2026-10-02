@@ -1,0 +1,48 @@
+// Kora 2.0 Kotlin data class with built-in constraints. @Valid generates $CreateOrder_Validator
+// and registers Validator<CreateOrder> in the DI graph.
+//
+// Two Kotlin-only rules:
+//   1. @field: is MANDATORY. The constraints declare METHOD/FIELD/PARAMETER targets but not
+//      PROPERTY, so without the prefix Kotlin puts them on the constructor parameter, where the
+//      generated validator does not look — the class compiles and is silently never validated.
+//   2. @Range attributes are `double`: from = 1.0, to = 1000.0.
+//
+// A data class is fine for CLASS validation. `open` is only needed on a class hosting a @Validate
+// METHOD (the AOP proxy subclasses it). Replace `com.example.app.dto` with your package.
+
+package com.example.app.dto
+
+import io.koraframework.validation.common.annotation.NotBlank
+import io.koraframework.validation.common.annotation.NotEmpty
+import io.koraframework.validation.common.annotation.OneOf
+import io.koraframework.validation.common.annotation.Pattern
+import io.koraframework.validation.common.annotation.Range
+import io.koraframework.validation.common.annotation.Size
+import io.koraframework.validation.common.annotation.UUID
+import io.koraframework.validation.common.annotation.Valid
+
+@Valid
+data class CreateOrder(
+    @field:NotBlank @field:Size(min = 1, max = 64) val sku: String,
+    @field:Range(from = 1.0, to = 1000.0) val quantity: Int,
+    @field:Pattern("^[A-Z]{3}$") val currency: String,       // `value` is the unnamed attribute
+    @field:OneOf("STANDARD", "EXPRESS") val shipping: String,
+    @field:UUID val traceId: String,
+    @field:NotEmpty val tags: List<String>,
+    @field:Valid val billing: Address,                       // nested @Valid -> Validator<Address>
+    @field:Valid val lines: List<OrderLine>,                 // paths render as lines.[0].sku
+    val note: String?                                        // nullable type opts out of the null check
+)
+
+@Valid
+data class Address(
+    @field:NotBlank val line1: String,
+    val line2: String?,
+    @field:Pattern("^[A-Z]{2}$") val country: String
+)
+
+@Valid
+data class OrderLine(
+    @field:NotBlank val sku: String,
+    @field:Range(from = 1.0, to = 100.0) val quantity: Int
+)

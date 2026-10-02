@@ -1,0 +1,70 @@
+package ${package};
+
+import io.koraframework.database.cassandra.CassandraRepository;
+import io.koraframework.database.common.annotation.Batch;
+import io.koraframework.database.common.annotation.Column;
+import io.koraframework.database.common.annotation.Query;
+import org.jspecify.annotations.Nullable;
+
+import java.util.List;
+
+/*
+ * TEMPLATE NOTES — delete this block after copying.
+ *
+ * Generic CRUD base driven by SQL macros. Concrete repositories supply the key and entity types:
+ *
+ *   @Repository
+ *   public interface UserRepository
+ *           extends AbstractCassandraCrudRepository<@Column("id") String, User> {
+ *
+ *       @Query("SELECT * FROM users WHERE email = :email ALLOW FILTERING")
+ *       @Nullable
+ *       User findByEmail(String email);
+ *   }
+ *
+ * The entity must carry @Table and @Id — macros read both.
+ *
+ * Macro targets are method parameter names, "return", or a type-variable name:
+ *   %{return#selects} / %{return#table}  resolve through the return type (collections unwrapped)
+ *   %{keyArg#where}                      resolves through the K parameter; its column name comes
+ *                                        from the type-use @Column on the K type argument
+ *   %{entity#inserts}                    emits "table(cols) VALUES (:entity.f, ...)" — no extra
+ *                                        VALUES clause, no parentheses of your own
+ *   %{entity#updates}                    "col = :entity.f, ..." with @Id fields skipped
+ *   %{entity#where = @id}                "id_col = :entity.id" (AND-joined for @Embedded ids)
+ *   %{V#table}                           usable where no parameter carries the entity type;
+ *                                        %{return#...} is INVALID on a void method
+ *
+ * Selectors: "= f1, f2" includes only those fields, "-= f1, f2" excludes them, "@id" is the
+ * @Id field.
+ */
+public interface AbstractCassandraCrudRepository<K, V> extends CassandraRepository {
+
+    @Query("SELECT %{return#selects} FROM %{return#table} WHERE %{keyArg#where}")
+    @Nullable
+    V findById(K keyArg);
+
+    @Query("SELECT %{return#selects} FROM %{return#table}")
+    List<V> findAll();
+
+    @Query("INSERT INTO %{entity#inserts}")
+    void insert(V entity);
+
+    @Query("INSERT INTO %{entity#inserts}")
+    void insertBatch(@Batch List<V> entity);
+
+    @Query("INSERT INTO %{entity#inserts} IF NOT EXISTS")
+    boolean insertIfNotExists(V entity);
+
+    @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
+    void update(V entity);
+
+    @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
+    void updateBatch(@Batch List<V> entity);
+
+    @Query("DELETE FROM %{V#table} WHERE %{keyArg#where}")
+    void deleteById(K keyArg);
+
+    @Query("TRUNCATE %{V#table}")
+    void deleteAll();
+}

@@ -1,0 +1,78 @@
+package ${package};
+
+import io.koraframework.database.common.UpdateCount;
+import io.koraframework.database.common.annotation.Batch;
+import io.koraframework.database.common.annotation.Query;
+import io.koraframework.database.jdbc.JdbcRepository;
+
+import java.util.List;
+
+/**
+ * Reusable CRUD base interface for Kora 2.0 JDBC repositories.
+ *
+ * This interface is NOT annotated with @Repository — only the concrete interface that binds the
+ * type arguments is. The processor resolves each macro against the bound entity type, so one base
+ * serves every entity.
+ *
+ * Macro targets inside a generic base:
+ * - a method parameter name (`entity`) — used by insert/update/upsert/delete below;
+ * - `return` — the method's return type;
+ * - a TYPE PARAMETER of this interface (`%{V#table}`) — the only option for a method that takes
+ *   neither an entity nor a matching return type, such as deleteAll().
+ *
+ * `%{entity#table}` in a method without an `entity` parameter does not compile:
+ * "Query macro target `entity` cannot be resolved".
+ *
+ * Lookup by key is deliberately absent: a generic base cannot know the key column's name, and the
+ * macros have no command that renders it as a predicate against a loose value. Declare it on the
+ * concrete repository, where the column is known.
+ *
+ * Usage:
+ *   @Repository
+ *   public interface UserRepository extends AbstractCrudMacrosRepository<Long, User> {
+ *
+ *       @Query("SELECT %{return#selects} FROM %{return#table} WHERE id = :id")
+ *       @Nullable
+ *       User findById(Long id);
+ *
+ *       @Query("DELETE FROM users WHERE id = :id")
+ *       UpdateCount deleteById(Long id);
+ *   }
+ *
+ * @param <K> id type (Long, UUID, String, or the composite key record)
+ * @param <V> entity type — an @EntityJdbc record with an @Id field of type K
+ */
+public interface AbstractCrudMacrosRepository<K, V> extends JdbcRepository {
+
+    @Query("SELECT %{return#selects} FROM %{return#table}")
+    List<V> findAll();
+
+    @Query("INSERT INTO %{entity#inserts}")
+    UpdateCount insert(V entity);
+
+    @Query("INSERT INTO %{entity#inserts}")
+    UpdateCount insertBatch(@Batch List<V> entity);
+
+    @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
+    UpdateCount update(V entity);
+
+    @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
+    UpdateCount updateBatch(@Batch List<V> entity);
+
+    /** The ON CONFLICT target is the @Id column(s), so composite keys work unchanged. */
+    @Query("INSERT INTO %{entity#inserts} ON CONFLICT (%{entity#selects = @id}) DO UPDATE SET %{entity#updates}")
+    UpdateCount upsert(V entity);
+
+    @Query("INSERT INTO %{entity#inserts} ON CONFLICT (%{entity#selects = @id}) DO UPDATE SET %{entity#updates}")
+    UpdateCount upsertBatch(@Batch List<V> entity);
+
+    @Query("DELETE FROM %{entity#table} WHERE %{entity#where = @id}")
+    UpdateCount delete(V entity);
+
+    @Query("DELETE FROM %{entity#table} WHERE %{entity#where = @id}")
+    UpdateCount deleteBatch(@Batch List<V> entity);
+
+    /** No entity parameter here, so the macro targets the type parameter instead. */
+    @Query("DELETE FROM %{V#table}")
+    UpdateCount deleteAll();
+}

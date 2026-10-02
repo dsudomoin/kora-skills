@@ -1,0 +1,60 @@
+package ${package};
+
+import io.koraframework.http.client.common.annotation.HttpClient;
+import io.koraframework.http.client.common.interceptor.BasicAuthHttpClientInterceptor;
+import io.koraframework.http.common.HttpMethod;
+import io.koraframework.http.common.annotation.HttpRoute;
+import io.koraframework.http.common.annotation.InterceptWith;
+import io.koraframework.http.common.form.FormUrlEncoded;
+import io.koraframework.json.common.annotation.Json;
+import io.koraframework.json.common.annotation.JsonField;
+import org.jspecify.annotations.Nullable;
+
+/**
+ * Declarative client for the OAuth2 token endpoint.
+ *
+ * <p>Requires: {@code OAuth2Config} (for the {@code BasicAuthHttpClientInterceptor} factory in
+ * {@code OAuth2AuthModule}). Config path {@code httpClient.oauth2}:</p>
+ *
+ * <pre>
+ * httpClient.oauth2 {
+ *   url = "https://auth.example"
+ *   requestTimeout = 5s          // keep shorter than the business client's
+ * }
+ * </pre>
+ *
+ * <p>The client id and secret travel in {@code Authorization: Basic}, which the client logger masks
+ * by default. Putting them in the form body instead would log them at TRACE unless a
+ * {@code @Tag(HttpClientTelemetry.class)} {@code FormUrlencodedDataMasker} is in the graph.</p>
+ *
+ * <p>Do <b>not</b> attach a Bearer interceptor here: this client is what produces the token.</p>
+ */
+@InterceptWith(BasicAuthHttpClientInterceptor.class)
+@HttpClient("httpClient.oauth2")
+public interface OAuth2AuthClient {
+
+    @HttpRoute(method = HttpMethod.POST, path = "/oauth2/token")
+    @Json
+    TokenResponse requestToken(FormUrlEncoded form);
+
+    /** Synchronous by design — Kora 2.0 contracts block on a virtual thread. */
+    default TokenResponse requestClientCredentialsToken(String scopes) {
+        return scopes.isBlank()
+                ? requestToken(new FormUrlEncoded(
+                        new FormUrlEncoded.FormPart("grant_type", "client_credentials")))
+                : requestToken(new FormUrlEncoded(
+                        new FormUrlEncoded.FormPart("grant_type", "client_credentials"),
+                        new FormUrlEncoded.FormPart("scope", scopes)));
+    }
+
+    /**
+     * {@code scope} is optional in RFC 6749 when it matches the request, so it is {@code @Nullable}:
+     * a non-null field the issuer omits fails deserialization.
+     */
+    @Json
+    record TokenResponse(
+            @JsonField("access_token") String accessToken,
+            @JsonField("token_type") String tokenType,
+            @JsonField("expires_in") long expiresIn,
+            @JsonField("scope") @Nullable String scope) {}
+}

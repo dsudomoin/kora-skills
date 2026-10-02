@@ -1,0 +1,64 @@
+package ${package};
+
+import io.koraframework.common.Principal;
+import io.koraframework.common.annotation.Module;
+import io.koraframework.common.annotation.Tag;
+import io.koraframework.http.server.common.auth.HttpServerPrincipalExtractor;
+
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.List;
+
+/**
+ * HTTP Basic authentication for an OpenAPI-generated Kora 2.0 HTTP server.
+ *
+ * <p>Wire-up: for a scheme {@code basicAuth: { type: http, scheme: basic }} the generator emits
+ * {@code ApiSecurity.BasicAuth}. Replace {@code ApiSecurity} with the generated class from your api
+ * package and match the tag to your scheme's name, PascalCased.</p>
+ *
+ * <p><b>The credential is the entire {@code Authorization} header</b>, prefix included — the
+ * generated interceptor passes {@code request.headers().getFirst("Authorization")} straight
+ * through. Kora 1.x documented a pre-stripped value; that is no longer true, so strip
+ * {@code "Basic "} here.</p>
+ *
+ * <p>Rejection protocol: return {@code null}; the generated interceptor answers
+ * {@code 401 Unauthorized}. Never throw {@code SecurityException} — Kora 2.0 gives it no meaning
+ * and it surfaces as HTTP 500 with your message in the response body.</p>
+ *
+ * <p>Serve Basic auth over HTTPS only: the credential is base64-encoded, not encrypted.</p>
+ */
+@Module
+public interface BasicAuthExtractor {
+
+    /** Basic-auth principal. Must implement {@link Principal}; read it back with {@code Principal.current()}. */
+    record BasicAuthPrincipal(String userId, List<String> roles) implements Principal {}
+
+    /** Validates credentials against your user store (DB, LDAP, ...). Supply an implementation as a @Component. */
+    interface CredentialService {
+        boolean validate(String username, String password);
+
+        List<String> roles(String username);
+    }
+
+    @Tag(ApiSecurity.BasicAuth.class)
+    default HttpServerPrincipalExtractor<String, Principal> basicHttpServerPrincipalExtractor(CredentialService creds) {
+        return (request, value) -> {
+            if (value == null || !value.startsWith("Basic ")) {
+                return null;
+            }
+            final String decoded;
+            try {
+                decoded = new String(
+                        Base64.getDecoder().decode(value.substring("Basic ".length())),
+                        StandardCharsets.UTF_8);
+            } catch (IllegalArgumentException e) {
+                return null; // malformed base64 is a failed login, not a server error
+            }
+            var parts = decoded.split(":", 2);
+            if (parts.length != 2 || !creds.validate(parts[0], parts[1])) {
+                return null;
+            }
+            return new BasicAuthPrincipal(parts[0], creds.roles(parts[0]));
+        };
+    }
+}

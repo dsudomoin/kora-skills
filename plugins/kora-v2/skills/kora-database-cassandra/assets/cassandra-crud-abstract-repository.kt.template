@@ -1,0 +1,62 @@
+package ${package}
+
+import io.koraframework.database.cassandra.CassandraRepository
+import io.koraframework.database.common.annotation.Batch
+import io.koraframework.database.common.annotation.Column
+import io.koraframework.database.common.annotation.Query
+
+/*
+ * TEMPLATE NOTES — delete this block after copying.
+ *
+ * Generic CRUD base driven by SQL macros. Concrete repositories supply the key and entity types:
+ *
+ *   @Repository
+ *   interface UserRepository : AbstractCassandraCrudRepository<@Column("id") String, User> {
+ *
+ *       @Query("SELECT * FROM users WHERE email = :email ALLOW FILTERING")
+ *       fun findByEmail(email: String): User?
+ *   }
+ *
+ * The entity must carry @Table and @Id — macros read both.
+ *
+ * Macro targets are function parameter names, "return", or a type-variable name:
+ *   %{return#selects} / %{return#table}  resolve through the return type (collections unwrapped)
+ *   %{keyArg#where}                      resolves through the K parameter; its column name comes
+ *                                        from the type-use @Column on the K type argument
+ *   %{entity#inserts}                    emits "table(cols) VALUES (:entity.f, ...)"
+ *   %{entity#updates}                    "col = :entity.f, ..." with @Id fields skipped
+ *   %{entity#where = @id}                "id_col = :entity.id" (AND-joined for @Embedded ids)
+ *   %{V#table}                           usable where no parameter carries the entity type;
+ *                                        %{return#...} is INVALID on a Unit function
+ *
+ * Synchronous only: no suspend, no Flow.
+ */
+interface AbstractCassandraCrudRepository<K, V> : CassandraRepository {
+
+    @Query("SELECT %{return#selects} FROM %{return#table} WHERE %{keyArg#where}")
+    fun findById(keyArg: K): V?
+
+    @Query("SELECT %{return#selects} FROM %{return#table}")
+    fun findAll(): List<V>
+
+    @Query("INSERT INTO %{entity#inserts}")
+    fun insert(entity: V)
+
+    @Query("INSERT INTO %{entity#inserts}")
+    fun insertBatch(@Batch entity: List<V>)
+
+    @Query("INSERT INTO %{entity#inserts} IF NOT EXISTS")
+    fun insertIfNotExists(entity: V): Boolean
+
+    @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
+    fun update(entity: V)
+
+    @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
+    fun updateBatch(@Batch entity: List<V>)
+
+    @Query("DELETE FROM %{V#table} WHERE %{keyArg#where}")
+    fun deleteById(keyArg: K)
+
+    @Query("TRUNCATE %{V#table}")
+    fun deleteAll()
+}

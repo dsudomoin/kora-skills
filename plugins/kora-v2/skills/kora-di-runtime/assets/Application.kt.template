@@ -1,0 +1,25 @@
+package ${packagePath}
+
+import io.koraframework.application.graph.KoraApplication
+import io.koraframework.common.annotation.KoraApp
+import io.koraframework.config.hocon.HoconConfigModule
+import io.koraframework.logging.logback.LogbackModule
+
+/**
+ * Application graph root.
+ *
+ * `ApplicationGraph` is generated next to this interface by the Kora symbol processor
+ * (`io.koraframework:symbol-processors`); it does not exist until the first successful KSP run.
+ *
+ * The graph is built from the **root set**: declarations annotated `@Root` plus everything
+ * reachable from them. A component nothing depends on and which is not `@Root` is never created.
+ * With no `@Root` anywhere the build fails with "@KoraApp has no root components".
+ */
+@KoraApp
+interface Application :
+    HoconConfigModule,
+    LogbackModule
+
+fun main() {
+    KoraApplication.run(ApplicationGraph::graph)
+}

@@ -1,0 +1,60 @@
+package ${package};
+
+import java.util.List;
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.KoraApp;
+import io.koraframework.common.annotation.Root;
+import io.koraframework.database.common.annotation.Query;
+import io.koraframework.database.common.annotation.Repository;
+import io.koraframework.database.jdbc.JdbcRepository;
+import ${package}.model.dao.${entityName};
+
+/**
+ * Kora 2.0 test application graph with richer cleanup repositories (findAll / deleteAll /
+ * truncate), in the shape the kora-java-crud example uses.
+ *
+ * Here @Root @Component sit directly on each nested @Repository interface, so no accessor default
+ * method is needed. This scales better than the single @Root default method when the test graph
+ * needs several test-only repositories. See TestApplication.java.template for that other variant.
+ *
+ * TRUNCATE ... RESTART IDENTITY resets sequences, so tests that assert on generated ids stay
+ * deterministic; plain deleteAll() does not.
+ *
+ * Build requirements — in TWO DIFFERENT modules:
+ *
+ * 1. PRODUCTION module (the one declaring the original @KoraApp):
+ *        tasks.named("compileJava", JavaCompile) {
+ *            options.compilerArgs += ["-Akora.app.submodule.enabled=true"]
+ *        }
+ *    Missing it produces only a warning, and the parent app's components never reach the test graph.
+ *
+ * 2. The module owning these test sources:
+ *        dependencies {
+ *            testAnnotationProcessor "io.koraframework:annotation-processors"
+ *        }
+ *        test {
+ *            filter {
+ *                excludeTestsMatching '*$*'
+ *                excludeTestsMatching "*TestApplication"
+ *            }
+ *        }
+ */
+@KoraApp
+public interface TestApplication extends Application {
+
+    @Root
+    @Component
+    @Repository
+    interface Test${entityName}Repository extends JdbcRepository {
+
+        @Query("SELECT %{return#selects} FROM %{return#table}")
+        List<${entityName}> findAll();
+
+        @Query("DELETE FROM ${tableName}")
+        void deleteAll();
+
+        @Query("TRUNCATE ${tableName} RESTART IDENTITY CASCADE")
+        void truncate();
+    }
+}

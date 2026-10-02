@@ -1,0 +1,74 @@
+// gRPC client configuration (Kora 2.0) — keys come from io.koraframework.grpc.client.GrpcClientConfig.
+//
+// The section name is the PROTO service simple name, i.e. the part of <Service>Grpc.SERVICE_NAME
+// after the last dot. Not the Java class name (${service_name}Grpc), not java_outer_classname.
+// Unknown keys are ignored without any warning, so a typo here fails silently.
+grpcClient {
+  ${service_name} {
+    // Required. The scheme decides the transport: usePlaintext() is called ONLY for "http".
+    // "https" means TLS. Any other scheme with a port silently gets TLS; without a port it throws
+    // IllegalArgumentException at startup. A Kora 1.x "grpc://" URL must be rewritten to "http://".
+    url = "http://localhost:8090"
+    url = ${?GRPC_SERVER_URL}
+
+    // Applied by GrpcClientConfigInterceptor as the call deadline, but only when the call does not
+    // already carry one. It covers the WHOLE call — leave it unset for long-lived streams.
+    timeout = "10s"
+
+    // Optional; skipped entirely when unset, leaving the gRPC transport defaults in place.
+    // keepAliveTime = "30s"
+    // keepAliveTimeout = "5s"
+    // loadBalancingPolicy = "round_robin"   // only meaningful when the target resolves to many addresses
+
+    // Standard gRPC service config, passed verbatim to ManagedChannelBuilder.defaultServiceConfig.
+    // This is where transport-level retries live — there is no Kora "retry" key.
+    // defaultServiceConfig {
+    //   methodConfig = [
+    //     {
+    //       name = [ { service = "${proto_package}.${service_name}" } ]
+    //       retryPolicy {
+    //         maxAttempts = 4
+    //         initialBackoff = "0.1s"
+    //         maxBackoff = "1s"
+    //         backoffMultiplier = 2
+    //         retryableStatusCodes = [ "UNAVAILABLE" ]
+    //       }
+    //     }
+    //   ]
+    // }
+
+    telemetry {
+      // Both default to FALSE in Kora 2.0 — nothing is logged or measured unless set here.
+      logging.enabled = true
+      // logging.maskHeaders = ["authorization", "cookie", "set-cookie"]   // the default; a list replaces it
+
+      // Metrics additionally need a MeterRegistry in the graph
+      // (implementation "io.koraframework:micrometer-module"); without one the flag is accepted
+      // and no rpc.client.duration timer appears.
+      // metrics {
+      //   enabled = true
+      //   slo = [1, 10, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000, 90000]  // millis
+      //   tags { environment = "local" }
+      // }
+
+      // Tracing is the one signal that defaults to true; it still needs a Tracer in the graph.
+      // tracing.enabled = true
+    }
+  }
+}
+
+// Backing section for the @ConfigSource("auth.apiKey") interface the client-interceptor template
+// injects. gRPC metadata is the only auth mechanism for a Kora gRPC client, so the credential is an
+// ordinary config value read by the interceptor — there is no auth key under grpcClient.
+auth.apiKey.value = "local-dev-key"
+auth.apiKey.value = ${?GRPC_API_KEY}
+
+// The client's two loggers are named after the FULL proto service name. Enabling
+// telemetry.logging.enabled above is only half the switch — the level must allow it too.
+logging.levels {
+  "root": "WARN"
+  "io.koraframework": "INFO"
+  "${proto_package}.${service_name}.request": "INFO"
+  "${proto_package}.${service_name}.response": "INFO"
+  "${package}": "INFO"
+}

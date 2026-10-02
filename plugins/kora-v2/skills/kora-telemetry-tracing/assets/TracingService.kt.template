@@ -1,0 +1,48 @@
+package ${package}
+
+import io.koraframework.common.annotation.Component
+import io.koraframework.common.telemetry.OpentelemetryContext
+import io.opentelemetry.api.trace.Span
+import io.opentelemetry.api.trace.SpanKind
+import io.opentelemetry.api.trace.StatusCode
+import io.opentelemetry.api.trace.Tracer
+import io.opentelemetry.context.Context
+
+/**
+ * Span wrapper for the cases `KoraTracer` cannot cover -- a non-INTERNAL [SpanKind], links,
+ * or an explicit parent -- because its `Consumer<SpanBuilder>` overloads are private.
+ *
+ * For a plain business span, delete this class and inject
+ * `io.koraframework.opentelemetry.tracing.KoraTracer` instead. Note that its `traceParent` /
+ * `traceNew` need an explicit SAM constructor from Kotlin:
+ * `tracer.traceParent("name", KoraTracer.TraceCallable<T, RuntimeException> { span -> ... })`.
+ *
+ * Span context travels in a `ScopedValue`, so the binding unwinds on its own when `call(...)`
+ * returns -- there is no previous context to restore. Never call `span.makeCurrent()`: Kora's
+ * `ContextStorage.attach(...)` throws `IllegalStateException`.
+ */
+@Component
+class TracingService(private val tracer: Tracer) {
+
+    fun <T> trace(spanName: String, kind: SpanKind = SpanKind.INTERNAL, operation: (Span) -> T): T {
+        val span = tracer.spanBuilder(spanName)
+            .setSpanKind(kind)
+            .setParent(Context.current())
+            .startSpan()
+
+        return ScopedValue.where(OpentelemetryContext.VALUE, Context.current().with(span))
+            .call<T, RuntimeException> {
+                try {
+                    val result = operation(span)
+                    span.setStatus(StatusCode.OK)
+                    result
+                } catch (e: RuntimeException) {
+                    span.recordException(e)
+                    span.setStatus(StatusCode.ERROR, e.message ?: e.javaClass.simpleName)
+                    throw e
+                } finally {
+                    span.end()
+                }
+            }
+    }
+}

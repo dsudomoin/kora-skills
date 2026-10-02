@@ -1,0 +1,91 @@
+# =============================================================================
+# Kora 2.0 Application Configuration (HOCON)
+# Place at: src/main/resources/application.conf
+# Loaded by HoconConfigModule (io.koraframework:config-hocon).
+#
+# Override the file with -Dconfig.resource=<classpath file> or -Dconfig.file=<path>.
+# Setting both is an error. There is no config.environment profile switch — select a file
+# and layer it with `include`, e.g. application-prod.conf starting with: include "application"
+#
+# ${VAR}  = required substitution: resolution fails at startup when VAR is unset
+# ${?VAR} = optional substitution: the assignment is dropped when VAR is unset
+# =============================================================================
+
+# Application section -> maps to @ConfigSource("app")
+app {
+  name = "my-service"
+  name = ${?APP_NAME}                 # optional override; literal first, override second
+  version = ${APP_VERSION}            # required: startup fails if unset
+  environment = "development"
+  environment = ${?APP_ENV}
+  maxUploadSize = "10Mib"             # io.koraframework.common.util.Size
+
+  # Nested object -> a method returning a @ConfigMapper type
+  database {
+    url = ${DATABASE_URL}             # required credential, externalized
+    username = ${DATABASE_USER}
+    password = ${DATABASE_PASSWORD}
+
+    # Default-then-override: keeps 20 unless DB_POOL_SIZE is set
+    poolSize = 20
+    poolSize = ${?DB_POOL_SIZE}
+
+    connectionTimeout = 30s           # mapped to java.time.Duration
+  }
+}
+
+# =============================================================================
+# Framework sections. Keys marked (2.0) were renamed from Kora 1.x — a stale 1.x key is
+# ignored silently and breaks the service at runtime, not at compile time.
+# Keep only the sections whose modules are actually wired into @KoraApp.
+# =============================================================================
+
+# Requires UndertowPublicHttpServerModule / UndertowSystemHttpServerModule.
+# A stale 1.x key is ignored WITHOUT a warning and the component falls back to its default,
+# so the service starts cleanly on the wrong port instead of failing.
+httpServer {
+  port = 8080                         # (2.0) was publicApiHttpPort; default 8080
+  port = ${?HTTP_SERVER_PORT}
+
+  system {                            # (2.0) the system server has its own section
+    port = 8085                       # (2.0) was privateApiHttpPort; default 8085
+    port = ${?HTTP_SERVER_SYSTEM_PORT}
+    # (2.0) was privateApiHttpReadinessPath / LivenessPath / MetricsPath
+    readinessPath = "/system/readiness"
+    livenessPath  = "/system/liveness"
+    metricsPath   = "/metrics"
+  }
+
+  # (2.0) telemetry.metrics.enabled and telemetry.logging.enabled default to FALSE.
+  # Without these lines no http_server_* metric and no request log is produced.
+  telemetry {
+    logging.enabled = true
+    metrics.enabled = true
+  }
+}
+
+# Requires JdbcDatabaseModule. Uncomment together with the module.
+# (2.0) the datasource section is "jdbc"; a leftover "db { }" block leaves every value unset and
+# fails at startup with:
+#   ConfigValueException: Config expected value, but got null at path: 'ROOT.jdbc.username'
+#
+# jdbc {
+#   jdbcUrl = ${POSTGRES_JDBC_URL}
+#   username = ${POSTGRES_USER}
+#   password = ${POSTGRES_PASS}
+#   maxPoolSize = 10
+#   maxPoolSize = ${?DB_POOL_SIZE}
+#   poolName = "my-service"
+#   telemetry {
+#     logging.enabled = true
+#     metrics.enabled = true
+#   }
+# }
+
+# Requires LogbackModule
+logging.levels {
+  "root" = "WARN"
+  "root" = ${?LOGGING_LEVEL_ROOT}
+  "io.koraframework" = "INFO"
+  "io.koraframework" = ${?LOGGING_LEVEL_KORA}
+}

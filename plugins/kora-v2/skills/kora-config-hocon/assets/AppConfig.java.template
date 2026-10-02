@@ -1,0 +1,56 @@
+package ${package};
+
+import io.koraframework.config.common.annotation.ConfigMapper;
+import io.koraframework.config.common.annotation.ConfigSource;
+import io.koraframework.common.util.Size;
+import org.jspecify.annotations.Nullable;
+
+import java.time.Duration;
+
+/**
+ * Application configuration mapped from the "app" section of application.conf.
+ *
+ * Kora 2.0 rules:
+ *  - required values are plain abstract methods (the graph build fails if absent);
+ *  - optional values use JSpecify @Nullable on the RETURN TYPE (it is a type-use annotation);
+ *  - default values use a Java default method — Kora has no @DefaultValue annotation;
+ *  - nested objects and list element types use @ConfigMapper, never @ConfigSource.
+ *
+ * The processor generates $AppConfig_ConfigValueMapper and an AppConfigModule (@Module) next to
+ * this file. A @Module generated in the same compilation is discovered automatically — do not add
+ * AppConfigModule to the @KoraApp extends clause.
+ */
+@ConfigSource("app")
+public interface AppConfig {
+
+    String name();          // required
+
+    String version();       // required
+
+    @Nullable
+    String environment();   // optional
+
+    default Size maxUploadSize() {
+        return Size.of(10, Size.Type.MiB);
+    }
+
+    DatabaseConfig database();
+
+    @ConfigMapper
+    interface DatabaseConfig {
+
+        String url();
+
+        String username();
+
+        String password();
+
+        default int poolSize() {
+            return 20;
+        }
+
+        default Duration connectionTimeout() {
+            return Duration.ofSeconds(30);
+        }
+    }
+}

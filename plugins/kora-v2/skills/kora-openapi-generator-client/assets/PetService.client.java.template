@@ -1,0 +1,96 @@
+package com.example;
+
+import com.example.openapi.pet.api.PetApi;
+import com.example.openapi.pet.api.PetApiResponses;
+import com.example.openapi.pet.model.Pet;
+import io.koraframework.common.annotation.Component;
+import io.koraframework.http.client.common.exception.HttpClientResponseException;
+
+import java.util.NoSuchElementException;
+
+/**
+ * Using a generated Kora 2.x OpenAPI HTTP client.
+ *
+ * <p>The generated {@code PetApi} is injected by constructor; Kora wires the implementation at
+ * build time. Generated methods are <b>synchronous</b> and run on a virtual thread - there is no
+ * reactive, {@code CompletionStage} or {@code suspend} variant in Kora 2.0.
+ *
+ * <p>Generated methods return a sealed {@code *ApiResponses} wrapper with one variant per declared
+ * status code, never the bare model. In Java the variants are records, so the payload is read with
+ * {@code ok.content()}.
+ */
+@Component
+public final class PetService {
+
+    private final PetApi petApi;
+
+    public PetService(PetApi petApi) {
+        this.petApi = petApi;
+    }
+
+    /**
+     * Exhaustive switch over a sealed response. Because the hierarchy is sealed, the compiler
+     * checks that every declared status code is handled and no {@code default} is required - add a
+     * status to the contract and this switch stops compiling until it is handled.
+     */
+    public Pet getPet(long petId) {
+        return switch (petApi.getPetById(petId)) {
+            case PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse ok -> ok.content();
+            case PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse ignored ->
+                    throw new NoSuchElementException("pet " + petId);
+        };
+    }
+
+    /** Returning null instead of throwing on the 404 variant. */
+    public Pet findPet(long petId) {
+        return switch (petApi.getPetById(petId)) {
+            case PetApiResponses.GetPetByIdApiResponse.GetPetById200ApiResponse ok -> ok.content();
+            case PetApiResponses.GetPetByIdApiResponse.GetPetById404ApiResponse ignored -> null;
+        };
+    }
+
+    /**
+     * The OpenAPI {@code default} response becomes a {@code *DefaultApiResponse} variant carrying
+     * the real status code alongside the error payload.
+     */
+    public Pet createPet(Pet pet) {
+        return switch (petApi.addPet(pet)) {
+            case PetApiResponses.AddPetApiResponse.AddPet200ApiResponse ok -> ok.content();
+            case PetApiResponses.AddPetApiResponse.AddPetDefaultApiResponse err ->
+                    throw new IllegalStateException(
+                            "addPet failed with " + err.statusCode() + ": " + err.content().message());
+        };
+    }
+
+    /**
+     * A status code with no body produces an empty record - there is no {@code content()} to call.
+     */
+    public void deletePet(long petId) {
+        var response = petApi.deletePet(petId);
+        if (!(response instanceof PetApiResponses.DeletePetApiResponse.DeletePet204ApiResponse)) {
+            throw new IllegalStateException("Unexpected response: " + response);
+        }
+    }
+
+    /**
+     * Parse an enum from a wire value with {@code fromValue}. The generated constant name is a
+     * normalised identifier ({@code available -> AVAILABLE}, {@code Dingo-Don -> DINGO_DON},
+     * {@code 5 -> NUMBER_5}), so {@code Enum.valueOf} throws on perfectly valid contract values -
+     * and only once real data arrives.
+     */
+    public Pet.StatusEnum parseStatus(String raw) {
+        return Pet.StatusEnum.fromValue(raw);
+    }
+
+    /**
+     * Transport-level failures - connection refused, a status with no declared mapper - surface as
+     * {@link HttpClientResponseException} rather than as a response variant.
+     */
+    public Pet getPetOrFallback(long petId, Pet fallback) {
+        try {
+            return getPet(petId);
+        } catch (HttpClientResponseException e) {
+            return fallback;
+        }
+    }
+}

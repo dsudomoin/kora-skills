@@ -1,0 +1,208 @@
+package ${package}
+
+import io.restassured.RestAssured
+import io.restassured.RestAssured.given
+import io.restassured.http.ContentType
+import org.hamcrest.Matchers.containsString
+import org.hamcrest.Matchers.equalTo
+import org.hamcrest.Matchers.notNullValue
+import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.Test
+import org.slf4j.LoggerFactory
+import org.testcontainers.containers.GenericContainer
+import org.testcontainers.containers.Network
+import org.testcontainers.containers.PostgreSQLContainer
+import org.testcontainers.containers.output.Slf4jLogConsumer
+import org.testcontainers.containers.wait.strategy.Wait
+import org.testcontainers.images.builder.ImageFromDockerfile
+import org.testcontainers.junit.jupiter.Container
+import org.testcontainers.junit.jupiter.Testcontainers
+import org.testcontainers.utility.DockerImageName
+import java.net.URI
+import java.nio.file.Path
+import java.time.Duration
+import java.util.UUID
+
+/**
+ * The application under test. Port 8085 is the system server (`httpServer.system.port`), which
+ * serves `/system/readiness`, `/system/liveness` and `/metrics`; 8080 is the public API
+ * (`httpServer.port`). Gate on the readiness probe, never on a log line - Kora's startup message
+ * wording is not part of its contract.
+ */
+class AppContainer : GenericContainer<AppContainer> {
+
+    // image names must be lowercase
+    private constructor() : super(
+        ImageFromDockerfile("my-service-black-box")
+            .withDockerfile(Path.of("../my-service-app/Dockerfile"))
+    )
+
+    private constructor(image: DockerImageName) : super(image)
+
+    init {
+        withExposedPorts(8080, 8085)
+        withStartupTimeout(Duration.ofSeconds(30))
+        waitingFor(Wait.forHttp("/system/readiness").forPort(8085).forStatusCode(200))
+        withLogConsumer(Slf4jLogConsumer(LoggerFactory.getLogger(AppContainer::class.java)))
+    }
+
+    fun getURI(): URI = URI.create("http://" + host + ":" + getMappedPort(8080))
+
+    fun getSystemURI(): URI = URI.create("http://" + host + ":" + getMappedPort(8085))
+
+    companion object {
+        /** Reuses a prebuilt image when APP_IMAGE is set (CI), otherwise builds the Dockerfile. */
+        fun build(): AppContainer {
+            val appImage = System.getenv("APP_IMAGE")
+            return if (!appImage.isNullOrBlank()) AppContainer(DockerImageName.parse(appImage)) else AppContainer()
+        }
+    }
+}
+
+/**
+ * Black-box tests for ${className} using the RestAssured DSL.
+ *
+ * Runs the packaged application image and exercises it only through its HTTP API. Add the test
+ * dependencies:
+ * ```
+ * testImplementation("io.rest-assured:rest-assured:5.5.0")
+ * testImplementation("org.testcontainers:junit-jupiter:1.21.4")
+ * testImplementation("org.testcontainers:testcontainers:1.21.4")
+ * testImplementation("org.testcontainers:postgresql:1.21.4")
+ * ```
+ *
+ * Requires a running Docker daemon and a distribution archive built beforehand
+ * (`tasks.test { dependsOn(":my-service-app:distTar") }`).
+ */
+@Testcontainers
+class ${className} {
+
+    @Test
+    fun `system readiness should be 200`() {
+        given()
+            .baseUri(APP.getSystemURI().toString())
+        .`when`()
+            .get("/system/readiness")
+        .then()
+            .statusCode(200)
+    }
+
+    /**
+     * A 200 from `/metrics` proves nothing: without a `MetricsScraper` in the graph the handler
+     * still answers 200 with the body `# Metric Scraper disabled`. This assertion needs
+     * `io.koraframework:micrometer-module` on the application classpath and
+     * `httpServer.telemetry.metrics.enabled = true` (component metrics default to false in 2.0).
+     */
+    @Test
+    fun `metrics should expose real series`() {
+        given().`when`().get("/api/products/does-not-exist").then().statusCode(404)
+
+        given()
+            .baseUri(APP.getSystemURI().toString())
+        .`when`()
+            .get("/metrics")
+        .then()
+            .statusCode(200)
+            .body(containsString("kora_up"))
+            .body(containsString("http_server_request_duration"))
+    }
+
+    @Test
+    fun `create product should return 201`() {
+        given()
+            .contentType(ContentType.JSON)
+            .body(productJson("Widget"))
+        .`when`()
+            .post("/api/products")
+        .then()
+            .statusCode(201)
+            .body("id", notNullValue())
+            .body("name", equalTo("Widget"))
+    }
+
+    @Test
+    fun `read update delete should round trip`() {
+        val id = given()
+            .contentType(ContentType.JSON)
+            .body(productJson("Original"))
+        .`when`()
+            .post("/api/products")
+        .then()
+            .statusCode(201)
+        .extract()
+            .path<Any>("id").toString()
+
+        given()
+        .`when`()
+            .get("/api/products/$id")
+        .then()
+            .statusCode(200)
+            .body("name", equalTo("Original"))
+
+        given()
+            .contentType(ContentType.JSON)
+            .body(productJson("Renamed"))
+        .`when`()
+            .put("/api/products/$id")
+        .then()
+            .statusCode(200)
+            .body("name", equalTo("Renamed"))
+
+        given()
+        .`when`()
+            .delete("/api/products/$id")
+        .then()
+            .statusCode(204)
+
+        given()
+        .`when`()
+            .get("/api/products/$id")
+        .then()
+            .statusCode(404)
+    }
+
+    @Test
+    fun `invalid body should return 400`() {
+        given()
+            .contentType(ContentType.JSON)
+            .body("{}")
+        .`when`()
+            .post("/api/products")
+        .then()
+            .statusCode(400)
+    }
+
+    companion object {
+
+        @Container
+        @JvmStatic
+        private val POSTGRES = PostgreSQLContainer("postgres:16-alpine")
+            .withNetwork(Network.SHARED)
+            .withNetworkAliases("postgres")
+            .withStartupTimeout(Duration.ofSeconds(30))
+
+        @Container
+        @JvmStatic
+        private val APP = AppContainer.build()
+            .withNetwork(Network.SHARED)
+            .dependsOn(POSTGRES)
+            // container port over the shared network, not the host-mapped one
+            .withEnv("POSTGRES_JDBC_URL", "jdbc:postgresql://postgres:5432/" + POSTGRES.databaseName)
+            .withEnv("POSTGRES_USER", POSTGRES.username)
+            .withEnv("POSTGRES_PASS", POSTGRES.password)
+
+        /**
+         * Assigned here rather than in a property initialiser: getMappedPort is only meaningful
+         * once the container is running, and @Container fields are started before @BeforeAll.
+         */
+        @BeforeAll
+        @JvmStatic
+        fun setup() {
+            RestAssured.baseURI = APP.getURI().toString()
+        }
+
+        /** A static container is shared by every method, so the data must be unique, not the container. */
+        private fun productJson(name: String): String =
+            """{"name": "%s", "sku": "%s"}""".format(name, UUID.randomUUID())
+    }
+}

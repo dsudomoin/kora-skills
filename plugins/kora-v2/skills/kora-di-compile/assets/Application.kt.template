@@ -1,0 +1,37 @@
+package ${packagePath}
+
+import io.koraframework.application.graph.KoraApplication
+import io.koraframework.common.annotation.KoraApp
+import io.koraframework.config.hocon.HoconConfigModule
+import io.koraframework.logging.logback.LogbackModule
+
+/**
+ * Application entry point — the Kora 2.x dependency container configuration.
+ *
+ * @KoraApp is only valid on an interface. The processor generates `ApplicationGraph` into THIS
+ * package (name = interface simple name + "Graph"), so it is referenced unqualified and must never
+ * be imported from io.koraframework.
+ *
+ * Modules shipped as artifacts must be listed after the colon. A @Module interface compiled in this
+ * same Gradle module is discovered automatically and must not be listed.
+ *
+ * Commonly added modules:
+ *  - io.koraframework.json.common.JsonModule                              — json-common
+ *  - io.koraframework.database.jdbc.JdbcDatabaseModule                    — database-jdbc
+ *  - io.koraframework.validation.module.ValidationModule                  — validation-module
+ *  - io.koraframework.micrometer.module.MetricsModule                     — micrometer-module
+ *  - io.koraframework.http.server.undertow.UndertowPublicHttpServerModule — http-server-undertow
+ *
+ * `application { mainClass }` must point at `${packagePath}.ApplicationKt` — the class a top-level
+ * `fun main()` compiles into.
+ *
+ * See: references/kora-app-component-reference.md
+ */
+@KoraApp
+interface Application :
+    HoconConfigModule,
+    LogbackModule
+
+fun main() {
+    KoraApplication.run(ApplicationGraph::graph)
+}

@@ -1,0 +1,66 @@
+// Kora 2.0 — MapStruct wiring for a JAVA module (Groovy DSL).
+// Drop into build.gradle alongside the existing dependency block.
+//
+// There is no `mapstruct-extension` artifact in Kora 2.0. The extension that binds the generated
+// *MapperImpl into the DI graph — `mapstruct-java-extension` — is already an api dependency of
+// `io.koraframework:annotation-processors`. Never declare it by hand.
+
+// gradle.properties:
+//   koraVersion=2.0.0.RC2
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    toolchain {
+        // Kora 2.0 artifacts are compiled to class-file 69.
+        languageVersion = JavaLanguageVersion.of(25)
+        vendor = JvmVendorSpec.ADOPTIUM
+    }
+}
+
+// A `platform` on `implementation` does not reach the annotationProcessor classpath,
+// so Java needs a dedicated koraBom configuration wired with extendsFrom.
+configurations {
+    koraBom
+    annotationProcessor.extendsFrom(koraBom); compileOnly.extendsFrom(koraBom)
+    implementation.extendsFrom(koraBom); api.extendsFrom(koraBom)
+    testImplementation.extendsFrom(koraBom); testAnnotationProcessor.extendsFrom(koraBom)
+}
+
+dependencies {
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+
+    // Kora processors — carries mapstruct-java-extension. Declaration order is NOT significant:
+    // KoraAppProcessor builds the graph in the final annotation-processing round, by which point
+    // every *MapperImpl generated in an earlier round is already visible.
+    annotationProcessor "io.koraframework:annotation-processors"
+
+    // The only thing that generates *MapperImpl.
+    annotationProcessor "org.mapstruct:mapstruct-processor:1.6.3"
+
+    // MapStruct on the COMPILE classpath is mandatory: Kora's extension factory resolves
+    // org.mapstruct.Mapper and disables itself when the type is absent — the failure then looks
+    // like a plain unresolved dependency that never mentions MapStruct.
+    implementation "org.mapstruct:mapstruct:1.6.3"
+
+    testAnnotationProcessor "io.koraframework:annotation-processors"
+}
+
+// kora-bom constrains io.koraframework:* only. MapStruct is versioned by you, and the API and the
+// processor MUST carry the same version.
+//
+// 1.6.3 is Kora's own catalog version — what mapstruct-java-extension is compiled and tested
+// against. The kora-examples builds still pin 1.5.5.Final, a value carried over from before the
+// 2.0 migration; prefer 1.6.3 for a new module.
+
+// Optional MapStruct compiler options (MapStruct's own, nothing to do with Kora):
+// https://mapstruct.org/documentation/stable/reference/html/#configuration-options
+compileJava {
+    options.encoding = "UTF-8"
+    options.compilerArgs += [
+        "-Amapstruct.suppressGeneratorTimestamp=true",
+        "-Amapstruct.suppressGeneratorVersionInfoComment=true"
+    ]
+}

@@ -1,0 +1,102 @@
+// @Timeout — per-attempt and overall (Kora 2.0).
+// Replace `com.example.app.resilience` with your package.
+
+package com.example.app.resilience;
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.resilient.retry.Retry;
+import io.koraframework.resilient.retry.annotation.RetrySpec;
+import io.koraframework.resilient.retry.annotation.Retryable;
+import io.koraframework.resilient.timeout.Timeouter;
+import io.koraframework.resilient.timeout.annotation.Timeout;
+import io.koraframework.resilient.timeout.annotation.TimeoutSpec;
+
+// NOTE: the runtime contract is Timeouter — `Timeout` is the annotation.
+// The @Timeout annotation kept its 1.x name but its attribute changed from String to
+// Class<? extends Timeouter>. A leftover @Timeout("report") fails with
+// "incompatible types: String cannot be converted to Class<? extends Timeouter>".
+@TimeoutSpec("resilient.timeout.report")
+public interface ReportTimeouter extends Timeouter {}
+
+// A shared timeout tier: one interface reused everywhere instead of a repeated string.
+@TimeoutSpec("resilient.timeout.perAttempt")
+interface PerAttemptTimeouter extends Timeouter {}
+
+@RetrySpec("resilient.retry.report")
+interface ReportRetry extends Retry {}
+
+@Component
+class ReportService {                                                   // NOT final
+
+    private final ReportEngine engine;
+
+    ReportService(ReportEngine engine) {
+        this.engine = engine;
+    }
+
+    // Throws TimeoutExhaustedException("Timeout exceeded <duration>") when the deadline passes.
+    // The body runs on a per-timeouter VIRTUAL THREAD and is interrupted on expiry — work that
+    // ignores interruption keeps running after the caller has already got the exception.
+    @Timeout(ReportTimeouter.class)
+    public Report generate(ReportRequest request) {
+        return engine.generate(request);
+    }
+
+    // PER-ATTEMPT bound: @Retryable listed first (outer), @Timeout last (inner).
+    // Worst case ~= (attempts + 1) * duration + the retry delays.
+    @Retryable(ReportRetry.class)
+    @Timeout(PerAttemptTimeouter.class)
+    public Report generateWithPerAttemptTimeout(ReportRequest request) {
+        return engine.generate(request);
+    }
+
+    // OVERALL budget: @Timeout first (outer), @Retryable last (inner).
+    // Keep the budget larger than the whole retry schedule or later attempts never run.
+    @Timeout(ReportTimeouter.class)
+    @Retryable(ReportRetry.class)
+    public Report generateWithOverallBudget(ReportRequest request) {
+        return engine.generate(request);
+    }
+
+    // Cooperative cancellation: long loops must observe interruption themselves.
+    @Timeout(ReportTimeouter.class)
+    public Report generateInterruptible(ReportRequest request) {
+        for (int i = 0; i < 1_000_000; i++) {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new IllegalStateException("Report generation cancelled");
+            }
+            engine.step(request, i);
+        }
+        return engine.generate(request);
+    }
+}
+
+// ---------------------------------------------------------------- placeholders
+
+record ReportRequest(String id) {}
+
+record Report(String content) {}
+
+@Component
+class ReportEngine {
+
+    Report generate(ReportRequest request) {
+        return new Report("report:" + request.id());
+    }
+
+    void step(ReportRequest request, int index) {
+        // no-op
+    }
+}
+
+// Config (HOCON):
+//
+// resilient {
+//   timeout {
+//     report     { duration = "30s" }   # duration is REQUIRED and has no default
+//     perAttempt { duration = "2s" }
+//   }
+//   retry.report { delay = "500ms", attempts = 3, delayStep = "500ms" }
+// }
+//
+// Named sections do NOT inherit resilient.timeout.default in Kora 2.0.

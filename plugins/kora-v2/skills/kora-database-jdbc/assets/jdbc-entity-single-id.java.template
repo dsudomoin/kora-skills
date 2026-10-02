@@ -1,0 +1,54 @@
+package ${package};
+
+import io.koraframework.database.common.annotation.Column;
+import io.koraframework.database.common.annotation.Id;
+import io.koraframework.database.common.annotation.Table;
+import io.koraframework.database.jdbc.annotation.EntityJdbc;
+import org.jspecify.annotations.Nullable;
+
+import java.time.LocalDateTime;
+
+/**
+ * Entity with a single-field id for a Kora 2.0 JDBC repository.
+ *
+ * Annotations and their packages:
+ * - @EntityJdbc  io.koraframework.database.jdbc.annotation  — generates the row/result-set mappers
+ * - @Table       io.koraframework.database.common.annotation — table name; without it the class
+ *                name is converted by the naming strategy (snake_case by default)
+ * - @Id          io.koraframework.database.common.annotation — required for %{...#where = @id},
+ *                for excluding the key from %{...#updates}, and for @Id-on-method generated keys
+ * - @Column      io.koraframework.database.common.annotation — only needed when the column name is
+ *                not the snake_case form of the field name
+ * - @Nullable    org.jspecify.annotations — JSpecify, a TYPE_USE annotation. On a qualified nested
+ *                type write Outer.@Nullable Inner, not @Nullable Outer.Inner
+ *
+ * Id type: Long for identity/sequence keys, UUID for client-generated keys, String for natural keys.
+ * For a database-assigned key the id is null until the insert returns it — the extra constructor
+ * below builds that state. The component itself stays non-@Nullable because every row read back
+ * from the database has an id; marking it @Nullable would only weaken the read path.
+ *
+ * Matching DDL:
+ *   CREATE TABLE ${table_name} (
+ *       id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ *       email      VARCHAR(255) NOT NULL UNIQUE,
+ *       name       VARCHAR(255) NOT NULL,
+ *       created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+ *       updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+ *       payload    TEXT
+ *   );
+ */
+@EntityJdbc
+@Table("${table_name}")
+public record ${entity_name}(
+        @Id ${id_type} id,
+        String email,
+        String name,
+        LocalDateTime createdAt,
+        LocalDateTime updatedAt,
+        @Column("payload") @Nullable String data) {
+
+    /** Constructor for inserts where the database assigns the id. */
+    public ${entity_name}(String email, String name) {
+        this(null, email, name, LocalDateTime.now(), LocalDateTime.now(), null);
+    }
+}

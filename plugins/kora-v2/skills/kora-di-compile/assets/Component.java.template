@@ -1,0 +1,37 @@
+package ${packagePath};
+
+import io.koraframework.common.annotation.Component;
+
+/**
+ * Example component registered by constructor injection.
+ *
+ * <p>Requirements enforced by the Kora 2.x processor:
+ * <ul>
+ *   <li>a class, not an interface and not abstract
+ *   <li><b>exactly one public constructor</b> — otherwise:
+ *       "@Component class must have exactly one public constructor."
+ *   <li>no raw types in the class or in constructor parameters
+ * </ul>
+ *
+ * <p>{@code final} is a convention, not a requirement — and it inverts once aspects are involved:
+ * a class carrying an AOP annotation (@Log, @Retry, @Cacheable, ...) must NOT be final, because the
+ * aspect processor generates a subclass.
+ *
+ * <p>Component methods are synchronous. Kora 2.0 has no CompletionStage / Mono / Flux / suspend
+ * contracts, and there is no Kora {@code Context} type to inject.
+ *
+ * <p>See: references/component-registration-reference.md
+ */
+@Component
+public final class ${Service}Service {
+
+    private final ${Repository}Repository repository;
+
+    public ${Service}Service(${Repository}Repository repository) {
+        this.repository = repository;
+    }
+
+    public ${Entity} findById(String id) {
+        return repository.findById(id);
+    }
+}

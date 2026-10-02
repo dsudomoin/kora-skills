@@ -1,0 +1,338 @@
+# OpenAPI spec snippets → generated Kora 2.x server code
+
+Copy-paste fragments for a `java-server` / `kotlin-server` contract, each paired with what the
+`kora` generator actually emits. Placeholders are `${...}`.
+Full working contract: `openapi-spec.yaml.template`.
+
+## 1. A tagged operation
+
+```yaml
+tags:
+  - name: ${tag}                       # -> ${Tag}ApiDelegate / ${Tag}ApiResponses / ${Tag}ApiController
+
+paths:
+  /${resource}/{id}:
+    get:
+      tags: ["${tag}"]
+      operationId: get${Resource}ById  # -> method name, and the response type prefix
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/${Resource}'
+        '404':
+          description: Not found
+```
+
+```java
+// generated
+${Tag}ApiResponses.Get${Resource}ByIdApiResponse get${Resource}ById(@Path("id") long id) throws Exception;
+
+sealed interface Get${Resource}ByIdApiResponse {
+  record Get${Resource}ById200ApiResponse(${Resource} content) implements … { }
+  record Get${Resource}ById404ApiResponse() implements … { }
+}
+```
+
+## 2. Exactly one response — no sealed hierarchy
+
+```yaml
+      responses:
+        '200':
+          description: Ok
+          content:
+            application/json:
+              schema:
+                type: string
+```
+
+```java
+// generated: a record directly, NOT a nested per-status type
+record WhoAmIApiResponse(String content) { }
+```
+
+## 3. A `default` response
+
+```yaml
+      responses:
+        '204':
+          description: Deleted
+        default:
+          description: Unexpected error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+```
+
+```java
+// `int statusCode` is the FIRST component of a default response record
+new DeletePetApiResponse.DeletePetDefaultApiResponse(409, new ErrorResponse("conflict"));
+```
+
+Status-code **ranges** (`4XX`, `5XX`) work the same way: the record takes the real status first.
+
+```java
+new ListPetsApiResponse.ListPets4XXApiResponse(422, new ErrorResponse("invalid filter"));
+```
+
+## 4. Response headers
+
+```yaml
+      responses:
+        '200':
+          description: Page of results
+          headers:
+            x-total-count:
+              required: true
+              schema: { type: string }
+            x-next-page:
+              schema: { type: string }         # not required -> may be passed null
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/${Resource}'
+```
+
+```java
+// headers become trailing components of the response record, written by the generated mapper
+record List200ApiResponse(List<${Resource}> content, String xTotalCount, String xNextPage) { }
+```
+
+An undeclared header cannot be set from the delegate — declare it in the contract.
+
+## 5. Required, optional, nullable
+
+```yaml
+components:
+  schemas:
+    ${Resource}:
+      type: object
+      required:
+        - id
+        - name
+        - nickname
+      properties:
+        id:        { type: integer, format: int64 }   # required        -> long / Long
+        name:      { type: string }                   # required        -> String
+        tag:       { type: string }                   # optional        -> @Nullable String / String?
+        weight:    { type: number, nullable: true }   # optional+null   -> JsonNullable<BigDecimal>
+        nickname:  { type: string, nullable: true }   # required+null   -> nullable + @JsonInclude(ALWAYS)
+```
+
+`JsonNullable` (`io.koraframework.json.common.JsonNullable`) distinguishes absent from
+explicit-null — the correct shape for `PATCH` bodies. There is no `enableJsonNullable` option in
+2.0; the rule above is automatic.
+
+## 6. Enums with wire values that differ from the constants
+
+```yaml
+        status:
+          type: string
+          enum: [available, pending, sold]
+```
+
+```java
+// generated: constants AVAILABLE / PENDING / SOLD, wire values "available" / "pending" / "sold"
+public static ${Resource}.StatusEnum fromValue(String value) { … throw new IllegalArgumentException(…); }
+```
+
+Parse with `fromValue`, never `Enum.valueOf`; catch `IllegalArgumentException` and return the
+contract's `400`.
+
+## 7. Validation constraints
+
+```yaml
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64          # -> @Size(min = 1, max = 64)
+        age:
+          type: integer
+          minimum: 0
+          maximum: 150           # min AND max -> @Range(from = 0.0, to = 150.0, boundary = INCLUSIVE_INCLUSIVE)
+        quantity:
+          type: integer
+          minimum: 1             # min only, integral -> @Min(1L)
+        code:
+          type: string
+          pattern: '^[A-Z]{3}$'  # -> @Pattern("^[A-Z]{3}$")
+```
+
+Only **one** constraint annotation is generated per property, from the chain
+`minimum/maximum` → `minLength/maxLength` → `minItems/maxItems` → `pattern` → `$ref`. A string
+with both `maxLength` and `pattern` gets `@Size` only; enforce the rest in the delegate.
+Requires `configOptions.enableServerValidation: "true"` plus `validation-module` +
+`ValidationModule`.
+
+## 8. Security schemes
+
+```yaml
+security:
+  - BearerAuth: []                    # global default for every operation
+
+components:
+  securitySchemes:
+    BearerAuth:                       # -> ApiSecurity.BearerAuth
+      type: http
+      scheme: bearer
+    ApiKeyAuth:                       # -> ApiSecurity.ApiKeyAuth
+      type: apiKey
+      in: header
+      name: X-API-KEY
+    OAuth:                            # -> ApiSecurity.OAuth
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            pets:read: Read pets
+```
+
+```java
+@Tag(ApiSecurity.BearerAuth.class)
+default HttpServerPrincipalExtractor<String, Principal> bearerExtractor() { … }
+```
+
+Per-operation overrides:
+
+```yaml
+      security:
+        - BearerAuth: []
+        - ApiKeyAuth: []              # OR — either credential authenticates
+```
+
+```yaml
+      security:
+        - cookieAuth1: []
+          cookieAuth2: []             # AND — one extractor for the pair, taking a generated
+                                      #       ApiSecurity.CookieAuth1WithCookieAuth2AuthData
+```
+
+```yaml
+      security:
+        - BearerAuth: []
+        - {}                          # anonymous fallback: the interceptor lets the request through
+```
+
+```yaml
+      security: []                    # opt this operation out of the global requirement entirely
+```
+
+## 9. Discriminated polymorphism
+
+```yaml
+    ${Base}:
+      type: object
+      required: [kind]
+      properties:
+        kind: { type: string }
+      discriminator:
+        propertyName: kind
+        mapping:
+          variant_a: '#/components/schemas/${VariantA}'
+          variant_b: '#/components/schemas/${VariantB}'
+
+    ${VariantA}:
+      allOf:
+        - $ref: '#/components/schemas/${Base}'
+        - type: object
+          required: [fieldA]
+          properties:
+            fieldA: { type: string }
+```
+
+```java
+@Json
+@JsonDiscriminatorField("kind")
+public sealed interface ${Base} permits ${VariantA}, ${VariantB} { }
+
+@JsonDiscriminatorValue({"variant_a"})
+public record ${VariantA}(String kind, String fieldA) implements ${Base} { }
+```
+
+Handle it with an exhaustive `switch` / `when`. The discriminator property must exist on the base
+schema and be `required`.
+
+## 10. Form and multipart bodies
+
+```yaml
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:  { type: string }
+                photo: { type: string, format: binary }
+```
+
+```java
+// form fields are grouped into a record nested in the CONTROLLER, passed via a generated mapper
+${Tag}ApiResponses.UploadApiResponse upload(
+    @Mapping(${Tag}ApiServerRequestMappers.UploadFormParamRequestMapper.class)
+    ${Tag}ApiController.UploadFormParam form) throws Exception;
+```
+
+Array form fields are collected part by part (an absent optional array is `null`); boolean form
+values accept only `true` / `false`, anything else answers `400`.
+
+## 11. Raw and binary bodies
+
+```yaml
+      requestBody:
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+```
+
+```java
+// non-JSON body -> a leading HttpHeaders parameter is added so you can read the real Content-Type
+${Tag}ApiResponses.UploadApiResponse upload(HttpHeaders _headers, byte[] body) throws Exception;
+```
+
+A bare `type: object` with no schema follows `configOptions.rawBodyMode`
+(`BYTES` → `byte[]`, `BODY` → `HttpBodyInput`, `OBJECT` → `Object`).
+
+## 12. Type / format cheat sheet
+
+```yaml
+        asString:   { type: string }                            # String
+        asUuid:     { type: string, format: uuid }              # java.util.UUID
+        asUri:      { type: string, format: uri }               # java.net.URI
+        asDate:     { type: string, format: date }              # java.time.LocalDate
+        asDateTime: { type: string, format: date-time }         # java.time.OffsetDateTime, or the typeMappings target
+        asBinary:   { type: string, format: binary }            # byte[] / ByteArray
+        asInt:      { type: integer, format: int32 }            # int / Int
+        asLong:     { type: integer, format: int64 }            # long / Long
+        asDecimal:  { type: number }                            # java.math.BigDecimal
+        asDouble:   { type: number, format: double }            # double / Double
+        asBool:     { type: boolean }                           # boolean / Boolean
+        asList:     { type: array, items: { type: string } }    # List<String>
+        asMap:                                                  # Map<String, String>
+          type: object
+          additionalProperties: { type: string }
+        asFreeForm:                                             # Map<String, Object> / Map<String, Any>
+          type: object
+          additionalProperties: true
+        asEnumList:                                             # List<Model.AsEnumListEnum>
+          type: array
+          items: { type: string, enum: [a, b] }
+```
+
+`date-time` switches to `Instant` / `ZonedDateTime` / `LocalDateTime` through the task's
+`typeMappings = ["DateTime": "java.time.Instant"]`.

@@ -1,0 +1,127 @@
+package ${package};
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.database.common.UpdateCount;
+import io.koraframework.database.common.annotation.Batch;
+import io.koraframework.database.common.annotation.Column;
+import io.koraframework.database.common.annotation.Id;
+import io.koraframework.database.common.annotation.Query;
+import io.koraframework.database.common.annotation.Repository;
+import io.koraframework.database.common.annotation.Table;
+import io.koraframework.database.jdbc.JdbcRepository;
+import io.koraframework.database.jdbc.annotation.EntityJdbc;
+import io.koraframework.database.jdbc.mapper.parameter.JdbcParameterColumnMapper;
+import io.koraframework.database.jdbc.mapper.result.JdbcResultColumnMapper;
+import org.jspecify.annotations.Nullable;
+
+import java.sql.Array;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Types;
+import java.util.List;
+
+/**
+ * Array column (BIGINT[]) mapped to List<Long> by hand-written mappers.
+ *
+ * On PostgreSQL prefer io.koraframework:database-jdbc-postgres: `@Pg List<Long>` needs no mapper
+ * code (see jdbc-postgres-repository.java.template). database-jdbc alone has no List<T> column
+ * conversion, so this template is for another database, or for an element type the PostgreSQL
+ * module does not cover — the by-type @Component pattern below is the same either way.
+ *
+ * SELECTION — this template uses BY-TYPE DISCOVERY rather than @Mapping. Each mapper is a
+ * @Component, so the generated code resolves JdbcResultColumnMapper<List<Long>> and
+ * JdbcParameterColumnMapper<List<Long>> from the graph by type. That covers the entity field AND
+ * loose query parameters of the same type — findByAnyCategory below needs no annotation at all.
+ *
+ * The trade-off: exactly one component may produce each mapper type, otherwise the graph build
+ * fails with "Multiple components match dependency". If a second, differently-shaped List<Long>
+ * column appears, drop @Component from one mapper and select it with @Mapping instead.
+ *
+ * Contrast with jdbc-repository-with-enum-mapper.java.template, which uses @Mapping with `final`
+ * no-arg mappers that the generated repository constructs itself and that must NOT be @Component.
+ *
+ * LAYOUT — everything is nested inside the repository interface, so the mappers and the entity are
+ * implicitly public and reachable from the generated <App>Graph even when @KoraApp lives in another
+ * package. A top-level @Component that is only package-private breaks that graph with a plain
+ * javac access error.
+ *
+ * Matching DDL:
+ *   CREATE TABLE ${table_name} (
+ *       id           BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ *       name         VARCHAR(255) NOT NULL,
+ *       category_ids BIGINT[] NOT NULL DEFAULT '{}'
+ *   );
+ */
+@Repository
+public interface ${entity_name}Repository extends JdbcRepository {
+
+    @EntityJdbc
+    @Table("${table_name}")
+    record ${entity_name}(
+            @Id Long id,
+            String name,
+            @Column("category_ids") List<Long> categories) {
+
+        /** Constructor for inserts where the database assigns the id. */
+        public ${entity_name}(String name, List<Long> categories) {
+            this(null, name, categories);
+        }
+    }
+
+    /** Reads a PostgreSQL BIGINT[] column into List<Long>. */
+    @Component
+    final class LongListResultMapper implements JdbcResultColumnMapper<List<Long>> {
+
+        @Override
+        public List<Long> apply(ResultSet rs, int index) throws SQLException {
+            Array array = rs.getArray(index);
+            if (array == null) {
+                return List.of();
+            }
+            return List.of((Long[]) array.getArray());
+        }
+    }
+
+    /** Writes a List<Long> as a PostgreSQL BIGINT[] parameter. */
+    @Component
+    final class LongListParameterMapper implements JdbcParameterColumnMapper<List<Long>> {
+
+        @Override
+        public void set(PreparedStatement stmt, int index, @Nullable List<Long> value)
+                throws SQLException {
+            if (value == null) {
+                stmt.setNull(index, Types.ARRAY);
+                return;
+            }
+            Array sqlArray = stmt.getConnection().createArrayOf("BIGINT", value.toArray(Long[]::new));
+            stmt.setArray(index, sqlArray);
+        }
+    }
+
+    @Query("SELECT %{return#selects} FROM %{return#table} WHERE id = :id")
+    @Nullable
+    ${entity_name} findById(Long id);
+
+    @Query("SELECT %{return#selects} FROM %{return#table}")
+    List<${entity_name}> findAll();
+
+    /** Scalar against the array column — no mapper involved, the value is a plain BIGINT. */
+    @Query("SELECT %{return#selects} FROM %{return#table} WHERE :categoryId = ANY(category_ids)")
+    List<${entity_name}> findByCategoryId(Long categoryId);
+
+    /** List<Long> parameter: the @Component parameter mapper is found by type, no @Mapping needed. */
+    @Query("SELECT %{return#selects} FROM %{return#table} WHERE category_ids && :categoryIds")
+    List<${entity_name}> findByAnyCategory(List<Long> categoryIds);
+
+    @Query("INSERT INTO %{entity#inserts -= @id}")
+    @Id
+    Long insert(${entity_name} entity);
+
+    @Query("INSERT INTO %{entity#inserts -= @id}")
+    @Id
+    List<Long> insertBatch(@Batch List<${entity_name}> entity);
+
+    @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
+    UpdateCount update(${entity_name} entity);
+}

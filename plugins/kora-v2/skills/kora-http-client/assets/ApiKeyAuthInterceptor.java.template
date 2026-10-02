@@ -1,0 +1,77 @@
+package com.example.client;
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.config.common.annotation.ConfigSource;
+import io.koraframework.http.client.common.interceptor.HttpClientInterceptor;
+import io.koraframework.http.client.common.request.HttpClientRequest;
+import io.koraframework.http.client.common.response.HttpClientResponse;
+
+/**
+ * Kora 2.0 HTTP client interceptor that adds an API key header to every outgoing request.
+ *
+ * SIGNATURE CHANGES FROM KORA 1.x — all three are breaking:
+ *   - returns HttpClientResponse, not CompletionStage<HttpClientResponse>
+ *   - the chain is the FIRST parameter; the Kora Context parameter is gone (Context was removed
+ *     from the whole framework, so there is nothing to migrate it to)
+ *   - chain.process(request), not chain.process(ctx, request)
+ *
+ * An @InterceptWith class is ALWAYS a constructor parameter of the generated client, so it always
+ * needs @Component (or a default method in a @Module). Without it:
+ *   No component found for dependency: ApiKeyAuthInterceptor (no tags)
+ *
+ * Required configuration (application.conf):
+ * <pre>
+ * auth.apiKey {
+ *   value = "your-api-key-here"
+ *   value = ${?API_KEY}
+ * }
+ * </pre>
+ *
+ * Attach it to a client — client-wide or per method:
+ * <pre>
+ * {@literal @}InterceptWith(ApiKeyAuthInterceptor.class)
+ * {@literal @}HttpClient("httpClient.myApi")
+ * public interface MyApiClient {
+ *
+ *     {@literal @}InterceptWith(SomeOtherInterceptor.class)
+ *     {@literal @}HttpRoute(method = HttpMethod.GET, path = "/x")
+ *     String x();
+ * }
+ * </pre>
+ *
+ * Class-level interceptors run outermost, in declaration order, then method-level ones in
+ * declaration order, then the built-in TelemetryInterceptor, then the transport.
+ *
+ * @InterceptWith is io.koraframework.http.common.annotation.InterceptWith — the same annotation the
+ * HTTP server uses.
+ *
+ * Kora also ships ApiKeyHttpClientInterceptor (HEADER / QUERY / COOKIE), BasicAuthHttpClientInterceptor
+ * and BearerAuthHttpClientInterceptor in io.koraframework.http.client.common.interceptor; expose one
+ * of those from a @Module instead of writing this class when a stock scheme fits. See
+ * references/interceptors-reference.md.
+ */
+@Component
+public final class ApiKeyAuthInterceptor implements HttpClientInterceptor {
+
+    private final ApiKeyConfig config;
+
+    public ApiKeyAuthInterceptor(ApiKeyConfig config) {
+        this.config = config;
+    }
+
+    @Override
+    public HttpClientResponse processRequest(InterceptChain chain, HttpClientRequest request) throws Exception {
+        // HttpClientRequest is immutable — toBuilder().build() is the only way to change it.
+        var authenticated = request.toBuilder()
+                .header("X-API-Key", this.config.value())
+                .build();
+
+        return chain.process(authenticated);
+    }
+
+    /** Kora has no @ConfigValue annotation — inject a @ConfigSource interface for typed config. */
+    @ConfigSource("auth.apiKey")
+    public interface ApiKeyConfig {
+        String value();
+    }
+}

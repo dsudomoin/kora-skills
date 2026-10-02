@@ -1,0 +1,80 @@
+# Logging configuration (HOCON, application.conf)
+#
+# TWO INDEPENDENT SWITCHES control component telemetry logs:
+#   1. <path>.telemetry.logging.enabled  — default FALSE. Off => the component holds a NOPLogger
+#                                          and writes nothing at any level.
+#   2. logging.levels."<logger name>"    — the SLF4J level of the logger that component writes to.
+# Both are required. Setting only one produces silence.
+
+# ---------------------------------------------------------------------------
+# 1. Logger levels. The key is `levels` (plural) — `logging.level` is an unknown
+#    key, silently ignored, and leaves every logger at its default.
+#
+#    These override logback.xml entirely: LoggingLevelRefresher.init() resets the
+#    root logger to INFO and clears every other logger's level at graph start, then
+#    applies this map. Any <root level="..."> or <logger level="..."> in logback.xml
+#    is therefore discarded — keep logback.xml to appenders and encoders only.
+# ---------------------------------------------------------------------------
+logging.levels {
+  "ROOT" = "WARN"
+  "ROOT" = ${?LOGGING_LEVEL_ROOT}
+
+  "io.koraframework" = "INFO"
+  "io.koraframework" = ${?LOGGING_LEVEL_KORA}
+
+  # Your application
+  "${package}" = "DEBUG"
+  "${package}" = ${?LOGGING_LEVEL_APP}
+
+  # Component telemetry loggers — raise these, not the package they live in.
+  # HTTP server: INFO = request/response line, DEBUG = + headers & query params, TRACE = + body
+  "io.koraframework.http.server.common.HttpServer.request" = ${?LOGGING_LEVEL_HTTP_SERVER}
+  "io.koraframework.http.server.common.HttpServer.response" = ${?LOGGING_LEVEL_HTTP_SERVER}
+
+  # JDBC query records are DEBUG; TRACE additionally writes the raw SQL text.
+  # The middle segment is jdbc.poolName.
+  "io.koraframework.database.kora.query" = ${?LOGGING_LEVEL_JDBC}
+
+  # Declarative HTTP clients and Kafka listeners log under YOUR OWN class names:
+  #   "${package}.client.PetApi.request" = "TRACE"
+  #   "${package}.kafka.UserListener" = "DEBUG"
+}
+
+# ---------------------------------------------------------------------------
+# 2. Per-component telemetry logging. Every one of these defaults to FALSE.
+# ---------------------------------------------------------------------------
+httpServer {
+  telemetry.logging {
+    enabled = true
+    # maskHeaders defaults to ["authorization", "cookie", "set-cookie"]. The replacement text is
+    # the @Tag(HttpServerTelemetry.class) MaskingStrategy component (default "***"), not a config key.
+    maskHeaders = ["authorization", "cookie", "set-cookie", "x-api-key"]
+    maskQueries = ["token"]
+    stacktrace = true
+    maxRequestBodyLogSize = "64KiB"
+    maxResponseBodyLogSize = "64KiB"
+  }
+}
+
+httpServer.system.telemetry.logging.enabled = true
+
+jdbc {
+  poolName = "kora"
+  telemetry.logging.enabled = true
+}
+
+# cassandra.telemetry.logging.enabled  = true
+# grpcServer.telemetry.logging.enabled = true
+
+# One section for every scheduled job, and one for every resilience aspect:
+# scheduling.telemetry.logging.enabled = true
+# resilient.telemetry.logging.enabled  = true
+
+# Named clients / listeners / caches use their own config path:
+# httpClient.petApi.telemetry.logging.enabled       = true   # httpClient.<lowerCamelClientName>
+# grpcClient.PetService.telemetry.logging.enabled   = true   # grpcClient.<ServiceSimpleName>
+# soapClient.PetService.telemetry.logging.enabled   = true   # soapClient.<serviceName>
+# kafka.listener.user.telemetry.logging.enabled     = true   # the @KafkaListener("...") value
+# kafka.publisher.task.telemetry.logging.enabled    = true   # the @KafkaPublisher("...") value
+# pet-cache.telemetry.logging.enabled               = true   # the @Cache("...") value
+# s3client.aws.telemetry.logging.enabled            = true

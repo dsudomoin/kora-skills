@@ -1,0 +1,51 @@
+package ${package}
+
+import io.koraframework.common.Principal
+import io.koraframework.common.annotation.Module
+import io.koraframework.common.annotation.Tag
+import io.koraframework.config.common.annotation.ConfigSource
+import io.koraframework.http.server.common.auth.HttpServerPrincipalExtractor
+
+/**
+ * API-key authentication for an OpenAPI-generated Kora 2.0 HTTP server.
+ *
+ * Wire-up: for a scheme named `apiKeyAuth` in `components.securitySchemes` the generator emits
+ * `ApiSecurity.ApiKeyAuth` and an interceptor whose only dependency is the extractor below.
+ * Replace `ApiSecurity` with the generated class from your api package and match the tag to your
+ * scheme's name, PascalCased. Open the generated `ApiSecurity` and copy the factory parameter type
+ * verbatim — it is the specification for this function's return type.
+ *
+ * Kora discovers `@Module` interfaces automatically; do not add this one — or the generated
+ * `ApiSecurity` — to the `@KoraApp` interface list.
+ *
+ * Rejection protocol: return `null`. The generated interceptor then throws
+ * `HttpServerResponseException.of(401, "Unauthorized")`. Do **not** throw [SecurityException] —
+ * Kora 2.0 gives it no meaning and it surfaces as HTTP 500 with your message in the response body.
+ */
+@Module
+interface ApiKeyExtractor {
+
+    /** API-key principal. Must implement [Principal]; read it back with `Principal.current()`. */
+    data class ApiKeyPrincipal(val clientId: String) : Principal
+
+    /** Externalized expected key: `auth.apiKey.value = ${API_KEY}`. */
+    @ConfigSource("auth.apiKey")
+    interface ApiKeyConfig {
+        fun value(): String
+    }
+
+    /**
+     * The credential is the raw value of the header/query/cookie named in the `apiKey` scheme —
+     * no prefix to strip. `value` is nullable because the contracts are `@NullMarked` and the
+     * lookup can miss.
+     */
+    @Tag(ApiSecurity.ApiKeyAuth::class)
+    fun apiKeyHttpServerPrincipalExtractor(config: ApiKeyConfig): HttpServerPrincipalExtractor<String, Principal> =
+        HttpServerPrincipalExtractor { _, value ->
+            if (value == null || config.value() != value) {
+                null
+            } else {
+                ApiKeyPrincipal("api-client")
+            }
+        }
+}

@@ -1,0 +1,68 @@
+import org.gradle.jvm.toolchain.JavaLanguageVersion
+import org.gradle.jvm.toolchain.JvmVendorSpec
+
+plugins {
+    id("application")
+    // Kotlin and KSP must match the versions Kora 2.x itself is built with,
+    // otherwise the symbol processors fail from the inside with NoSuchMethodError.
+    kotlin("jvm") version "2.4.20"
+    id("com.google.devtools.ksp") version "2.3.12"
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Kotlin modules put the BOM straight on implementation. Do NOT create a
+    // koraBom configuration with extendsFrom — that is the Java-module pattern.
+    implementation(platform("io.koraframework:kora-bom:${property("koraVersion")}"))
+
+    // Mandatory: without the symbol processors no Kora code is generated.
+    // ksp resolves against its own classpath, so the version is explicit here.
+    ksp("io.koraframework:symbol-processors:${property("koraVersion")}")
+
+    implementation("io.koraframework:http-server-undertow")
+    implementation("io.koraframework:config-hocon")
+    implementation("io.koraframework:json-common")
+    implementation("io.koraframework:logging-logback")
+
+    testImplementation(platform("org.junit:junit-bom:${property("junitVersion")}"))
+    testImplementation("org.junit.jupiter:junit-jupiter")
+    testImplementation("io.koraframework:test-junit5")
+
+    // Add kspTest ONLY when src/test declares its own @KoraApp interface.
+    // @KoraAppTest(Application::class) against the main app does not need it.
+    // kspTest("io.koraframework:symbol-processors:${property("koraVersion")}")
+}
+
+kotlin {
+    jvmToolchain {
+        languageVersion.set(JavaLanguageVersion.of(25))
+        vendor.set(JvmVendorSpec.ADOPTIUM)
+    }
+    // KSP writes the generated Kora graph here; register it so IDEs and compilation see it.
+    sourceSets.main { kotlin.srcDir("build/generated/ksp/main/kotlin") }
+    sourceSets.test { kotlin.srcDir("build/generated/ksp/test/kotlin") }
+}
+
+java {
+    toolchain {
+        languageVersion.set(JavaLanguageVersion.of(25))
+        vendor.set(JvmVendorSpec.ADOPTIUM)
+    }
+}
+
+application {
+    applicationName = "application"
+    mainClass.set("com.example.ApplicationKt")
+    applicationDefaultJvmArgs = listOf("-Dfile.encoding=UTF-8")
+}
+
+tasks.distTar {
+    archiveFileName.set("application.tar")
+}
+
+tasks.test {
+    useJUnitPlatform()
+}

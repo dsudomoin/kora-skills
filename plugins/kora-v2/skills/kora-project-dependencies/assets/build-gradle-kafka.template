@@ -1,0 +1,70 @@
+// Kora 2.0 Kafka Service - build.gradle template
+// Kafka producers (@KafkaPublisher) and consumers (@KafkaListener) with JSON.
+// A single "kafka" artifact covers both - there are no kafka-producer/kafka-consumer artifacts.
+
+plugins {
+    id "java"
+    id "application"
+}
+
+repositories {
+    mavenCentral()
+    // io.koraframework:kora-bom:2.0.0.RC2 is on Maven Central; nothing else is needed.
+    // Only the 2.0.0-SNAPSHOT development line also needs:
+    // maven { url = "https://central.sonatype.com/repository/maven-snapshots" }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+        vendor = JvmVendorSpec.ADOPTIUM
+    }
+}
+
+configurations {
+    koraBom
+    annotationProcessor.extendsFrom(koraBom)
+    compileOnly.extendsFrom(koraBom)
+    implementation.extendsFrom(koraBom)
+    testImplementation.extendsFrom(koraBom)
+}
+
+dependencies {
+    // Kora BOM - owns every Kora module version
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+
+    // Annotation processor
+    annotationProcessor "io.koraframework:annotation-processors"
+
+    // Core modules
+    implementation "io.koraframework:logging-logback"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:json-common"
+
+    // Kafka (producer + consumer)
+    implementation "io.koraframework:kafka"
+
+    // Testing
+    testImplementation "io.koraframework:test-junit5"
+    testImplementation "org.testcontainers:testcontainers-junit-jupiter:2.0.5"
+}
+
+application {
+    applicationName = "application"
+    mainClass = "com.example.app.Application"
+    applicationDefaultJvmArgs = ["-Dfile.encoding=UTF-8"]
+}
+
+compileJava {
+    options.encoding = "UTF-8"
+    options.incremental = true
+    options.fork = false
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        showStandardStreams = true
+        events("passed", "skipped", "failed")
+    }
+}

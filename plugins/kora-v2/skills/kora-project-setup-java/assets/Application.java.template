@@ -1,0 +1,26 @@
+package com.example;
+
+import io.koraframework.application.graph.KoraApplication;
+import io.koraframework.common.annotation.KoraApp;
+import io.koraframework.config.hocon.HoconConfigModule;
+import io.koraframework.http.server.undertow.UndertowPublicHttpServerModule;
+import io.koraframework.json.common.JsonModule;
+import io.koraframework.logging.logback.LogbackModule;
+
+// @KoraApp marks the graph root. Each extended *Module contributes component
+// factories to the compile-time application graph.
+// UndertowPublicHttpServerModule extends UndertowSystemHttpServerModule, so this
+// single extends starts both the public server and the system/probes server.
+@KoraApp
+public interface Application extends
+        HoconConfigModule,
+        JsonModule,
+        LogbackModule,
+        UndertowPublicHttpServerModule {
+
+    static void main(String[] args) {
+        // The processor generates <InterfaceName>Graph in this package, with a
+        // static graph() supplying the ApplicationGraphDraw that run() takes.
+        KoraApplication.run(ApplicationGraph::graph);
+    }
+}

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  src/test/resources/logback-test.xml — mirrors the Kora 2.0 example apps.
+
+  <logger> elements are NOT a test-only exemption. LoggingLevelRefresher is a @Root component and
+  its init() calls reset() unconditionally, whether or not logging.levels is present, so the moment
+  the Kora graph initialises the root goes to INFO and every other logger's level is cleared —
+  exactly as in production.
+
+  They still earn their place here, for the window the graph does not cover: output emitted BEFORE
+  graph init (Testcontainers pulling and starting containers) and tests that never build a graph at
+  all. For levels that must hold inside a @KoraAppTest, put them in the test config's
+  logging.levels — e.g. via KoraConfigModification.ofString("""logging.levels { ... }""").
+-->
+<configuration debug="false">
+    <statusListener class="ch.qos.logback.core.status.NopStatusListener"/>
+
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <charset>UTF-8</charset>
+            <pattern>%cyan(%d{HH:mm:ss.SSS}) %highlight(%-5level) [%thread] %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="ASYNC" class="io.koraframework.logging.logback.KoraAsyncAppender">
+        <appender-ref ref="STDOUT"/>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="ASYNC"/>
+    </root>
+
+    <logger level="INFO" name="io.koraframework"/>
+    <logger level="DEBUG" name="${package}"/>
+
+    <logger level="INFO" name="org.testcontainers"/>
+    <logger level="INFO" name="io.goodforgod.testcontainers.extensions"/>
+</configuration>

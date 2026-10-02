@@ -1,0 +1,101 @@
+package ${package};
+
+import io.koraframework.common.annotation.Component;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.DistributionSummary;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+
+import java.time.Duration;
+import java.util.Locale;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * Business metrics service (Kora 2.0).
+ *
+ * Custom meters need only MetricsModule on the @KoraApp interface -- they are registered
+ * straight onto the MeterRegistry and are NOT gated by any telemetry.metrics.enabled
+ * flag. Those flags govern Kora's own component instrumentation.
+ *
+ * Without MetricsModule the graph fails to build with
+ * "No component found for dependency: io.micrometer.core.instrument.MeterRegistry".
+ *
+ * Demonstrates:
+ * - a Timer with SLO histogram buckets, registered once in the constructor
+ * - a Counter with a bounded dynamic tag, cached per tag value
+ * - a DistributionSummary with an explicit base unit
+ */
+@Component
+public final class MetricsService {
+
+    private final MeterRegistry meterRegistry;
+    private final Timer userCreationTimer;
+    private final ConcurrentHashMap<String, Counter> userCreationCounters = new ConcurrentHashMap<>();
+    private final DistributionSummary payloadSizeSummary;
+
+    public MetricsService(MeterRegistry meterRegistry) {
+        this.meterRegistry = meterRegistry;
+
+        this.userCreationTimer = Timer.builder("user.creation.duration")
+                .description("Time taken to create users")
+                .serviceLevelObjectives(
+                        Duration.ofMillis(50),
+                        Duration.ofMillis(100),
+                        Duration.ofMillis(250),
+                        Duration.ofMillis(500))
+                .register(meterRegistry);
+
+        this.payloadSizeSummary = DistributionSummary.builder("user.payload.size")
+                .description("User payload size distribution")
+                .baseUnit("bytes")
+                .register(meterRegistry);
+    }
+
+    /**
+     * Times the action and counts the creation by email provider.
+     *
+     * Timer.recordCallable declares throws Exception; it is propagated rather than
+     * swallowed, so a metrics helper never hides a business failure.
+     */
+    public <T> T recordUserCreation(String email, Callable<T> action) throws Exception {
+        T result = this.userCreationTimer.recordCallable(action);
+        this.userCreationCounter(emailProvider(email)).increment();
+        return result;
+    }
+
+    public void recordPayloadSize(int sizeBytes) {
+        this.payloadSizeSummary.record(sizeBytes);
+    }
+
+    /**
+     * One Counter per email provider, created atomically by computeIfAbsent.
+     * The cache is only safe because emailProvider() maps to a bounded set.
+     */
+    private Counter userCreationCounter(String emailProvider) {
+        return this.userCreationCounters.computeIfAbsent(emailProvider, provider ->
+                Counter.builder("user.creation.total")
+                        .description("Total number of users created")
+                        .tag("email.provider", provider)
+                        .register(this.meterRegistry));
+    }
+
+    /**
+     * Maps an email address onto a bounded set of providers.
+     *
+     * Returning the raw domain would put every signup in charge of the series count --
+     * an unbounded tag and a memory leak. Extend the switch, do not remove it.
+     */
+    private static String emailProvider(String email) {
+        int at = email.indexOf('@');
+        if (at < 0 || at == email.length() - 1) {
+            return "unknown";
+        }
+        return switch (email.substring(at + 1).toLowerCase(Locale.ROOT)) {
+            case "gmail.com", "googlemail.com" -> "gmail";
+            case "outlook.com", "hotmail.com", "live.com" -> "outlook";
+            case "yandex.ru", "ya.ru" -> "yandex";
+            default -> "other";
+        };
+    }
+}

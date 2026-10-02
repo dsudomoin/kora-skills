@@ -1,0 +1,39 @@
+package ${package};
+
+import io.koraframework.json.common.annotation.Json;
+import io.koraframework.json.common.annotation.JsonField;
+import io.koraframework.json.common.annotation.JsonSkip;
+import org.jspecify.annotations.Nullable;
+${imports}
+
+/**
+ * DTO for ${entity_name}.
+ *
+ * <p>{@code @Json} generates {@code JsonReader<${dto_name}>} and
+ * {@code JsonWriter<${dto_name}>} at compile time and registers both in the DI graph.
+ * Use {@code @JsonReader} or {@code @JsonWriter} instead when only one direction is
+ * needed.</p>
+ *
+ * <p>Every component is required on read unless it carries JSpecify {@code @Nullable}.
+ * {@code @Nullable} is a type-use annotation: on a qualified or nested type it goes
+ * immediately before the simple name — {@code java.util.@Nullable List<String>}.</p>
+ *
+ * @param ${fields_description}
+ */
+@Json
+${record_class_modifier} ${dto_name}(${fields}) {}
+
+/*
+ * Field-level options (io.koraframework.json.common.annotation):
+ *
+ *   @JsonField("wire_name")            rename a single field
+ *   @JsonSkip                          drop the field from read AND write
+ *   @JsonInclude(IncludeType.ALWAYS)   write it even when null (default is NON_NULL)
+ *   @Nullable                          optional on read
+ *   JsonNullable<T>                    distinguish "omitted" from "explicitly null"
+ *   @Mapping(XReader.class)            per-field custom codec
+ *
+ * To rename every field at once, annotate the type with
+ * @NamingStrategy(SnakeCaseNameConverter.class)
+ * (io.koraframework.common.annotation / io.koraframework.common.naming).
+ */

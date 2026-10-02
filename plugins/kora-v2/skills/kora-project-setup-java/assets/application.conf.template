@@ -1,0 +1,33 @@
+// Public HTTP API. Default port is 8080.
+httpServer {
+  port = 8080
+
+  system {
+    // System API. Its own default port is 8085 - it does NOT inherit 8080 from
+    // the public server. The three paths below are shown at their defaults.
+    port = 8085
+    // readinessPath = "/system/readiness"
+    // livenessPath = "/system/liveness"
+    // metricsPath = "/metrics"
+  }
+
+  // Component telemetry defaults on the public server: logging = false,
+  // metrics = false, tracing = true. Enable explicitly what you want to see.
+  telemetry.logging.enabled = true
+
+  // Metrics additionally require a MeterRegistry in the graph
+  // (implementation "io.koraframework:micrometer-module"); without one this flag
+  // is accepted and nothing is recorded.
+  // telemetry.metrics.enabled = true
+
+  // The system server overrides tracing to false, so probe and /metrics traffic
+  // stays out of traces unless you turn it on here.
+  // system.telemetry.tracing.enabled = true
+}
+
+// Levels are applied at runtime by LoggingModule; logback.xml only wires appenders.
+logging.levels {
+  "root": "WARN"
+  "io.koraframework": "INFO"
+  "com.example": "INFO"
+}

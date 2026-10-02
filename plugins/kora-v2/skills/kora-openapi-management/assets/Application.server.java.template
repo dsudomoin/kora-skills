@@ -1,0 +1,26 @@
+package com.example;
+
+import io.koraframework.application.graph.KoraApplication;
+import io.koraframework.common.annotation.KoraApp;
+import io.koraframework.config.hocon.HoconConfigModule;
+import io.koraframework.http.server.undertow.UndertowPublicHttpServerModule;
+import io.koraframework.json.common.JsonModule;
+import io.koraframework.logging.logback.LogbackModule;
+import io.koraframework.openapi.management.OpenApiManagementModule;
+
+// OpenApiManagementModule only contributes HttpServerRequestHandler components, so an HTTP server
+// module must be in the graph for anything to route them. UndertowPublicHttpServerModule also
+// starts the system server (probes, metrics) on httpServer.system.port; the docs routes are
+// untagged and therefore public-server only.
+@KoraApp
+public interface Application extends
+    HoconConfigModule,
+    LogbackModule,
+    JsonModule,
+    UndertowPublicHttpServerModule,
+    OpenApiManagementModule {
+
+    static void main(String[] args) {
+        KoraApplication.run(ApplicationGraph::graph);
+    }
+}

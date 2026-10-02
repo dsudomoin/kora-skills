@@ -1,0 +1,317 @@
+{
+  "evals": [
+    {
+      "id": "kora-aop-caching-caffeine-single-key-java",
+      "skills": [
+        "kora-aop-caching"
+      ],
+      "query": "I have a Kora 2.0 Java service. Cache OrderDto lookups by their UUID id in an in-process cache.",
+      "expected_behavior": [
+        "Adds io.koraframework:cache-caffeine and annotationProcessor \"io.koraframework:annotation-processors\", versioned through the io.koraframework:kora-bom platform",
+        "Extends CaffeineCacheModule from io.koraframework.cache.caffeine on the @KoraApp interface",
+        "Declares a typed @Cache(\"orders.cache\") interface extending CaffeineCache<UUID, OrderDto>, importing io.koraframework.cache.annotation.Cache",
+        "Annotates the read method with @Cacheable(OrderCache.class) so the single UUID parameter becomes the key, and keeps the enclosing class non-final",
+        "Adds an application.conf section at the @Cache path with maximumSize and/or expireAfterWrite",
+        "Does not add the generated $OrderCache_Module to the @KoraApp extends clause",
+        "Does not use ru.tinkoff.kora imports, the kora-parent BOM, @EnableCaching, or any Spring/Micronaut caching annotation"
+      ],
+      "tags": [
+        "caffeine",
+        "basic",
+        "java"
+      ]
+    },
+    {
+      "id": "kora-aop-caching-caffeine-single-key-kotlin",
+      "skills": [
+        "kora-aop-caching"
+      ],
+      "query": "Kotlin Kora 2.0 service: add an in-process cache for getOrder(id: UUID).",
+      "expected_behavior": [
+        "Adds io.koraframework:cache-caffeine and ksp(\"io.koraframework:symbol-processors\") through the kora-bom platform",
+        "Declares @Cache(\"orders.cache\") interface OrderCache : CaffeineCache<UUID, OrderDto>",
+        "Marks the service class open AND the annotated function open, and says why (the KSP aspect refuses a non-open target)",
+        "Uses @Cacheable(OrderCache::class) with the Kotlin class-literal syntax",
+        "Does not use suspend on the cached function, and does not claim suspend or Flow is supported by cache AOP in Kora 2.0"
+      ],
+      "tags": [
+        "caffeine",
+        "basic",
+        "kotlin"
+      ]
+    },
+    {
+      "id": "kora-aop-caching-args-not-parameters",
+      "skills": [
+        "kora-aop-caching"
+      ],
+      "query": "Porting this method from Kora 1.x: @CachePut(value = OrderCache.class, parameters = { \"id\" }) public OrderDto update(UUID id, OrderRequest request). It no longer compiles under Kora 2.0.",
+      "expected_behavior": [
+        "Identifies that the attribute was renamed and writes @CachePut(value = OrderCache.class, args = { \"id\" }) (or args = \"id\")",
+        "States that @Cacheable, @CachePut and @CacheInvalidate each expose exactly value(), args() and mode() in Kora 2.0 — there is no parameters attribute",
+        "Explains that an empty/absent args means every method parameter forms the key, which is why update methods must name the key parameter explicitly",
+        "In Kotlin writes args = [\"id\"] as an array literal",
+        "Does not suggest a project-wide search and replace of 'parameters =' (HOCON/YAML keys named parameters would be corrupted)"
+      ],
+      "tags": [
+        "migration",
+        "regression",
+        "java"
+      ]
+    },
+    {
+      "id": "kora-aop-caching-invalidate-all-annotation",
+      "skills": [
+        "kora-aop-caching"
+      ],
+      "query": "My Kora 1.x code has @CacheInvalidate(value = OrderCache.class, invalidateAll = true) on a purge() method. What is the Kora 2.0 equivalent?",
+      "expected_behavior": [
+        "Replaces it with @CacheInvalidateAll(OrderCache.class) from io.koraframework.cache.annotation",
+        "States that the invalidateAll attribute no longer exists on @CacheInvalidate — its attributes are value, args and mode",
+        "Mentions that @CacheInvalidateAll is repeatable (container @CacheInvalidateAlls) so it can be stacked across cache levels",
+        "Warns that @CacheInvalidate and @CacheInvalidateAll may not be combined on the same method",
+        "For a Redis cache, warns that invalidateAll with a blank keyPrefix issues FLUSHALL against the whole Redis instance",
+        "Does not keep invalidateAll = true or invent an invalidateAll() attribute elsewhere"
+      ],
+      "tags": [
+        "migration",
+        "regression",
+        "invalidate"
+      ]
+    },
+    {
+      "id": "kora-aop-caching-redis-module-and-artifact",
+      "skills": [
+        "kora-aop-caching"
+      ],
+      "query": "Set up a distributed Redis-backed cache for OrderDto in Kora 2.0 so several pods share the cached state.",
+      "expected_behavior": [
+        "Adds io.koraframework:cache-redis-lettuce — not cache-redis, which does not exist in the Kora 2.0 BOM",
+        "Extends LettuceRedisCacheModule from io.koraframework.cache.redis.lettuce on @KoraApp, and states that RedisCacheModule alone supplies no RedisCacheClient (graph fails with 'No component found for dependency: io.koraframework.cache.redis.RedisCacheClient')",
+        "Declares @Cache(\"orders.cache\") interface OrderCache extends RedisCache<UUID, @Json OrderDto> with @Json on the value type argument, and annotates OrderDto itself @Json",
+        "Configures a lettuce { uri = ... } section with the URI and credentials externalized through environment substitution",
+        "Sets a non-blank keyPrefix in the per-cache section and explains that it is required — a missing value fails graph init with ConfigValueException: Config expected value, but got null at path: 'ROOT.orders.cache.keyPrefix'",
+        "Does not use RedisTemplate, a hand-rolled Jedis/Lettuce client, or ru.tinkoff.kora imports"
+      ],
+      "tags": [
+        "redis",
+        "regression",
+        "java"
+      ]
+    },
+    {
+      "id": "kora-aop-caching-redis-module-kotlin",
+      "skills": [
+        "kora-aop-caching"
+      ],
+      "query": "Kotlin Kora 2.0: my app extends RedisCacheModule and the build fails with \"No component found for dependency: io.koraframework.cache.redis.RedisCacheClient (no tags)\". Why?",
+      "expected_behavior": [
+        "Explains that RedisCacheModule lives in cache-redis-common and is transport-neutral: it supplies telemetry and the key/value mappers but no RedisCacheClient",
+        "Switches the dependency to io.koraframework:cache-redis-lettuce and the @KoraApp interface to LettuceRedisCacheModule",
+        "Notes that LettuceRedisCacheModule extends both RedisCacheModule and LettuceModule, so nothing else needs adding",
+        "Reminds that the lettuce { uri = ... } section is required and that uri has no default",
+        "Does not suggest declaring a RedisCacheClient @Component by hand"
+      ],
+      "tags": [
+        "redis",
+        "troubleshooting",
+        "kotlin"
+      ]
+    },
+    {
+      "id": "kora-aop-caching-key-mapper-component",
+      "skills": [
+        "kora-aop-caching"
+      ],
+      "query": "My Kora 2.0 cached method takes an OrderContext(tenantId, orderId, traceId) but the cache key is only tenantId+orderId. Compilation fails with \"No component found for dependency: com.example.OrderService.OrderContextMapping (no tags)\".",
+      "expected_behavior": [
+        "Implements io.koraframework.cache.CacheKeyMapper<OrderCache.Key, OrderContext> and applies it with @Mapping(OrderContextMapping.class) from io.koraframework.common.annotation",
+        "Adds @Component to the mapper class and states that this is required even for a nested class and even when the mapper has no constructor dependencies, because the cache processor always injects the mapper into the generated AOP proxy",
+        "Contrasts this with HTTP mappers, where a dependency-free @Component mapper instead causes 'Multiple components match dependency'",
+        "Uses CacheKeyMapper.CacheKeyMapper2 (a nested interface) when the key is derived from two separate method parameters instead of one object",
+        "Does not use jakarta.annotation.Nonnull on the mapper (Kora 2.0 modules are JSpecify @NullMarked)",
+        "Does not invent SpEL key expressions or a keyGenerator attribute"
+      ],
+      "tags": [
+        "key-mapper",
+        "regression",
+        "java"
+      ]
+    },
+    {
+      "id": "kora-aop-caching-composite-key",
+      "skills": [
+        "kora-aop-caching"
+      ],
+      "query": "I need to cache by tenantId plus orderId in a Kora 2.0 Caffeine cache. How do I model the composite key?",
+      "expected_behavior": [
+        "Declares a nested record (Java) or data class (Kotlin) Key(tenantId, orderId) inside the @Cache interface and extends CaffeineCache<OrderCache.Key, OrderDto>",
+        "Explains that the processor emits new Key(tenantId, orderId) because the key type has a public constructor matching the selected parameters in order, so no mapper is needed",
+        "Uses args to reorder or subset when the method signature does not match the constructor order",
+        "Notes that with no matching constructor the processor instead requires a CacheKeyMapper.CacheKeyMapperN component",
+        "Does not invent a condition or unless attribute on the cache annotations"
+      ],
+      "tags": [
+        "key",
+        "intermediate",
+        "java"
+      ]
+    },
+    {
+      "id": "kora-aop-caching-multi-level",
+      "skills": [
+        "kora-aop-caching"
+      ],
+      "query": "Kora 2.0: I want a fast local Caffeine L1 in front of a shared Redis L2 for UserResponse. Wire it up.",
+      "expected_behavior": [
+        "Extends both CaffeineCacheModule and LettuceRedisCacheModule on @KoraApp, with cache-caffeine and cache-redis-lettuce dependencies",
+        "Declares two @Cache interfaces with distinct config paths — one extending CaffeineCache, the other RedisCache<..., @Json ...> — and notes that a single interface may not extend both contracts",
+        "Stacks @Cacheable with the Caffeine annotation first and the Redis annotation second, explaining that the caches are consulted in annotation order and that an L2 hit back-fills L1",
+        "Repeats @CachePut / @CacheInvalidate for both levels with identical args, noting that differing args lists are a compile error",
+        "Gives L1 a shorter expireAfterWrite than L2 and keeps a non-blank keyPrefix on the Redis level",
+        "Does not use a @Caching meta-annotation, field injection, or a single interface extending both cache contracts"
+      ],
+      "tags": [
+        "multi-level",
+        "advanced",
+        "java"
+      ]
+    },
+    {
+      "id": "kora-aop-caching-telemetry-defaults",
+      "skills": [
+        "kora-aop-caching"
+      ],
+      "query": "I enabled the metrics module in my Kora 2.0 service but no cache metrics show up in Prometheus. The cache itself works.",
+      "expected_behavior": [
+        "Explains that Kora 2.0 cache telemetry defaults are logging.enabled = false and metrics.enabled = false, while tracing.enabled = true",
+        "Adds telemetry.metrics.enabled = true inside that cache's own config section (per cache, not globally)",
+        "For a Caffeine cache notes that the metrics come from Micrometer's CaffeineCacheMetrics binder registered by CaffeineFactory over a recordStats() cache (cache.gets, cache.puts, cache.evictions, cache.eviction.weight, cache.size), and only when a MeterRegistry is present",
+        "For a Redis cache names the Kora series cache.operation.duration and cache.ratio with their system.config / operation / origin tags",
+        "Does not claim metrics are on by default or invent a recordStats config key",
+        "Does not suggest a MeterFilter or disabling Caffeine metrics to avoid a duplicate cache.gets meter registration"
+      ],
+      "tags": [
+        "telemetry",
+        "regression",
+        "troubleshooting"
+      ]
+    },
+    {
+      "id": "kora-aop-caching-kotlin-not-open",
+      "skills": [
+        "kora-aop-caching"
+      ],
+      "query": "Kotlin Kora 2.0 build fails: \"AOP aspect cannot be applied to class 'com.example.OrderService' because the class is not open.\" I only added @Cacheable.",
+      "expected_behavior": [
+        "Explains that Kora cache aspects are compile-time subclass proxies, so in Kotlin the class must be open",
+        "Also marks the annotated function open, and quotes the companion error 'AOP aspect cannot be applied to function ... because the function is not open.'",
+        "States that in Kora 2.0 this is a hard compile error, not a silently skipped aspect",
+        "Gives the Java equivalent: the class must not be final ('AOP aspect cannot be applied to class ... because the class is final.') and the method must be neither final nor private",
+        "Mentions self-invocation: a call from inside the same class bypasses the generated $OrderService__AopProxy",
+        "Does not suggest AspectJ, runtime proxies, all-open compiler plugins, or @EnableCaching"
+      ],
+      "tags": [
+        "troubleshooting",
+        "regression",
+        "kotlin"
+      ]
+    },
+    {
+      "id": "kora-aop-caching-cache-mode-async",
+      "skills": [
+        "kora-aop-caching"
+      ],
+      "query": "In Kora 2.0 I do not want the Redis write on my request thread when updating an order. Is there anything built in?",
+      "expected_behavior": [
+        "Points at mode = CacheMode.ASYNC on @CachePut / @CacheInvalidate / @CacheInvalidateAll / @Cacheable (io.koraframework.cache.annotation.CacheMode, values SYNC and ASYNC, default SYNC)",
+        "Explains that only the write side moves off-thread: the lookup performed by @Cacheable is always synchronous",
+        "States that the work is handed to an Executor requested as @Tag(CacheMode.class), supplied as a @DefaultComponent by CacheCommonModule, which starts a virtual thread named kora-cache-N per operation and only logs failures",
+        "Warns that ASYNC on a Caffeine cache is ignored with the compile warning 'Cache async mode is ignored for CaffeineCache ...'",
+        "Mentions that the executor can be replaced with a @Component @Tag(CacheMode.class) Executor",
+        "Does not suggest returning CompletionStage or making the method suspend — cache AOP in 2.0 rejects both"
+      ],
+      "tags": [
+        "cache-mode",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-aop-caching-keyprefix-required",
+      "skills": [
+        "kora-aop-caching"
+      ],
+      "query": "My Kora 2.0 service dies at startup with ConfigValueException: Config expected value, but got null at path: 'ROOT.orders.cache.keyPrefix'. The section exists.",
+      "expected_behavior": [
+        "Identifies RedisCacheConfig.keyPrefix() as a required config value — no default and not @Nullable — and adds it to that cache's section",
+        "Clarifies that this fails at graph initialization, not at compile time, because the generated cache module resolves the config with mapOrThrow",
+        "Explains that the effective Redis key is keyPrefix + ':' + mapped key, so the separator must not be added by hand",
+        "Warns that setting keyPrefix = \"\" is accepted but makes invalidateAll() fall back to FLUSHALL, and notes that the empty-prefix warning is emitted through a no-op logger unless that cache section sets telemetry.logging.enabled = true, so by default the wipe is silent",
+        "Recommends a distinct prefix per cache to avoid key collisions in a shared Redis database"
+      ],
+      "tags": [
+        "redis",
+        "config",
+        "troubleshooting"
+      ]
+    },
+    {
+      "id": "kora-aop-caching-imperative-loadable",
+      "skills": [
+        "kora-aop-caching"
+      ],
+      "query": "In Kora 2.0 I need manual get-or-load on a cache without @Cacheable, because the key is generated inside the method. What are my options?",
+      "expected_behavior": [
+        "Injects the typed @Cache interface as a normal component and uses the Cache<K, V> API: get, put, computeIfAbsent, invalidate, invalidateAll plus the bulk overloads",
+        "Notes that get returns null on a miss and that put silently ignores null keys and null values rather than throwing",
+        "Offers LoadableCache built with asLoadableSimple(loader) for a single-key loader or asLoadable(bulkLoader) for a Collection -> Map loader, exposed from a @Module method",
+        "Does not claim the Cache contract has contains, containsValue, asMap or size",
+        "Does not use a CacheManager abstraction, and does not claim @Cacheable can key on a value computed inside the method body"
+      ],
+      "tags": [
+        "imperative",
+        "advanced"
+      ]
+    },
+    {
+      "id": "kora-aop-caching-unsupported-return-type",
+      "skills": [
+        "kora-aop-caching"
+      ],
+      "query": "Migrating a Kora 1.x service to 2.0: @Cacheable on a method returning Mono<OrderDto>, and another on a suspend fun. Both now fail to compile.",
+      "expected_behavior": [
+        "States that Kora 2.0 contracts are synchronous on virtual threads and cache AOP supports only synchronous returns — Publisher/Mono/Flux, CompletionStage/CompletableFuture and Kotlin suspend are all rejected",
+        "Rewrites the methods to return the plain value (or Optional<T> in Java, T? in Kotlin)",
+        "Quotes the diagnostic shape: '@Cacheable cannot be applied to ... because return type ... is not supported by the Java cache AOP aspect'",
+        "Notes that @Cacheable and @CachePut also reject void/Unit, while @CacheInvalidate and @CacheInvalidateAll allow it",
+        "Mentions Cache<K, Optional<T>> as the way to memoize a negative lookup",
+        "Does not add reactor-core or kotlinx-coroutines to make the old signature work"
+      ],
+      "tags": [
+        "migration",
+        "return-types",
+        "regression"
+      ]
+    },
+    {
+      "id": "kora-aop-caching-redis-loader-exception",
+      "skills": [
+        "kora-aop-caching"
+      ],
+      "query": "Kora 2.0 with a Redis cache: my @Cacheable method throws when the upstream service is down. Will the cache swallow that exception like it swallows Redis errors, and will anything be cached?",
+      "expected_behavior": [
+        "Distinguishes Redis backend failures, which AbstractRedisCache records in telemetry and swallows (a failed read is treated as a miss), from exceptions thrown by the loader",
+        "States that an exception from the @Cacheable method body (the computeIfAbsent mapping function) is recorded in telemetry and propagates to the caller",
+        "States that nothing is written to Redis for that key when the loader throws"
+      ],
+      "anti_behavior": [
+        "Claims the Redis cache swallows the method's own exception and returns null",
+        "Recommends catching the exception inside the method and returning null so the cache stays quiet"
+      ],
+      "tags": [
+        "redis",
+        "errors"
+      ]
+    }
+  ]
+}

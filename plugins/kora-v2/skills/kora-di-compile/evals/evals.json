@@ -1,0 +1,278 @@
+{
+  "evals": [
+    {
+      "id": "kora-di-compile-component-constructor",
+      "skills": ["kora-di-compile"],
+      "query": "Create a UserService in my Kora app that depends on a UserRepository.",
+      "expected_behavior": [
+        "Annotates the class with @Component imported from io.koraframework.common.annotation",
+        "Gives the class exactly one public constructor taking UserRepository (constructor injection) and stores it in a private final field",
+        "Does not claim the class must be final; if it mentions final at all, presents it as a convention and notes that a class carrying an AOP annotation must be non-final in Java / open in Kotlin",
+        "Does not use field injection, @Autowired/@Inject-style annotations, or runtime reflection"
+      ],
+      "tags": ["component", "basic"]
+    },
+    {
+      "id": "kora-di-compile-app-bootstrap",
+      "skills": ["kora-di-compile"],
+      "query": "Set up the @KoraApp entry point for a new Kora service that uses HOCON config and Logback logging.",
+      "expected_behavior": [
+        "Declares an interface annotated with @KoraApp (from io.koraframework.common.annotation) that extends HoconConfigModule and LogbackModule",
+        "Provides a static main that calls KoraApplication.run(ApplicationGraph::graph)",
+        "Imports KoraApplication from io.koraframework.application.graph",
+        "Does NOT import ApplicationGraph — explains it is generated into the application's own package as <KoraAppSimpleName>Graph",
+        "States that @KoraApp is only valid on an interface",
+        "Does not introduce a runtime DI container, a self-instantiated application class, or a KoraApplication.run overload that takes a config"
+      ],
+      "tags": ["kora-app", "bootstrap", "basic"]
+    },
+    {
+      "id": "kora-di-compile-kotlin-bootstrap",
+      "skills": ["kora-di-compile"],
+      "query": "Bootstrap a Kotlin Kora service: the @KoraApp interface, the main function, and the Gradle wiring.",
+      "expected_behavior": [
+        "Declares `@KoraApp interface Application : HoconConfigModule, LogbackModule` with annotations from io.koraframework.common.annotation",
+        "Uses a top-level `fun main()` calling KoraApplication.run(ApplicationGraph::graph) (or KoraApplication.run { ApplicationGraph.graph() })",
+        "Sets mainClass to <package>.ApplicationKt, not to the Application interface",
+        "Adds ksp(\"io.koraframework:symbol-processors:<version>\") with an explicit version and notes the ksp configuration is not covered by the kora-bom platform",
+        "Adds build/generated/ksp/main/kotlin to the main Kotlin source set",
+        "Does not use kapt, and does not use a companion object with @JvmStatic fun main"
+      ],
+      "tags": ["kora-app", "kotlin", "bootstrap", "basic"]
+    },
+    {
+      "id": "kora-di-compile-module-factory",
+      "skills": ["kora-di-compile"],
+      "query": "I need to expose a HikariCP DataSource to my Kora container. How do I register it?",
+      "expected_behavior": [
+        "Creates a @Module interface (io.koraframework.common.annotation.Module) with a default factory method returning DataSource",
+        "Notes that @Module is valid on interfaces only",
+        "Notes that a @Module compiled in the same Gradle module as the @KoraApp is auto-discovered and must not be added to the extends clause",
+        "Explains the provider must not return null unless every consumer declares the parameter @Nullable",
+        "Does not use @Bean, @Configuration, or @Provides"
+      ],
+      "tags": ["module", "factory", "basic"]
+    },
+    {
+      "id": "kora-di-compile-tag-disambiguation",
+      "skills": ["kora-di-compile"],
+      "query": "I have two Cache implementations, RedisCache and CaffeineCache, both implementing Cache. How do I inject the Redis one specifically?",
+      "expected_behavior": [
+        "Defines simple marker tag classes (for example RedisTag) and annotates the implementations with @Tag(RedisTag.class) from io.koraframework.common.annotation",
+        "Injects with @Tag(RedisTag.class) Cache at the constructor parameter, using the same tag class on both sides",
+        "Warns that a tagged component is invisible to an untagged claim, so tagging every implementation and then injecting Cache untagged produces \"No component found for dependency\" rather than an ambiguity error",
+        "Does not use @Qualifier, @Named, or string-based qualifiers"
+      ],
+      "tags": ["tag", "disambiguation", "advanced"]
+    },
+    {
+      "id": "kora-di-compile-all-collection",
+      "skills": ["kora-di-compile"],
+      "query": "I want a NotificationService that fans out to every registered Notifier implementation in the container.",
+      "expected_behavior": [
+        "Injects All<Notifier> from io.koraframework.application.graph in the constructor",
+        "States that All<T> extends Iterable<T> — NOT List<T> — and iterates or copies it rather than assigning it to a List field",
+        "Mentions @Tag(Tag.Any.class) All<Notifier> is required to also collect tagged components, because a bare All<T> collects only untagged ones",
+        "Does not rely on classpath scanning or reflection to discover implementations"
+      ],
+      "tags": ["collection", "all", "advanced"]
+    },
+    {
+      "id": "kora-di-compile-default-component-override",
+      "skills": ["kora-di-compile"],
+      "query": "I'm writing a reusable Kora library module that provides a default ObjectMapper, but the application should be able to replace it.",
+      "expected_behavior": [
+        "Marks the library factory method with @DefaultComponent from io.koraframework.common.annotation",
+        "Shows the application overriding it with a plain provider of the same type (no @DefaultComponent)",
+        "Explains that when several candidates match, every @DefaultComponent candidate is discarded and the single remaining non-default wins",
+        "If it shows an @Override with the same signature, keeps the @Tag on the overriding method and notes that @Override / override is what removes the overridden declaration from the graph",
+        "Does not use @Primary, @ConditionalOnMissingBean, or profile-based bean selection"
+      ],
+      "tags": ["default-component", "override", "advanced"]
+    },
+    {
+      "id": "kora-di-compile-valueof-indirect",
+      "skills": ["kora-di-compile"],
+      "query": "How do I break a circular dependency between ServiceA and ServiceB in Kora without restructuring the code?",
+      "expected_behavior": [
+        "Wraps one side as ValueOf<ServiceB> from io.koraframework.application.graph and accesses it via get() when needed",
+        "Mentions PromiseOf<T> as the other indirect option, matching the processor's own \"Break the cycle with ValueOf<T> or PromiseOf<T>\" advice",
+        "Does NOT claim ValueOf exposes refresh() — in Kora 2.0 ValueOf declares get(), map() and optional() only",
+        "Does not use lazy proxies, setter injection, or reflection to break the cycle"
+      ],
+      "tags": ["valueof", "indirect-dependency", "advanced"]
+    },
+    {
+      "id": "kora-di-compile-lifecycle-wrapper",
+      "skills": ["kora-di-compile"],
+      "query": "A component created by a @Module factory needs init and cleanup hooks. How do I give a factory-built component a lifecycle in Kora?",
+      "expected_behavior": [
+        "Returns Wrapped<T> from the provider and constructs new LifecycleWrapper<>(value, initCallback, releaseCallback)",
+        "Imports LifecycleWrapper and Wrapped from io.koraframework.application.graph",
+        "Notes that consumers inject the plain T, not Wrapped<T>, because the graph unwraps it",
+        "Mentions that a class you own can instead implement Lifecycle with init() and release(), both of which may throw Exception",
+        "Does not use @PostConstruct or @PreDestroy, and does not present an async or suspend lifecycle"
+      ],
+      "tags": ["lifecycle", "module", "advanced"]
+    },
+    {
+      "id": "kora-di-compile-root-startup",
+      "skills": ["kora-di-compile"],
+      "query": "I have a CacheWarmer that must run at startup even though nothing depends on it. How do I force Kora to initialize it?",
+      "expected_behavior": [
+        "Annotates the component (or its provider method) with @Root",
+        "Imports @Root from io.koraframework.common.annotation",
+        "Explains that graph resolution starts only from @Root declarations, so a component that is neither a @Root nor a transitive dependency of one is absent from the generated graph entirely — with no error to read",
+        "Notes that implementing Lifecycle does not by itself make a component a root",
+        "Does not use an ApplicationRunner, a CommandLineRunner, or a runtime startup hook"
+      ],
+      "tags": ["root", "lifecycle", "basic"]
+    },
+    {
+      "id": "kora-di-compile-submodule-multimodule",
+      "skills": ["kora-di-compile"],
+      "query": "We are splitting our Kora service into separate Gradle modules. How do I expose the components of a domain Gradle module to the application module?",
+      "expected_behavior": [
+        "Marks the domain module's interface with @KoraSubmodule from io.koraframework.common.annotation",
+        "Has the @KoraApp interface in the assembly module extend the submodule interface, and explains that modules from another Gradle subproject are never auto-discovered",
+        "States that the domain subproject needs the annotation processor (io.koraframework:annotation-processors) or KSP processor (io.koraframework:symbol-processors) on its own compile classpath, otherwise the build fails with \"Kora submodule was not generated yet\"",
+        "Mentions that the generated companion is named <InterfaceName>SubmoduleImpl",
+        "Uses api rather than implementation for the Kora modules the @KoraSubmodule interface extends"
+      ],
+      "tags": ["kora-submodule", "multi-module", "advanced"]
+    },
+    {
+      "id": "kora-di-compile-submodule-test-flag",
+      "skills": ["kora-di-compile"],
+      "query": "My integration test declares `@KoraApp interface TestApplication extends Application` so it can add a test-only repository, but none of the production @Component classes end up in the test graph. The build succeeds. What's wrong?",
+      "expected_behavior": [
+        "Identifies the missing -Akora.app.submodule.enabled=true compiler argument (Java) or ksp { arg(\"kora.app.submodule.enabled\", \"true\") } (Kotlin)",
+        "States it must be set on the MAIN compilation, not the test compilation, because it changes what is generated for the production @KoraApp",
+        "Explains that this is a silent failure: the processor only emits the warning \"Expected @KoraApp as SubModule, but Submodule implementation not found\"",
+        "Recommends a test that asserts a production component is actually present in the test graph",
+        "Does not suggest copying production components into the test sources or duplicating the module list"
+      ],
+      "tags": ["kora-submodule", "testing", "regression", "silent-failure"]
+    },
+    {
+      "id": "kora-di-compile-conditional",
+      "skills": ["kora-di-compile"],
+      "query": "I want Kora to pick RedisCache when cache.redisEnabled is true and CaffeineCache otherwise, decided at startup rather than at build time.",
+      "expected_behavior": [
+        "Uses @Conditional(tag = X.class) from io.koraframework.common.annotation on both implementations, spelling the attribute name `tag =` (Conditional has no value() element)",
+        "Publishes a GraphCondition component (io.koraframework.application.graph.GraphCondition) under @Tag(X.class) for each condition",
+        "Returns GraphCondition.ConditionResult.matched(reason) / failed(reason) with a reason that names the config key",
+        "Explains that both candidates are compiled into the graph and exactly one condition must match at graph initialisation — otherwise NoneOfConditionalNodeMatches or MoreThanOneConditionalNodeMatches at startup",
+        "Does not invent a Spring-style @Profile, @ConditionalOnProperty, or a config-keyed annotation attribute"
+      ],
+      "tags": ["conditional", "kora-2.0", "advanced"]
+    },
+    {
+      "id": "kora-di-compile-annotation-package-regression",
+      "skills": ["kora-di-compile"],
+      "query": "Review this Kora 2.0 file:\n\npackage com.example;\n\nimport io.koraframework.common.Component;\nimport io.koraframework.common.KoraApp;\nimport io.koraframework.common.Tag;\n\n@Component\npublic final class UserService {\n    public UserService(@Tag(RedisTag.class) Cache cache) { }\n}",
+      "expected_behavior": [
+        "Identifies that @Component, @KoraApp and @Tag do not live in io.koraframework.common in Kora 2.0",
+        "Corrects the imports to io.koraframework.common.annotation.{Component, KoraApp, Tag}",
+        "Explains that io.koraframework.common holds Configurer, Either, Principal and PromisedProxy, not the DI annotations",
+        "Attributes the mistake to a blind ru.tinkoff.kora -> io.koraframework rewrite, which is wrong precisely because 1.x kept these annotations in ...common while 2.0 keeps them in ...common.annotation",
+        "Does not claim the original imports are valid"
+      ],
+      "tags": ["regression", "migration", "packages", "silent-failure"]
+    },
+    {
+      "id": "kora-di-compile-stale-generated-regression",
+      "skills": ["kora-di-compile"],
+      "query": "After renaming my base package the Kora build fails with errors naming ru.tinkoff.kora classes and old package names that no longer exist anywhere in my source tree. Should I just fix the generated ApplicationGraph by hand?",
+      "expected_behavior": [
+        "Says no — generated sources must never be hand-edited",
+        "Identifies stale output under build/generated (build/generated/sources/annotationProcessor/java/main for Java, build/generated/ksp/main/kotlin for Kotlin) as the cause",
+        "Prescribes ./gradlew clean classes --no-build-cache (or an equivalent clean plus cache bypass) to regenerate",
+        "Explains that any hand-edit is overwritten on the next processor run",
+        "Does not suggest adding the generated directory to source control, excluding it from compilation, or editing ApplicationGraph"
+      ],
+      "tags": ["regression", "migration", "generated-code", "silent-failure"]
+    },
+    {
+      "id": "kora-di-compile-context-removed-regression",
+      "skills": ["kora-di-compile"],
+      "query": "Port this Kora 1.x component to Kora 2.0:\n\n@Component\npublic final class AuditService {\n    private final Context context;\n    public AuditService(Context context, Clock clock) { this.context = context; }\n    public void record(String action) { context.set(AUDIT_KEY, action); }\n}",
+      "expected_behavior": [
+        "States that Context no longer exists anywhere in Kora 2.0 — it was removed from the framework, not merely from the HTTP APIs",
+        "Removes the Context constructor parameter rather than looking for a renamed or relocated Context type",
+        "Explains that nothing can provide it, so the component would fail with \"No component found for dependency\"",
+        "Replaces the behaviour with something explicit (a passed argument, a dedicated component, or MDC/logging where that is what the context was carrying)",
+        "Does not invent io.koraframework.common.Context, io.koraframework.common.util.Context, or any other 2.0 Context type"
+      ],
+      "tags": ["regression", "migration", "context", "kora-2.0"]
+    },
+    {
+      "id": "kora-di-compile-sync-contracts-regression",
+      "skills": ["kora-di-compile"],
+      "query": "Write a Kora 2.0 @Component OrderService with a findById method that returns the order asynchronously, and a Kotlin equivalent.",
+      "expected_behavior": [
+        "Writes a synchronous method returning Order (not CompletionStage<Order>, CompletableFuture<Order>, Mono<Order> or Flux<Order>)",
+        "Writes the Kotlin version as a plain `fun findById(...): Order`, not `suspend fun`",
+        "States that Kora 2.0 contracts are synchronous and executed on virtual threads, and that Reactor, CompletionStage and Kotlin suspend were removed as Kora contracts",
+        "Does not add a reactive dependency or wrap the result in a reactive type to 'modernise' the code",
+        "If asked about real parallelism, points at Java structured concurrency rather than reintroducing reactive types"
+      ],
+      "tags": ["regression", "migration", "execution-model", "kora-2.0"]
+    },
+    {
+      "id": "kora-di-compile-graph-errors",
+      "skills": ["kora-di-compile"],
+      "query": "My Kora build fails with: \"No component found for dependency: com.example.Cache (no tags)\" and a Note section listing com.example.Cache with @Tag(com.example.RedisTag.class). What does that mean?",
+      "expected_behavior": [
+        "Reads the Note section as the answer: a component of the right type exists but carries a tag the injection point does not ask for",
+        "Explains the matching rule — an untagged claim never matches a tagged provider",
+        "Fixes it by adding @Tag(RedisTag.class) at the injection point (or removing the tag from the provider), rather than by adding a second Cache component",
+        "Mentions the other fixes the processor itself suggests: add @Component to an implementation, add a module provider, or extends the module that provides it",
+        "Does not suggest disabling the processor, casting, or a runtime lookup"
+      ],
+      "tags": ["errors", "diagnostics", "tag"]
+    },
+    {
+      "id": "kora-di-compile-build-setup",
+      "skills": ["kora-di-compile"],
+      "query": "Set up build.gradle for a new Java Kora 2.0 service.",
+      "expected_behavior": [
+        "Uses the platform io.koraframework:kora-bom, NOT ru.tinkoff.kora:kora-parent",
+        "Declares annotationProcessor \"io.koraframework:annotation-processors\" and wires the koraBom configuration so the processor inherits its version (annotationProcessor.extendsFrom(koraBom))",
+        "Sets a Java toolchain of 25 or newer and says Kora 2.0 artifacts are Java 25 class files",
+        "Uses io.koraframework coordinates for every Kora dependency and does not reference json-module, cache-redis, database-r2dbc, database-vertx or http-client-async",
+        "Adds testAnnotationProcessor when test sources declare Kora annotations",
+        "Does not present --enable-preview as a blanket Kora requirement"
+      ],
+      "tags": ["build", "gradle", "setup", "basic"]
+    },
+    {
+      "id": "kora-di-compile-factory-module",
+      "skills": ["kora-di-compile"],
+      "query": "I need the same Kora module wired twice with different config paths — one untagged instance and one tagged instance — without duplicating the provider code. How?",
+      "expected_behavior": [
+        "Uses @FactoryModule (io.koraframework.common.annotation.FactoryModule) on a module method whose return type is itself a module class",
+        "Marks the inner providers and their parameters with @Tag(Tag.Factory.class) so they inherit the tag of the enclosing factory-module method",
+        "Explains that the tag on the @FactoryModule method propagates to everything that module instance provides, which is how one class yields two non-colliding sets of components",
+        "Notes that @FactoryModule must return a class or interface type, and that Tag.Factory outside a factory module is a compile error",
+        "Cites a real example such as UndertowPublicHttpServerModule / UndertowSystemHttpServerModule or OkHttpClientModule rather than inventing one"
+      ],
+      "tags": ["factory-module", "kora-2.0", "advanced"]
+    },
+    {
+      "id": "kora-di-compile-cycle-through-all",
+      "skills": ["kora-di-compile"],
+      "query": "Kora 2.0 fails to compile with 'Circular dependency found:'. My @Tag(PluginsEnabled::class) GraphCondition takes All<Plugin> to decide, and each Plugin implementation is @Conditional(tag = PluginsEnabled::class). What is going on?",
+      "expected_behavior": [
+        "Identifies the cycle: the condition depends on every Plugin, and each Plugin depends on the condition through @Conditional",
+        "Explains that the processor breaks ordinary cycles with a generated promised proxy for a single component, but never for an All<T>, TypeRef<T> or Graph claim, so a cycle through All<T> is always reported as a circular dependency",
+        "Fixes it by removing the back-edge, e.g. making the condition depend on config instead of on the plugins it gates, or moving the shared state into a separate component"
+      ],
+      "anti_behavior": [
+        "Calls the error a Kora internal error or a processor bug",
+        "Suggests wrapping the plugins in a lazy wrapper as the fix without checking that the cycle is gone"
+      ],
+      "tags": ["cycle", "conditional", "errors"]
+    }
+  ]
+}

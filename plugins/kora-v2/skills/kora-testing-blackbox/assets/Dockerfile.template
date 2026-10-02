@@ -1,0 +1,46 @@
+# Runtime image for a Kora 2.0 application (Java or Kotlin).
+#
+# Packages the archive Gradle already produced - it does not build anything.
+# Before building the image:
+#
+#   ./gradlew distTar
+#
+# distTar produces build/distributions/<archiveFileName>. installDist produces an
+# exploded build/install/ directory instead and does NOT satisfy the COPY below.
+#
+# Requires this in the application module's build.gradle:
+#
+#   application {
+#       applicationName = "application"
+#       mainClass = "com.example.Application"
+#   }
+#   distTar { archiveFileName = "application.tar" }
+#
+# JDK 25 is a hard floor for Kora 2.0: kora-bom declares java.version = 25 and the
+# published artifacts are class-file major 69. A 21-jre base fails with
+# UnsupportedClassVersionError before the application logs anything.
+
+ARG RUN_IMAGE=eclipse-temurin:25-jre-jammy
+FROM ${RUN_IMAGE}
+
+ARG TARGET_DIR=/opt/app
+ARG SOURCE_DIR=build/distributions
+
+COPY $SOURCE_DIR/application.tar /application.tar
+
+RUN mkdir -p $TARGET_DIR \
+ && tar -xf /application.tar -C $TARGET_DIR \
+ && rm /application.tar
+
+# Run as a non-root user
+ARG DOCKER_USER=app
+RUN groupadd -r $DOCKER_USER && useradd -rg $DOCKER_USER $DOCKER_USER
+USER $DOCKER_USER
+
+# 8080 - public API (httpServer.port)
+# 8085 - system API (httpServer.system.port): /system/readiness, /system/liveness, /metrics
+EXPOSE 8080/tcp
+EXPOSE 8085/tcp
+
+# <TARGET_DIR>/<applicationName>/bin/<applicationName>
+CMD ["/opt/app/application/bin/application"]

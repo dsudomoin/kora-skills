@@ -1,0 +1,119 @@
+// Kora 2.x — OpenAPI-generated HTTP client (Java).
+//
+// Requires in gradle.properties:
+//     koraVersion=2.0.0.RC2
+//
+// The Gradle process itself must run on JDK 25+: io.koraframework:openapi-generator is a
+// BUILDSCRIPT dependency, resolved by the JVM running Gradle, not by the toolchain below.
+// On an older Gradle JVM configuration fails with
+//     Dependency requires at least JVM runtime version 25. This build uses a Java 21 JVM.
+
+import org.openapitools.generator.gradle.plugin.tasks.GenerateTask
+
+buildscript {
+    repositories { mavenCentral() }
+    dependencies {
+        // Provides the "kora" generator to the OpenAPI Generator plugin
+        classpath "io.koraframework:openapi-generator:$koraVersion"
+    }
+}
+
+plugins {
+    id "java"
+    id "application"
+    // The OpenAPI Generator Gradle plugin. Distinct from the Kora generator above:
+    // the Kora generator is built against org.openapitools:openapi-generator 7.25.0.
+    id "org.openapi.generator" version "7.25.0"
+}
+
+repositories { mavenCentral() }
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+        vendor = JvmVendorSpec.ADOPTIUM
+    }
+}
+
+configurations {
+    koraBom
+    annotationProcessor.extendsFrom(koraBom)
+    compileOnly.extendsFrom(koraBom)
+    implementation.extendsFrom(koraBom)
+    testImplementation.extendsFrom(koraBom)
+    testAnnotationProcessor.extendsFrom(koraBom)
+}
+
+dependencies {
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+
+    // MANDATORY: nothing is generated without the Kora annotation processor
+    annotationProcessor "io.koraframework:annotation-processors"
+
+    // HTTP client transport — pick exactly ONE and plug its module into @KoraApp:
+    //   http-client-ok     -> io.koraframework.http.client.ok.OkHttpClientModule
+    //   http-client-jdk    -> io.koraframework.http.client.jdk.JdkHttpClientModule
+    //   http-client-apache -> io.koraframework.http.client.apache.ApacheHttpClientModule
+    implementation "io.koraframework:http-client-ok"
+
+    implementation "io.koraframework:json-common"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
+
+    testAnnotationProcessor "io.koraframework:annotation-processors"
+    testImplementation "io.koraframework:test-junit5"
+    testImplementation "io.goodforgod:testcontainers-extensions-mockserver:0.15.0"
+}
+
+// One GenerateTask per spec, each with its own outputDir.
+// Sharing an outputDir breaks incremental builds and leaves stale classes behind.
+def openApiGeneratePet = tasks.register("openApiGeneratePet", GenerateTask) {
+    generatorName = "kora"
+    group = "openapi tools"
+    inputSpec = layout.projectDirectory.file("src/main/resources/openapi/pet.yaml")
+    outputDir = layout.buildDirectory.dir("generated/openapi/pet")
+    def corePackage = "com.example.openapi.pet"
+    apiPackage = "${corePackage}.api"
+    modelPackage = "${corePackage}.model"
+    invokerPackage = "${corePackage}.invoker"
+
+    // Plugin >= 7.0.0 enables SIMPLIFY_ONEOF_ANYOF, which reshapes polymorphic schemas.
+    // Disable the normalizers when the contract relies on oneOf/allOf + discriminator.
+    openapiNormalizer = [DISABLE_ALL: "true"]
+
+    configOptions = [
+            // Exactly four modes exist: java-client, java-server, kotlin-client, kotlin-server.
+            mode              : "java-client",
+
+            // Config root. The generated API class name is appended WITH ITS FIRST LETTER
+            // LOWER-CASED, so tag "pet" -> PetApi -> @HttpClient("httpClient.pet.petApi").
+            // Use `clientConfig` instead to give every API in this spec one shared section.
+            clientConfigPrefix: "httpClient.pet",
+
+            // SEALED (default): methods return the sealed *ApiResponse, one variant per status.
+            // SUCCESSFUL: methods return the 2xx variant and throw declared error responses as
+            // PetApi.PetApi<Type>HttpClientResponseException. Not compatible with 4XX/5XX ranges.
+            // clientResponseMode: "SUCCESSFUL",
+
+            // Only when the spec declares components.securitySchemes:
+            // securityConfigPrefix: "openapiAuth",
+            // primaryAuth        : "apiKeyAuth",
+    ]
+}
+
+sourceSets.main { java.srcDirs += openApiGeneratePet.get().outputDir }
+compileJava.dependsOn openApiGeneratePet
+
+application {
+    applicationName = "application"
+    mainClass = "com.example.Application"
+    applicationDefaultJvmArgs = ["-Dfile.encoding=UTF-8"]
+}
+
+compileJava {
+    options.encoding = "UTF-8"
+}
+
+test {
+    useJUnitPlatform()
+}

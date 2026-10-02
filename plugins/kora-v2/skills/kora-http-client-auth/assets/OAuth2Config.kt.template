@@ -1,0 +1,33 @@
+package ${package}
+
+import io.koraframework.config.common.annotation.ConfigSource
+
+/**
+ * Client-credentials settings, bound to the `oauth2` config section.
+ *
+ * `@ConfigSource` generates `OAuth2ConfigModule` and the config processor registers it, so this
+ * interface must **not** be listed in `@KoraApp` supertypes.
+ *
+ * `clientId()` and `clientSecret()` are deliberately non-nullable: a missing key then fails at
+ * startup with `ConfigValueException`. Were they nullable, `BasicAuthHttpClientInterceptor` would
+ * silently send the token request with no `Authorization` header and the failure would surface as
+ * a 401 from the issuer.
+ *
+ * ```
+ * oauth2 {
+ *   clientId     = "my-service-client"
+ *   clientSecret = ${OAUTH2_CLIENT_SECRET}
+ *   scopes       = "api:read api:write"
+ * }
+ * ```
+ */
+@ConfigSource("oauth2")
+interface OAuth2Config {
+
+    fun clientId(): String
+
+    fun clientSecret(): String
+
+    /** Space-separated scopes, or empty to omit the `scope` form parameter entirely. */
+    fun scopes(): String = ""
+}

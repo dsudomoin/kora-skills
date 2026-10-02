@@ -1,0 +1,45 @@
+package ${packagePath}
+
+import io.koraframework.application.graph.LifecycleWrapper
+import io.koraframework.application.graph.Wrapped
+import io.koraframework.common.annotation.Module
+
+/**
+ * Attaching a lifecycle to a type you cannot make implement `Lifecycle`.
+ *
+ * A module method that returns `Wrapped<T>` registers a component of type **T**: the container
+ * unwraps it, so consumers keep injecting `T` and never see the wrapper. Returning `T` instead of
+ * `Wrapped<T>` compiles and wires fine — the hooks simply never run.
+ *
+ * `LifecycleWrapper` has exactly one constructor:
+ * `LifecycleWrapper(value, init, release)`. Pass the three arguments **positionally** — Kotlin named
+ * arguments are not available for a Java constructor, so `LifecycleWrapper(c, init = …)` does not
+ * compile. Both consumers are mandatory; pass `{}` for a hook you do not need.
+ */
+@Module
+interface ${ModuleName} {
+
+    fun ${methodName}(config: ${ConfigType}): Wrapped<${ComponentType}> {
+        val component = ${ComponentType}(config)
+
+        return LifecycleWrapper(
+            component,
+            { it.start() },   // init:    runs before any dependent is created
+            { it.close() }    // release: runs after every dependent has been released
+        )
+    }
+
+    // Two independently configured instances of one type: give each its own tag.
+    //
+    // @Tag(PrimaryTag::class)
+    // fun primary(config: ConnectionConfig): Wrapped<Connection> {
+    //     val connection = Connection.open(config.primaryUrl())
+    //     return LifecycleWrapper(connection, Connection::verify, Connection::close)
+    // }
+    //
+    // @Tag(ReplicaTag::class)
+    // fun replica(config: ConnectionConfig): Wrapped<Connection> {
+    //     val connection = Connection.open(config.replicaUrl())
+    //     return LifecycleWrapper(connection, Connection::verify, Connection::close)
+    // }
+}

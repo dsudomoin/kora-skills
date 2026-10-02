@@ -1,0 +1,71 @@
+package ${package};
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.telemetry.OpentelemetryContext;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
+
+import java.util.function.Consumer;
+import java.util.function.Function;
+
+/**
+ * Span wrapper for the cases {@code KoraTracer} cannot cover -- a non-INTERNAL
+ * {@link SpanKind}, links, or an explicit parent -- because its
+ * {@code Consumer<SpanBuilder>} overloads are private.
+ *
+ * <p>For a plain business span, delete this class and inject
+ * {@code io.koraframework.opentelemetry.tracing.KoraTracer} instead: its
+ * {@code traceParent(name, span -> ...)} already does everything below.
+ *
+ * <p>Span context travels in a {@link ScopedValue}, so the binding unwinds on its own when
+ * {@code call(...)} returns -- there is no previous context to restore. Never call
+ * {@code span.makeCurrent()}: Kora's {@code ContextStorage.attach(...)} throws
+ * {@code IllegalStateException}.
+ */
+@Component
+public final class TracingService {
+
+    private final Tracer tracer;
+
+    public TracingService(Tracer tracer) {
+        this.tracer = tracer;
+    }
+
+    public <T> T trace(String spanName, SpanKind kind, Function<Span, T> operation) {
+        var span = this.tracer.spanBuilder(spanName)
+                .setSpanKind(kind)
+                .setParent(Context.current())
+                .startSpan();
+
+        return ScopedValue.where(OpentelemetryContext.VALUE, Context.current().with(span))
+                .call(() -> {
+                    try {
+                        var result = operation.apply(span);
+                        span.setStatus(StatusCode.OK);
+                        return result;
+                    } catch (RuntimeException e) {
+                        span.recordException(e);
+                        span.setStatus(StatusCode.ERROR, e.getMessage());
+                        throw e;
+                    } finally {
+                        span.end();
+                    }
+                });
+    }
+
+    // Deliberately not an overload of trace(...): a Function/Consumer overload pair does not
+    // resolve from a bare Kotlin lambda, and mixed call sites become unreadable in Java too.
+    public void traceVoid(String spanName, SpanKind kind, Consumer<Span> operation) {
+        this.trace(spanName, kind, span -> {
+            operation.accept(span);
+            return null;
+        });
+    }
+
+    public <T> T trace(String spanName, Function<Span, T> operation) {
+        return this.trace(spanName, SpanKind.INTERNAL, operation);
+    }
+}

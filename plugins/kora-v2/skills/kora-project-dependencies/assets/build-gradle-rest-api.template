@@ -1,0 +1,79 @@
+// Kora 2.0 REST API Service - build.gradle template
+// HTTP server with JSON and Micrometer metrics.
+// Metrics and readiness/liveness are served by the system server on httpServer.system.
+
+plugins {
+    id "java"
+    id "application"
+    id "jacoco"
+}
+
+repositories {
+    mavenCentral()
+    // io.koraframework:kora-bom:2.0.0.RC2 is on Maven Central; nothing else is needed.
+    // Only the 2.0.0-SNAPSHOT development line also needs:
+    // maven { url = "https://central.sonatype.com/repository/maven-snapshots" }
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+        vendor = JvmVendorSpec.ADOPTIUM
+    }
+}
+
+configurations {
+    koraBom
+    annotationProcessor.extendsFrom(koraBom)
+    compileOnly.extendsFrom(koraBom)
+    implementation.extendsFrom(koraBom)
+    api.extendsFrom(koraBom)
+    testImplementation.extendsFrom(koraBom)
+    testAnnotationProcessor.extendsFrom(koraBom)
+}
+
+dependencies {
+    // Kora BOM - owns every Kora module version
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+
+    // Annotation processors - required for compile-time code generation
+    annotationProcessor "io.koraframework:annotation-processors"
+    testAnnotationProcessor "io.koraframework:annotation-processors"
+
+    // Core modules
+    implementation "io.koraframework:logging-logback"
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:json-common"
+
+    // HTTP server (Undertow) - UndertowPublicHttpServerModule
+    implementation "io.koraframework:http-server-undertow"
+
+    // Telemetry - metrics default to disabled, enable them in application.conf:
+    //   httpServer { telemetry.metrics.enabled = true }
+    implementation "io.koraframework:micrometer-module"
+
+    // Testing
+    testImplementation "io.koraframework:test-junit5"
+    testImplementation "org.skyscreamer:jsonassert:1.5.1"
+}
+
+application {
+    applicationName = "application"
+    mainClass = "com.example.app.Application"
+    applicationDefaultJvmArgs = ["-Dfile.encoding=UTF-8"]
+}
+
+compileJava {
+    options.encoding = "UTF-8"
+    options.incremental = true
+    options.fork = false
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        showStandardStreams = true
+        events("passed", "skipped", "failed")
+        exceptionFormat = "full"
+    }
+}

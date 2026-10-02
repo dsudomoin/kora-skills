@@ -1,0 +1,42 @@
+package ${package}
+
+import io.koraframework.json.common.annotation.Json
+
+/**
+ * ${enum_name} as a JSON value.
+ *
+ * The generated mapper picks the value accessor in this order:
+ *  1. the first public, non-static, zero-argument method annotated `@Json` — its return type
+ *     becomes the JSON value type;
+ *  2. `toString()`, i.e. the constant name unless overridden.
+ *
+ * Reading matches the parsed value back against `entries` through the same accessor, so no
+ * `fromString`/`valueOf` helper is needed.
+ */
+@Json
+enum class ${enum_name}(
+    private val value: String
+) {
+    ${enum_values};
+
+    /** JSON representation of the constant. */
+    override fun toString(): String = value
+}
+
+/*
+ * Variant: a non-string JSON value. Drop the toString() override and expose the value
+ * through a @Json accessor instead — the JSON type then follows the return type.
+ *
+ *   @Json
+ *   enum class Status(private val code: Int) {
+ *       CREATED(1), DELETED(2);
+ *
+ *       @Json
+ *       fun code(): Int = code
+ *   }
+ *
+ * → 1, 2
+ *
+ * Variant: the plain constant names. Declare `@Json enum class Status { CREATED, DELETED }`
+ * with no body at all — toString() already returns name().
+ */

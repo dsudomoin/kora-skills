@@ -1,0 +1,56 @@
+// Kora 2.0 custom Validator implementation.
+// Pair it with CustomAnnotation.java.template and ValidatorFactory.java.template.
+// Replace `com.example.app.validation` with your package and $typeName$ with your type.
+
+package com.example.app.validation;
+
+import io.koraframework.validation.common.ValidationContext;
+import io.koraframework.validation.common.Validator;
+import io.koraframework.validation.common.Violation;
+import org.jspecify.annotations.Nullable;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Validator for {@code $typeName$}. It is instantiated by {@code $typeName$ValidatorFactory} inside
+ * the generated validator's constructor — it is not a graph component itself.
+ *
+ * Wiring:
+ * <ol>
+ *   <li>Register the factory on the {@code @KoraApp} interface:
+ *       {@code default $typeName$ValidatorFactory $typeName$ValidatorFactory() { return $typeName$Validator::new; }}</li>
+ *   <li>Declare the annotation with {@code @ValidatedBy($typeName$ValidatorFactory.class)}.</li>
+ *   <li>Use the annotation on a field / parameter / method.</li>
+ * </ol>
+ *
+ * Kotlin implementations must write {@code value: $typeName$?} — the contract is JSpecify
+ * {@code @NullMarked} with a {@code @Nullable} value, and a non-null parameter yields
+ * "'validate' overrides nothing" without mentioning nullability.
+ */
+public final class $typeName$Validator implements Validator<$typeName$> {
+
+    @Override
+    public List<Violation> validate(@Nullable $typeName$ value, ValidationContext context) {
+        if (value == null) {
+            return List.of(context.violates("$typeName$ must not be null"));
+        }
+
+        final List<Violation> violations = new ArrayList<>();
+
+        if (!isValid(value)) {
+            var violation = context.violates("Invalid $typeName$: " + value);
+            if (context.isFailFast()) {
+                return List.of(violation);   // honour fail-fast the way the built-ins do
+            }
+            violations.add(violation);
+        }
+
+        return violations;
+    }
+
+    private boolean isValid($typeName$ value) {
+        // Implement the actual check.
+        return true;
+    }
+}

@@ -1,0 +1,79 @@
+package ${packagePath};
+
+import io.koraframework.application.graph.GraphInterceptor;
+import io.koraframework.common.annotation.Component;
+
+/**
+ * Decorating or replacing a component while the graph is built.
+ *
+ * <p>The contract is:
+ * <pre>{@code
+ * public interface GraphInterceptor<T> {
+ *     T afterInit(T value);
+ *     T beforeRelease(T value);
+ * }
+ * }</pre>
+ * The names are {@code afterInit} / {@code beforeRelease} — not {@code init} / {@code release} —
+ * and neither declares {@code throws Exception}, so an override cannot add one.
+ *
+ * <p>Timing: {@code afterInit} runs after the intercepted component's own {@code Lifecycle.init()}
+ * and before any dependent is created; whatever it returns is what the rest of the graph receives.
+ * {@code beforeRelease} runs before that component's {@code release()}, in reverse interceptor
+ * order, and receives the value currently on the node — the wrapper, not the original.
+ *
+ * <p>Matching is by <b>exact declared type</b> ({@code isSameType}, not assignability) and by tag,
+ * with the interceptor's tag on the "required" side: an untagged interceptor intercepts only
+ * untagged components, {@code @Tag(Tag.Any.class)} intercepts every tag. A generic
+ * {@code GraphInterceptor<T>} therefore matches nothing — always name a concrete type.
+ *
+ * <p>An interceptor needs no {@code @Root}: it is pulled into the graph as soon as the component it
+ * intercepts is resolved.
+ */
+@Component
+public final class ${InterceptorName} implements GraphInterceptor<${InterceptedType}> {
+
+    private final ${DependencyType} ${dependencyName};
+
+    public ${InterceptorName}(${DependencyType} ${dependencyName}) {
+        this.${dependencyName} = ${dependencyName};
+    }
+
+    @Override
+    public ${InterceptedType} afterInit(${InterceptedType} value) {
+        // Return `value` to observe without replacing, or a decorator to replace it everywhere.
+        return value;
+    }
+
+    @Override
+    public ${InterceptedType} beforeRelease(${InterceptedType} value) {
+        return value;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Replacing the instance
+// ---------------------------------------------------------------------------
+//
+// @Component
+// public final class PaymentGatewayMetrics implements GraphInterceptor<PaymentGateway> {
+//
+//     private final MeterRegistry registry;
+//
+//     public PaymentGatewayMetrics(MeterRegistry registry) {
+//         this.registry = registry;
+//     }
+//
+//     @Override
+//     public PaymentGateway afterInit(PaymentGateway gateway) {
+//         return new MeteredPaymentGateway(gateway, registry);
+//     }
+//
+//     @Override
+//     public PaymentGateway beforeRelease(PaymentGateway gateway) {
+//         return gateway;
+//     }
+// }
+//
+// GraphInterceptor is graph-build machinery, not a request-path concern: it runs once per component.
+// For per-method cross-cutting behaviour use the AOP modules (@Log, @Retryable, @Cacheable,
+// @Timeout) instead.

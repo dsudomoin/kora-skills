@@ -1,0 +1,60 @@
+package ${package}
+
+import io.koraframework.database.common.UpdateCount
+import io.koraframework.database.common.annotation.Batch
+import io.koraframework.database.common.annotation.Query
+import io.koraframework.database.common.annotation.Repository
+import io.koraframework.database.jdbc.JdbcRepository
+
+/**
+ * CRUD repository for an entity with a composite primary key (Kotlin).
+ *
+ * The key is a nested data class flattened with `@field:Id @field:Embedded` on the entity — see
+ * jdbc-entity-composite-id.kt.template.
+ *
+ * Macros used here:
+ *   %{id#where}             WHERE over the parameter named `id`, expanding every key column:
+ *                             ${id1_column} = ? AND ${id2_column} = ?
+ *   %{entity#where = @id}   the same, reached through the entity parameter
+ *   %{entity#inserts}       table(columns) VALUES (:entity.field, ...)
+ *   %{entity#updates}       column = :entity.field, ... — @Id fields excluded automatically
+ *   %{entity#selects = @id} the key columns, for an ON CONFLICT target
+ *
+ * `%{entity#table}` needs a parameter called `entity`; the delete queries have none, so they name
+ * the table literally.
+ *
+ * Repository contracts are synchronous — `suspend fun` is rejected by the generator.
+ */
+@Repository
+interface ${repository_name} : JdbcRepository {
+
+    @Query("SELECT %{return#selects} FROM %{return#table} WHERE %{id#where}")
+    fun findById(id: ${entity_name}.ID): ${entity_name}?
+
+    @Query("SELECT %{return#selects} FROM %{return#table}")
+    fun findAll(): List<${entity_name}>
+
+    @Query("INSERT INTO %{entity#inserts}")
+    fun insert(entity: ${entity_name}): UpdateCount
+
+    @Query("INSERT INTO %{entity#inserts}")
+    fun insertBatch(@Batch entity: List<${entity_name}>): UpdateCount
+
+    @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
+    fun update(entity: ${entity_name}): UpdateCount
+
+    @Query("UPDATE %{entity#table} SET %{entity#updates} WHERE %{entity#where = @id}")
+    fun updateBatch(@Batch entity: List<${entity_name}>): UpdateCount
+
+    @Query("INSERT INTO %{entity#inserts} ON CONFLICT (%{entity#selects = @id}) DO UPDATE SET %{entity#updates}")
+    fun upsert(entity: ${entity_name}): UpdateCount
+
+    @Query("INSERT INTO %{entity#inserts} ON CONFLICT (%{entity#selects = @id}) DO UPDATE SET %{entity#updates}")
+    fun upsertBatch(@Batch entity: List<${entity_name}>): UpdateCount
+
+    @Query("DELETE FROM ${table_name} WHERE %{id#where}")
+    fun deleteById(id: ${entity_name}.ID): UpdateCount
+
+    @Query("DELETE FROM ${table_name}")
+    fun deleteAll(): UpdateCount
+}

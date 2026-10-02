@@ -1,0 +1,59 @@
+// Kora 2.x database-backed scheduled jobs (Kotlin) — artifact io.koraframework:scheduling-db-scheduler.
+//
+// Requires on the @KoraApp interface:  JdbcDatabaseModule, DbSchedulerModule
+// Requires in the build:               ksp("io.koraframework:symbol-processors")
+// Requires in the database:            the scheduler table (V2__create_kora_scheduling_db_jobs.sql.template)
+//
+// Each firing runs on exactly one replica. `name` is the job's key in the table: keep it stable.
+// Scheduled functions must be members, take no arguments, and must NOT be `suspend`.
+//
+// Replace `com.example.app.jobs` with your package.
+
+package com.example.app.jobs
+
+import io.koraframework.common.annotation.Component
+import io.koraframework.common.annotation.Root
+import io.koraframework.scheduling.db.scheduler.DbSchedulerWrapper
+import io.koraframework.scheduling.db.scheduler.annotation.ScheduleOnce
+import io.koraframework.scheduling.db.scheduler.annotation.ScheduleWithCron
+import io.koraframework.scheduling.db.scheduler.annotation.ScheduleWithFixedDelay
+import org.slf4j.LoggerFactory
+import java.time.temporal.ChronoUnit
+
+@Component
+class DbScheduledJobs {
+
+    private val log = LoggerFactory.getLogger(DbScheduledJobs::class.java)
+
+    /**
+     * Cron — Spring-style six fields (seconds first), JVM default time zone.
+     * Config may override it: scheduling.jobs.cleanup = "0 30 2 * * *", or "-" to disable.
+     */
+    @ScheduleWithCron(value = "0 0 2 * * *", name = "nightly-cleanup", config = "scheduling.jobs.cleanup")
+    fun cleanup() {
+        log.info("nightly cleanup")
+    }
+
+    /**
+     * Fixed delay — next run is `delay` after the previous one completed, on whichever replica picks it.
+     * `initialDelay` applies only when the job's row is first created.
+     */
+    @ScheduleWithFixedDelay(initialDelay = 30, delay = 60, unit = ChronoUnit.SECONDS, name = "outbox-relay")
+    fun relayOutbox() {
+        log.debug("relaying outbox")
+    }
+
+    /**
+     * One shot — scheduled on startup when none is pending, removed after it runs, never retried.
+     */
+    @ScheduleOnce(delay = 1, unit = ChronoUnit.MINUTES, name = "cache-warmup")
+    fun warmup() {
+        log.info("warming caches")
+    }
+}
+
+// DbSchedulerWrapper is not @Root and nothing else depends on it: without this component the
+// scheduler is pruned from the graph and no job runs. Needed once per application.
+@Root
+@Component
+class DbSchedulerStarter(@Suppress("unused") scheduler: DbSchedulerWrapper)

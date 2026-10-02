@@ -1,0 +1,56 @@
+package ${packagePath}
+
+import io.koraframework.application.graph.GraphInterceptor
+import io.koraframework.common.annotation.Component
+
+/**
+ * Decorating or replacing a component while the graph is built.
+ *
+ * The contract is `fun afterInit(value: T): T` and `fun beforeRelease(value: T): T` — not
+ * `init` / `release`, the 1.x names.
+ *
+ * Timing: `afterInit` runs after the intercepted component's own `Lifecycle.init()` and before any
+ * dependent is created; whatever it returns is what the rest of the graph receives. `beforeRelease`
+ * runs before that component's `release()`, in reverse interceptor order, and receives the value
+ * currently on the node — the wrapper, not the original.
+ *
+ * Matching is by **exact declared type** (`isSameType`, not assignability) and by tag, with the
+ * interceptor's tag on the "required" side: an untagged interceptor intercepts only untagged
+ * components, `@Tag(Tag.Any::class)` intercepts every tag. A generic `GraphInterceptor<T>` therefore
+ * matches nothing — always name a concrete type.
+ *
+ * Kora contracts are `@NullMarked`, so the parameter and return types are non-nullable `T`. Writing
+ * `value: T?` produces "'afterInit' overrides nothing", a message that never mentions nullability.
+ *
+ * An interceptor needs no `@Root`: it is pulled into the graph as soon as the component it
+ * intercepts is resolved.
+ */
+@Component
+class ${InterceptorName}(
+    private val ${dependencyName}: ${DependencyType}
+) : GraphInterceptor<${InterceptedType}> {
+
+    // Return `value` to observe without replacing, or a decorator to replace it everywhere.
+    override fun afterInit(value: ${InterceptedType}): ${InterceptedType} = value
+
+    override fun beforeRelease(value: ${InterceptedType}): ${InterceptedType} = value
+}
+
+// ---------------------------------------------------------------------------
+// Replacing the instance
+// ---------------------------------------------------------------------------
+//
+// @Component
+// class PaymentGatewayMetrics(
+//     private val registry: MeterRegistry
+// ) : GraphInterceptor<PaymentGateway> {
+//
+//     override fun afterInit(value: PaymentGateway): PaymentGateway =
+//         MeteredPaymentGateway(value, registry)
+//
+//     override fun beforeRelease(value: PaymentGateway): PaymentGateway = value
+// }
+//
+// GraphInterceptor is graph-build machinery, not a request-path concern: it runs once per component.
+// For per-method cross-cutting behaviour use the AOP modules (@Log, @Retryable, @Cacheable,
+// @Timeout) instead.

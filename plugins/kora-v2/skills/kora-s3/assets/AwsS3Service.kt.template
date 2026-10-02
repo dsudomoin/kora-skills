@@ -1,0 +1,86 @@
+// Kotlin twin of AwsS3Service.java.template — artifact io.koraframework:s3-client-aws
+// (plain io.koraframework group, NOT .experimental).
+//
+// Requires AwsS3ClientModule plus a Kora HTTP client module on @KoraApp, and config under
+// `s3client.aws`. Replace `com.example.storage` with your package.
+
+package com.example.storage
+
+import io.koraframework.common.annotation.Component
+import io.koraframework.config.common.annotation.ConfigSource
+import software.amazon.awssdk.core.sync.RequestBody
+import software.amazon.awssdk.services.s3.S3Client
+import software.amazon.awssdk.services.s3.model.DeleteObjectsResponse
+import software.amazon.awssdk.services.s3.model.HeadObjectResponse
+import software.amazon.awssdk.services.s3.model.ListObjectsV2Response
+import software.amazon.awssdk.services.s3.model.ObjectIdentifier
+import software.amazon.awssdk.services.s3.model.PutObjectResponse
+
+/**
+ * The bucket name is the application's own config, not the module's — `s3client.aws` has no bucket
+ * key, and `@S3.Bucket` feeds a generated class rather than a component.
+ */
+@ConfigSource("my")
+interface AwsS3ServiceConfig {
+    fun bucket(): String
+}
+
+/**
+ * `S3Client` injects untagged. The components inside `AwsS3ClientFactoryModule` carry
+ * `@Tag(Tag.Factory.class)`, but inside a `@FactoryModule` that marker resolves to the tag of the
+ * factory-module provider method — and `AwsS3ClientModule#awsS3ClientFactoryModule()` has none.
+ */
+@Component
+class AwsS3Service(
+    private val s3Client: S3Client,
+    config: AwsS3ServiceConfig
+) {
+
+    private val bucket: String = config.bucket()
+
+    fun putObject(key: String, value: ByteArray): PutObjectResponse =
+        s3Client.putObject({ it.bucket(bucket).key(key) }, RequestBody.fromBytes(value))
+
+    /** The returned stream is a resource — `use` it. */
+    fun getObject(key: String): ByteArray =
+        s3Client.getObject { it.bucket(bucket).key(key) }.use { it.readAllBytes() }
+
+    fun getObjectMeta(key: String): HeadObjectResponse =
+        s3Client.headObject { it.bucket(bucket).key(key) }
+
+    fun listObjects(prefix: String): ListObjectsV2Response =
+        s3Client.listObjectsV2 { it.bucket(bucket).prefix(prefix).maxKeys(50) }
+
+    fun deleteObject(key: String) {
+        s3Client.deleteObject { it.bucket(bucket).key(key) }
+    }
+
+    /**
+     * Batch delete — up to 1000 keys per request. The declarative `@S3.Delete` cannot express this:
+     * it generates `deleteObject` only and rejects a collection parameter as a key.
+     */
+    fun deleteObjects(keys: List<String>): DeleteObjectsResponse {
+        val identifiers = keys.map { ObjectIdentifier.builder().key(it).build() }
+        return s3Client.deleteObjects { r -> r.bucket(bucket).delete { d -> d.objects(identifiers) } }
+    }
+}
+
+// Presigned URLs: S3Presigner is NOT a Kora component — build one yourself against the same
+// endpoint, region and credentials, and close it.
+//
+//   S3Presigner.builder()
+//       .endpointOverride(URI.create(url))
+//       .region(Region.of(region))
+//       .credentialsProvider { AwsBasicCredentials.create(accessKey, secretKey) }
+//       .build()
+//       .use { presigner ->
+//           presigner.presignGetObject(
+//               GetObjectPresignRequest.builder()
+//                   .signatureDuration(Duration.ofMinutes(15))
+//                   .getObjectRequest(GetObjectRequest.builder().bucket(bucket).key(key).build())
+//                   .build()
+//           ).url()
+//       }
+//
+// S3AsyncClient, S3TransferManager and the Kora 1.x @Tag(MultipartUpload::class) async client are
+// NOT provided by this module — Kora 2.0 contracts are synchronous on virtual threads.

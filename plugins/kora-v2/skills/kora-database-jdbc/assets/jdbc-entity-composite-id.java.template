@@ -1,0 +1,56 @@
+package ${package};
+
+import io.koraframework.database.common.annotation.Column;
+import io.koraframework.database.common.annotation.Embedded;
+import io.koraframework.database.common.annotation.Id;
+import io.koraframework.database.common.annotation.Table;
+import io.koraframework.database.jdbc.annotation.EntityJdbc;
+import org.jspecify.annotations.Nullable;
+
+/**
+ * Entity with a composite primary key for a Kora 2.0 JDBC repository.
+ *
+ * Use a composite key when one column cannot identify a row: junction tables (user_role,
+ * order_item), time series (device_id + timestamp), tenant partitioning (tenant_id + entity_id).
+ *
+ * Pattern:
+ * - a nested record holds the key components;
+ * - @Id @Embedded on the parent field flattens them into the parent table's columns;
+ * - the nested key type does NOT need @EntityJdbc — it is expanded into the parent's mapper;
+ * - @Embedded("prefix_") would prepend a prefix to every nested column name.
+ *
+ * Query it with %{id#where} (parameter named `id`) or %{entity#where = @id} (entity parameter);
+ * both expand to `${id1_column} = ? AND ${id2_column} = ?`.
+ *
+ * Matching DDL (give the key columns the SQL type that matches ${id1_type} / ${id2_type}):
+ *   CREATE TABLE ${table_name} (
+ *       ${id1_column} <key type> NOT NULL,
+ *       ${id2_column} <key type> NOT NULL,
+ *       name varchar(255) NOT NULL,
+ *       quantity integer NOT NULL,
+ *       note text,
+ *       PRIMARY KEY (${id1_column}, ${id2_column})
+ *   );
+ */
+@EntityJdbc
+@Table("${table_name}")
+public record ${entity_name}(
+        @Id @Embedded ID id,
+        String name,
+        int quantity,
+        @Nullable String note) {
+
+    /**
+     * Composite key. Both components are part of the primary key; each may be any type the
+     * repository can map (Long, UUID, String, or a type with a column mapper).
+     */
+    public record ID(
+            @Column("${id1_column}") ${id1_type} ${id1_field},
+            @Column("${id2_column}") ${id2_type} ${id2_field}) {}
+
+    /** Convenience constructor that builds the key from its components. */
+    public ${entity_name}(${id1_type} ${id1_field}, ${id2_type} ${id2_field},
+                          String name, int quantity, @Nullable String note) {
+        this(new ID(${id1_field}, ${id2_field}), name, quantity, note);
+    }
+}

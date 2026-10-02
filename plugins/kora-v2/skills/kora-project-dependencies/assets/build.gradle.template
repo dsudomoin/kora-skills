@@ -1,0 +1,64 @@
+plugins {
+    id "java"
+    id "application"
+}
+
+repositories {
+    mavenCentral()
+    // io.koraframework:kora-bom:2.0.0.RC2 is on Maven Central; nothing else is needed.
+    // Only the 2.0.0-SNAPSHOT development line also needs:
+    // maven { url = "https://central.sonatype.com/repository/maven-snapshots" }
+}
+
+java {
+    toolchain {
+        // Kora 2.0 artifacts are built at JVM 25 — 25 is the floor.
+        languageVersion = JavaLanguageVersion.of(25)
+        vendor = JvmVendorSpec.ADOPTIUM
+    }
+}
+
+configurations {
+    koraBom
+    annotationProcessor.extendsFrom(koraBom)
+    compileOnly.extendsFrom(koraBom)
+    implementation.extendsFrom(koraBom)
+    api.extendsFrom(koraBom)
+}
+
+dependencies {
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+    annotationProcessor "io.koraframework:annotation-processors"
+
+    // Core dependencies - always needed
+    implementation "io.koraframework:logging-logback"
+    implementation "io.koraframework:config-hocon"
+
+    // Add more Kora modules as needed (no versions - the BOM owns them):
+    // implementation "io.koraframework:json-common"
+    // implementation "io.koraframework:http-server-undertow"
+    // implementation "io.koraframework:http-client-ok"
+    // implementation "io.koraframework:database-jdbc"
+    // implementation "io.koraframework:kafka"
+    // implementation "io.koraframework:micrometer-module"
+}
+
+application {
+    applicationName = "application"
+    mainClass = "${packagePath}.Application"
+    applicationDefaultJvmArgs = ["-Dfile.encoding=UTF-8"]
+}
+
+compileJava {
+    options.encoding = "UTF-8"
+    options.incremental = true
+    options.fork = false
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events "passed", "skipped", "failed"
+        showStandardStreams = true
+    }
+}

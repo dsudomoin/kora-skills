@@ -1,0 +1,248 @@
+// Kora 2.0 — cache wiring and configuration (Java).
+//
+// Sections 1 and 4 are real source files; sections 2 and 3 are configuration and an optional
+// customisation hook. Replace `com.example.app.*` with your packages.
+
+// ============================================================================
+// 1. BUILD FILE (build.gradle)
+// ============================================================================
+
+/*
+// gradle.properties
+//   koraVersion=2.0.0.RC2
+// repositories { mavenCentral() }
+// Java toolchain 25 (Kora 2.0 artifacts are class-file 69).
+
+configurations {
+    koraBom
+    annotationProcessor.extendsFrom(koraBom); compileOnly.extendsFrom(koraBom)
+    implementation.extendsFrom(koraBom); api.extendsFrom(koraBom)
+    testImplementation.extendsFrom(koraBom); testAnnotationProcessor.extendsFrom(koraBom)
+}
+
+dependencies {
+    koraBom platform("io.koraframework:kora-bom:$koraVersion")
+    annotationProcessor "io.koraframework:annotation-processors"
+
+    implementation "io.koraframework:cache-caffeine"        // L1 / in-process
+    implementation "io.koraframework:cache-redis-lettuce"   // L2 / distributed  (NOT "cache-redis")
+    implementation "io.koraframework:json-common"           // for @Json Redis values
+    implementation "io.koraframework:config-hocon"
+    implementation "io.koraframework:logging-logback"
+
+    testImplementation "io.koraframework:test-junit5"
+}
+*/
+
+
+// ============================================================================
+// 2. APPLICATION GRAPH (Application.java)
+// ============================================================================
+
+package com.example.app;
+
+import io.koraframework.application.graph.KoraApplication;
+import io.koraframework.cache.caffeine.CaffeineCacheModule;
+import io.koraframework.cache.redis.lettuce.LettuceRedisCacheModule;
+import io.koraframework.common.annotation.KoraApp;
+import io.koraframework.config.hocon.HoconConfigModule;
+import io.koraframework.json.common.JsonModule;
+import io.koraframework.logging.logback.LogbackModule;
+
+@KoraApp
+public interface Application extends
+        HoconConfigModule,
+        LogbackModule,
+        JsonModule,                  // only needed for @Json Redis cache values
+        CaffeineCacheModule,         // in-process caches
+        LettuceRedisCacheModule {    // distributed caches — supplies the RedisCacheClient
+
+    // Connect only the backend modules here. The per-cache `$XxxCache_Module` generated from each
+    // @Cache interface is discovered automatically — listing it here is wrong.
+    //
+    // RedisCacheModule (cache-redis-common) is transport-neutral and supplies NO RedisCacheClient;
+    // using it instead of LettuceRedisCacheModule fails the graph with
+    //   No component found for dependency: io.koraframework.cache.redis.RedisCacheClient (no tags)
+
+    static void main(String[] args) {
+        KoraApplication.run(ApplicationGraph::graph);
+    }
+}
+
+
+// ============================================================================
+// 3. HOCON CONFIGURATION (src/main/resources/application.conf)
+// ============================================================================
+
+/*
+# ---- Caffeine cache: @Cache("orders.cache") ---------------------------------
+orders.cache {
+  maximumSize       = 10000     # default 100000; always applied
+  initialSize       = 100       # optional (Caffeine initialCapacity)
+  expireAfterWrite  = "10m"     # optional
+  expireAfterAccess = "5m"      # optional
+  enabled           = true      # default true; false makes every operation a no-op / miss
+
+  telemetry {
+    logging.enabled = false     # DEFAULT false
+    metrics.enabled = false     # DEFAULT false — no cache metrics until this is true
+    tracing.enabled = true      # default true
+  }
+}
+# There is no refreshAfterWrite / weakKeys / softValues / recordStats key.
+
+# ---- Redis cache: @Cache("orders.redis.cache") ------------------------------
+orders.redis.cache {
+  keyPrefix         = "orders"  # REQUIRED: no default, not @Nullable.
+                                # Missing -> ConfigValueException: Config expected value, but got
+                                # null at path: 'ROOT.orders.redis.cache.keyPrefix' for origin '...'
+                                # Blank    -> invalidateAll() degrades to FLUSHALL.
+  expireAfterWrite  = "1h"      # optional; writes use PSETEX instead of SET
+  expireAfterAccess = "30m"     # optional; reads use GETEX instead of GET (sliding TTL)
+  enabled           = true      # default true
+
+  telemetry {
+    logging.enabled = false
+    metrics.enabled = false     # enables cache.operation.duration and cache.ratio
+    tracing.enabled = true
+  }
+}
+# There is no maximumSize for a Redis cache.
+
+# ---- Lettuce driver, shared by every RedisCache -----------------------------
+lettuce {
+  uri                = "redis://localhost:6379"   # REQUIRED; rediss:// for TLS,
+  uri                = ${?REDIS_URL}              # comma-separated hosts select the cluster client
+  user               = ${?REDIS_USER}
+  password           = ${?REDIS_PASS}
+  database           = 0                          # optional
+  protocol           = "RESP3"                    # RESP2 (Redis 2-5) | RESP3 (Redis 6+), default RESP3
+  forceClusterClient = false                      # default false
+  socketTimeout      = 15s                        # default 10s
+  commandTimeout     = 15s                        # default 30s
+
+  ssl {
+    ciphers          = ["TLS_CHACHA20_POLY1305_SHA256"]   # default []
+    handshakeTimeout = 10s                                # default 10s
+  }
+
+  telemetry {
+    logging.enabled = false
+    metrics.enabled = false
+  }
+}
+
+# ---- Multi-level: distinct config paths per level ---------------------------
+cache.caffeine.users {                # L1: small and short-lived
+  maximumSize      = 1000
+  expireAfterWrite = "10m"
+}
+
+cache.redis.users {                   # L2: larger and longer-lived
+  keyPrefix        = "users-"
+  expireAfterWrite = "30m"
+}
+*/
+
+
+// ============================================================================
+// 4. CUSTOMISING THE LETTUCE CLIENT (optional)
+//    Kora 1.x LettuceConfigurator does not exist in 2.0. Each hook is a separate
+//    io.koraframework.common.Configurer<T> component tagged @Tag(Tag.Factory.class).
+// ============================================================================
+
+package com.example.app.cache;
+
+import io.koraframework.common.Configurer;
+import io.koraframework.common.annotation.Component;
+import io.koraframework.common.annotation.Tag;
+// import io.lettuce.core.ClientOptions;                        // for the commented variant below
+// import io.lettuce.core.cluster.ClusterClientOptions;         // for the commented variant below
+import io.lettuce.core.resource.DefaultClientResources;
+
+@Component
+@Tag(Tag.Factory.class)
+public final class RedisClientResourcesConfigurer implements Configurer<DefaultClientResources.Builder> {
+
+    @Override
+    public DefaultClientResources.Builder configure(DefaultClientResources.Builder builder) {
+        return builder.ioThreadPoolSize(4);
+    }
+}
+
+// Standalone client options:
+//
+// @Component
+// @Tag(Tag.Factory.class)
+// public final class RedisClientOptionsConfigurer implements Configurer<ClientOptions.Builder> {
+//     @Override
+//     public ClientOptions.Builder configure(ClientOptions.Builder builder) {
+//         return builder.autoReconnect(true);
+//     }
+// }
+//
+// Cluster client options:
+//
+// @Component
+// @Tag(Tag.Factory.class)
+// public final class RedisClusterOptionsConfigurer implements Configurer<ClusterClientOptions.Builder> {
+//     @Override
+//     public ClusterClientOptions.Builder configure(ClusterClientOptions.Builder builder) {
+//         return builder.validateClusterNodeMembership(false);
+//     }
+// }
+
+
+// ============================================================================
+// 5. MULTI-LEVEL SERVICE (L1 Caffeine + L2 Redis)
+// ============================================================================
+
+/*
+package com.example.app.service;
+
+import com.example.app.dto.UserResponse;
+import io.koraframework.cache.annotation.CacheInvalidate;
+import io.koraframework.cache.annotation.CacheInvalidateAll;
+import io.koraframework.cache.annotation.CachePut;
+import io.koraframework.cache.annotation.Cacheable;
+import io.koraframework.common.annotation.Component;
+
+import java.util.Optional;
+
+@Component
+public class UserService {                              // must NOT be final
+
+    private final UserRepository repository;
+
+    public UserService(UserRepository repository) {
+        this.repository = repository;
+    }
+
+    // Order matters: L1 is consulted first; an L2 hit back-fills L1 on the way out.
+    @Cacheable(UserCaffeineCache.class)
+    @Cacheable(UserRedisCache.class)
+    public Optional<UserResponse> getUser(String id) {
+        return repository.findById(id);
+    }
+
+    // Repeated annotations of one operation must use the SAME args list.
+    @CachePut(value = UserCaffeineCache.class, args = "id")
+    @CachePut(value = UserRedisCache.class, args = "id")
+    public UserResponse updateUser(String id, UserRequest request) {
+        return repository.update(id, request);
+    }
+
+    @CacheInvalidate(UserCaffeineCache.class)
+    @CacheInvalidate(UserRedisCache.class)
+    public void deleteUser(String id) {
+        repository.deleteById(id);
+    }
+
+    // Replaces Kora 1.x @CacheInvalidate(value = ..., invalidateAll = true).
+    @CacheInvalidateAll(UserCaffeineCache.class)
+    @CacheInvalidateAll(UserRedisCache.class)
+    public void purge() {
+        repository.deleteAll();
+    }
+}
+*/

@@ -1,0 +1,28 @@
+package ${packagePath};
+
+import io.koraframework.application.graph.KoraApplication;
+import io.koraframework.common.annotation.KoraApp;
+import io.koraframework.config.hocon.HoconConfigModule;
+import io.koraframework.logging.logback.LogbackModule;
+
+/**
+ * Application graph root.
+ *
+ * <p>{@code ApplicationGraph} is generated next to this interface by the Kora annotation
+ * processor ({@code io.koraframework:annotation-processors}); it does not exist until the
+ * first successful {@code compileJava}.
+ *
+ * <p>The graph is built from the <b>root set</b>: declarations annotated {@code @Root} plus
+ * everything reachable from them. A component nothing depends on and which is not {@code @Root}
+ * is never created. With no {@code @Root} anywhere the build fails with
+ * "@KoraApp has no root components".
+ */
+@KoraApp
+public interface Application extends
+    HoconConfigModule,
+    LogbackModule {
+
+    static void main(String[] args) {
+        KoraApplication.run(ApplicationGraph::graph);
+    }
+}

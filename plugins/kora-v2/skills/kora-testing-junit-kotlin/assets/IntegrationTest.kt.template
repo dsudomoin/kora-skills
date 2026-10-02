@@ -1,0 +1,107 @@
+package ${package}
+
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Test
+import org.slf4j.LoggerFactory
+import org.testcontainers.containers.PostgreSQLContainer
+import org.testcontainers.containers.output.Slf4jLogConsumer
+import org.testcontainers.junit.jupiter.Container
+import org.testcontainers.junit.jupiter.Testcontainers
+import io.koraframework.test.extension.junit5.KoraAppTest
+import io.koraframework.test.extension.junit5.KoraAppTestConfigModifier
+import io.koraframework.test.extension.junit5.KoraConfigModification
+import io.koraframework.test.extension.junit5.TestComponent
+import java.time.Duration
+
+/**
+ * Integration test against a real PostgreSQL via Testcontainers (Kotlin, Kora 2.x).
+ *
+ * The container is @JvmStatic in the companion object, so @Testcontainers starts ONE container for
+ * the whole class and it is up before the Kora graph is built — which is why the accessors below
+ * are valid inside config().
+ *
+ * Build dependencies:
+ *   testImplementation("org.testcontainers:junit-jupiter:1.21.4")
+ *   testImplementation("org.testcontainers:postgresql:1.21.4")
+ *   testImplementation("io.koraframework:database-flyway")
+ *   // database-flyway ships flyway-core only; without the dialect artifact Flyway fails at startup
+ *   // with "Unsupported Database: PostgreSQL"
+ *   testImplementation("org.flywaydb:flyway-database-postgresql:13.1.0")
+ *   testRuntimeOnly("org.postgresql:postgresql:42.7.3")
+ */
+@Testcontainers
+@KoraAppTest(Application::class)
+class ${repositoryName}Test : KoraAppTestConfigModifier {
+
+    companion object {
+        @Container
+        @JvmStatic
+        val POSTGRES = PostgreSQLContainer("postgres:16-alpine")
+            .withStartupTimeout(Duration.ofSeconds(30))
+            .withLogConsumer(Slf4jLogConsumer(LoggerFactory.getLogger(PostgreSQLContainer::class.java)))
+    }
+
+    @TestComponent
+    lateinit var ${repositoryVarName}: ${repositoryName}
+
+    // The section is "jdbc", NOT the 1.x "db" — JdbcDatabaseModule binds JdbcDatabaseFactoryModule("jdbc").
+    // A leftover db { } fails with:
+    //   ConfigValueException: Config expected value, but got null at path: 'ROOT.jdbc.username'
+    override fun config(): KoraConfigModification =
+        KoraConfigModification.ofString(
+            """
+            jdbc {
+              jdbcUrl = ${'$'}{POSTGRES_JDBC_URL}
+              username = ${'$'}{POSTGRES_USER}
+              password = ${'$'}{POSTGRES_PASS}
+              poolName = "kora-test"
+            }
+            flyway {
+              locations = "db/migration"
+            }
+            """.trimIndent()
+        )
+            .withSystemProperty("POSTGRES_JDBC_URL", POSTGRES.jdbcUrl)
+            .withSystemProperty("POSTGRES_USER", POSTGRES.username)
+            .withSystemProperty("POSTGRES_PASS", POSTGRES.password)
+
+    @Test
+    fun `should save and find`() {
+        // given
+        val entity = ${entityName}("test-data")
+
+        // when
+        val id = ${repositoryVarName}.insert(entity)
+        val found = ${repositoryVarName}.findById(id)
+
+        // then
+        assertNotNull(found)
+        assertEquals(entity.data, found?.data)
+    }
+
+    @Test
+    fun `should update`() {
+        // given
+        val id = ${repositoryVarName}.insert(${entityName}("original-data"))
+
+        // when
+        ${repositoryVarName}.update(${entityName}(id, "updated-data"))
+
+        // then
+        assertEquals("updated-data", ${repositoryVarName}.findById(id)?.data)
+    }
+
+    @Test
+    fun `should delete`() {
+        // given
+        val id = ${repositoryVarName}.insert(${entityName}("test-data"))
+
+        // when
+        ${repositoryVarName}.deleteById(id)
+
+        // then
+        assertNull(${repositoryVarName}.findById(id))
+    }
+}

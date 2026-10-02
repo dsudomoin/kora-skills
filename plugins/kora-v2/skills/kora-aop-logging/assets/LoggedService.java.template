@@ -1,0 +1,78 @@
+// Kora 2.0 — declarative method logging with @Log and @Mdc.
+//
+// Requires, in build.gradle:
+//     koraBom platform("io.koraframework:kora-bom:$koraVersion")   // koraVersion=2.0.0.RC2
+//     annotationProcessor "io.koraframework:annotation-processors"
+//     implementation "io.koraframework:logging-logback"
+//
+// and, on the @KoraApp interface:
+//     @KoraApp public interface Application extends LogbackModule, ... { }
+//
+// Levels live in application.conf, NOT in logback.xml — LoggingLevelRefresher clears
+// per-logger levels from logback.xml at graph init:
+//     logging.levels {
+//       "ROOT": "WARN"
+//       "com.example.app.service.OrdersService": "DEBUG"   # arguments + result appear
+//     }
+//
+// Replace `com.example.app.service` with your package.
+
+package com.example.app.service;
+
+import io.koraframework.common.annotation.Component;
+import io.koraframework.logging.common.annotation.Log;
+import io.koraframework.logging.common.annotation.Mdc;
+import org.slf4j.event.Level;
+
+import java.util.UUID;
+
+@Component
+public class OrdersService {                                       // must NOT be final
+
+    private final OrdersRepository repository;
+
+    public OrdersService(OrdersRepository repository) {
+        this.repository = repository;
+    }
+
+    // Logger name: com.example.app.service.OrdersService.create
+    //   INFO  -> ">"                        and "<"
+    //   DEBUG -> "> {\"data\":{...}}"       and "< {\"data\":{\"out\":...}}"
+    // MDC keys held for the duration of the call: operation, requestId, tenantId.
+    @Log
+    @Mdc(key = "operation", value = "create-order")
+    @Mdc(key = "requestId", value = "${java.util.UUID.randomUUID().toString()}")
+    public Order create(
+        @Mdc(key = "tenantId") String tenant,                      // argument value goes into the MDC
+        CreateOrderDto body,
+        @Log.off String idempotencyKey                             // never rendered into the record
+    ) {                                                            // must NOT be final
+        return this.repository.save(body.toEntity(tenant));
+    }
+
+    // Exit record only. The result payload is written at DEBUG.
+    @Log.out
+    public Order get(UUID id) {
+        return this.repository.findById(id);
+    }
+
+    // Entry record only, emitted at DEBUG. Arguments already default to DEBUG, so both the
+    // ">" marker and the "id" payload appear together once this logger is at DEBUG.
+    // Put the level on ONE annotation: with both @Log(A) and @Log.in(B), Java uses B and
+    // Kotlin uses A.
+    @Log.in(Level.DEBUG)
+    public void reconcile(UUID id) {
+        this.repository.reconcile(id);
+    }
+
+    // No @Log* annotation at all: this is how you keep a per-item method out of the log.
+    // (@Log.off on a method would NOT silence it — it only drops the result payload.)
+    void applyDiscountInternal(Order order) {
+        // Also note: calling this from create() above would bypass the aspect anyway,
+        // because the aspect lives in the generated $OrdersService__AopProxy subclass.
+    }
+
+    // To redact fields *inside* a logged object rather than dropping the whole argument,
+    // see references/logging-masking.md — in Java that also needs a
+    // hand-declared MaskingRules<T> component.
+}
